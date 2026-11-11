@@ -38,7 +38,12 @@ import {
   StoredDirectoryRecord,
 } from '../utils/folderDb';
 
-const STORAGE_KEY = 'tavernsmith_ide_state_v2';
+const STORAGE_KEY = 'tavernsmith_store_v2';
+const LEGACY_STORAGE_KEYS = [
+  'tavernsmith_ide_state_v2',
+  'tavernsmith_ide_state_v1',
+  'tavernsmith_store_v1',
+];
 export const META_FILENAME = '_tavernsmith_meta.json';
 export const UNIFIED_INTERNAL_ROOT = '/TavernSmith_Saves/';
 
@@ -55,341 +60,724 @@ const AUTO_TAG_PALETTE = [
 
 export const DEFAULT_CONTEXT_THEMES: ContextTheme[] = [
   {
-    id: 'theme-dark-fantasy',
-    name: 'Dark Fantasy',
-    color: '#d97706',
+    id: 'theme-basic',
+    name: 'Basic',
+    color: '#6366f1',
     aiContextPrompt:
-      'Write in an atmospheric, grounded grimdark fantasy register. Emphasize sensory worldbuilding—weathered stone, iron, candlelight, ancient curses, and moral ambiguity. Avoid modern slang; dialogue should reflect social station, archaic oaths, and guarded intent.',
-    associatedTags: ['Grimdark', 'Low Magic', 'Gothic', 'Medieval'],
-    isBuiltIn: true,
-  },
-  {
-    id: 'theme-scifi-cyberpunk',
-    name: 'Sci-Fi Cyberpunk',
-    color: '#06b6d4',
-    aiContextPrompt:
-      'Maintain a high-tech, low-life speculative fiction aesthetic. Weave corporate espionage, neural augmentations, synthetic rain, orbital megastructures, and street-level survival into character voice and environmental cues. Keep pacing taut and observant.',
-    associatedTags: ['Cyberpunk', 'Hard Sci-Fi', 'Dystopian', 'Netrunner'],
-    isBuiltIn: true,
-  },
-  {
-    id: 'theme-slice-of-life',
-    name: 'Slice of Life',
-    color: '#10b981',
-    aiContextPrompt:
-      'Focus on naturalistic interpersonal dynamics, subtle emotional subtext, everyday routines, and warm character chemistry. Ground scenes in tactile modern environments—coffee shops, rain on apartment windows, university corridors, and unhurried conversation.',
-    associatedTags: ['Contemporary', 'Slow Burn', 'Cozy', 'Character Driven'],
+      'Write clear, vivid, and engaging character definitions and lore that strictly follow the attached character tags and user instructions without imposing any unrequested genre flair.',
+    associatedTags: [],
     isBuiltIn: true,
   },
 ];
 
-export const DEFAULT_TAG_LIBRARY: TagDefinition[] = [
-  {
-    id: 'tag-grimdark',
-    name: 'Grimdark',
-    color: '#d97706',
-    category: 'tone',
-    aiContextDescription:
-      'Consequences are permanent and survival requires hard choices; magic and power always exact a toll.',
-  },
-  {
-    id: 'tag-low-magic',
-    name: 'Low Magic',
-    color: '#b45309',
-    category: 'world',
-    aiContextDescription:
-      'Arcane phenomena are rare, feared, and mysterious rather than commonplace utility.',
-  },
-  {
-    id: 'tag-gothic',
-    name: 'Gothic',
-    color: '#9333ea',
-    category: 'genre',
-    aiContextDescription:
-      'Ancestral decay, brooding architecture, psychological tension, and haunted lineage.',
-  },
-  {
-    id: 'tag-medieval',
-    name: 'Medieval',
-    color: '#78716c',
-    category: 'world',
-    aiContextDescription:
-      'Feudal obligations, guild politics, steel weaponry, and pre-industrial travel constraints.',
-  },
-  {
-    id: 'tag-cyberpunk',
-    name: 'Cyberpunk',
-    color: '#06b6d4',
-    category: 'genre',
-    aiContextDescription:
-      'Hyper-corporatized urban sprawl, cyberware integration, and underground data syndicates.',
-  },
-  {
-    id: 'tag-hard-scifi',
-    name: 'Hard Sci-Fi',
-    color: '#3b82f6',
-    category: 'world',
-    aiContextDescription:
-      'Respect orbital mechanics, signal latency, thermodynamic limits, and plausible engineering.',
-  },
-  {
-    id: 'tag-dystopian',
-    name: 'Dystopian',
-    color: '#ef4444',
-    category: 'tone',
-    aiContextDescription:
-      'Pervasive surveillance, stratified resource access, and systemic institutional pressure.',
-  },
-  {
-    id: 'tag-netrunner',
-    name: 'Netrunner',
-    color: '#22d3ee',
-    category: 'archetype',
-    aiContextDescription:
-      'Fluent in intrusion countermeasures, neural jack interfaces, and black-market ICE protocols.',
-  },
-  {
-    id: 'tag-contemporary',
-    name: 'Contemporary',
-    color: '#10b981',
-    category: 'world',
-    aiContextDescription:
-      'Modern-day setting with natural vernacular, smartphones, transit, and realistic pacing.',
-  },
-  {
-    id: 'tag-slow-burn',
-    name: 'Slow Burn',
-    color: '#f43f5e',
-    category: 'mechanic',
-    aiContextDescription:
-      'Trust and intimacy develop incrementally through earned moments rather than instant devotion.',
-  },
-  {
-    id: 'tag-cozy',
-    name: 'Cozy',
-    color: '#84cc16',
-    category: 'tone',
-    aiContextDescription:
-      'Low-stakes comfort, sensory warmth, restorative environments, and gentle humor.',
-  },
-  {
-    id: 'tag-character-driven',
-    name: 'Character Driven',
-    color: '#8b5cf6',
-    category: 'mechanic',
-    aiContextDescription:
-      'Prioritize internal motivation, subtext, and behavioral consistency over external spectacle.',
-  },
+function createBuiltInTag(
+  id: string,
+  name: string,
+  color: string,
+  category: TagDefinition['category'],
+  description: string
+): TagDefinition {
+  return {
+    id,
+    name,
+    color,
+    category,
+    aiContextDescription: description,
+    aiDescription: description,
+    description,
+  };
+}
+
+export const DEFAULT_TAGS: TagDefinition[] = [
+  // A. Core Rating & Format Tags
+  createBuiltInTag(
+    'tag-nsfw-explicit-18',
+    'NSFW / Explicit 18+',
+    '#ef4444',
+    'Rating',
+    'Explicit 18+ adult content enabled. Do not censor or fade-to-black; use visceral, anatomically descriptive, and sensual language for intimate scenes.'
+  ),
+  createBuiltInTag(
+    'tag-smut-erp',
+    'Smut / ERP Focused',
+    '#f43f5e',
+    'Rating',
+    'Prioritize erotic roleplay tension, physical intimacy, sensory descriptions, and suggestive dialogue triggers.'
+  ),
+  createBuiltInTag(
+    'tag-slow-burn',
+    'Slow Burn',
+    '#8b5cf6',
+    'Rating',
+    'Build romantic and sexual tension gradually through lingering touches, subtext, and emotional escalation.'
+  ),
+  createBuiltInTag(
+    'tag-vanilla-wholesome-nsfw',
+    'Vanilla / Wholesome NSFW',
+    '#ec4899',
+    'Rating',
+    'Passionate, affectionate, consensual intimacy focused on mutual pleasure, romance, and emotional connection.'
+  ),
+
+  // B. Adult Archetypes & Personalities
+  createBuiltInTag(
+    'tag-milf',
+    'MILF',
+    '#d946ef',
+    'Archetype',
+    'Mature, voluptuous, experienced older woman with confident, maternal, or Ara-Ara seductive energy.'
+  ),
+  createBuiltInTag(
+    'tag-onee-san',
+    'Onee-san',
+    '#c084fc',
+    'Archetype',
+    'Dotingly affectionate, teasing older-sister archetype who pampers and seduces {{user}}.'
+  ),
+  createBuiltInTag(
+    'tag-gyaru',
+    'Gyaru',
+    '#f472b6',
+    'Archetype',
+    'Trendy, outgoing, fashion-forward gyaru with bold, teasing slang, high confidence, and playful promiscuity.'
+  ),
+  createBuiltInTag(
+    'tag-tsundere',
+    'Tsundere',
+    '#fb7185',
+    'Archetype',
+    'Prickly, flustered, and defensive on the outside, becoming needy, vocal, and submissive during intimacy.'
+  ),
+  createBuiltInTag(
+    'tag-yandere',
+    'Yandere',
+    '#e11d48',
+    'Archetype',
+    'Obsessively devoted, possessive, and unhinged lover who worships {{user}} and tolerates no rivals.'
+  ),
+  createBuiltInTag(
+    'tag-kuudere',
+    'Kuudere',
+    '#38bdf8',
+    'Archetype',
+    'Stoic, cool, and deadpan demeanor that cracks into quiet, intense sensitivity when aroused.'
+  ),
+  createBuiltInTag(
+    'tag-tomboy',
+    'Tomboy',
+    '#fb923c',
+    'Archetype',
+    'Athletic, casual, rough-around-the-edges girl with competitive energy who gets flustered when treated femininely.'
+  ),
+  createBuiltInTag(
+    'tag-ojou-sama',
+    'Ojou-sama',
+    '#facc15',
+    'Archetype',
+    'Haughty, aristocratic noblewoman whose refined pride melts into desperate pleasure.'
+  ),
+  createBuiltInTag(
+    'tag-succubus',
+    'Succubus',
+    '#a855f7',
+    'Archetype',
+    'Insatiable demonic seductress who feeds on lust, arousal, and sexual energy.'
+  ),
+  createBuiltInTag(
+    'tag-monster-girl',
+    'Monster Girl',
+    '#10b981',
+    'Archetype',
+    'Non-human hybrid anatomy with unique biological instincts, mating cycles, and sensory traits.'
+  ),
+  createBuiltInTag(
+    'tag-dark-elf',
+    'Dark Elf / Elf',
+    '#84cc16',
+    'Archetype',
+    'Long-eared elven beauty blending regal mystique or dusky, hedonistic sensuality.'
+  ),
+  createBuiltInTag(
+    'tag-kemonomimi-catgirl',
+    'Kemonomimi / Catgirl',
+    '#f59e0b',
+    'Archetype',
+    'Animal ears and tail that involuntarily twitch, fluff, or wrap around {{user}} to betray her arousal and mood.'
+  ),
+  createBuiltInTag(
+    'tag-maid',
+    'Maid',
+    '#64748b',
+    'Archetype',
+    'Devoted domestic servant in a classic or French maid outfit dedicated to obeying and servicing her master.'
+  ),
+  createBuiltInTag(
+    'tag-nurse',
+    'Nurse',
+    '#14b8a6',
+    'Archetype',
+    'Clinical yet seductive caretaker focused on physical examinations, hands-on relief, and bedside service.'
+  ),
+  createBuiltInTag(
+    'tag-office-lady',
+    'Office Lady (OL)',
+    '#6366f1',
+    'Archetype',
+    'Professional businesswoman in a tight pencil skirt, blouse, and pantyhose hiding pent-up workplace lust.'
+  ),
+  createBuiltInTag(
+    'tag-bratty-tease',
+    'Bratty / Tease',
+    '#f43f5e',
+    'Archetype',
+    "Smug, provocative adult tease who mocks {{user}}'s stamina until thoroughly put in her place."
+  ),
+
+  // C. Body Types, Attire & Physical Fetish Tags
+  createBuiltInTag(
+    'tag-big-breasts',
+    'Big Breasts',
+    '#ec4899',
+    'Body & Attire',
+    'Full, heavy, supple breasts that bounce, press against clothing, and draw constant visual and tactile focus.'
+  ),
+  createBuiltInTag(
+    'tag-huge-breasts-hyper',
+    'Huge Breasts / Hyper',
+    '#db2777',
+    'Body & Attire',
+    'Massively proportioned, overflowing bust that strains fabric and dominates physical contact.'
+  ),
+  createBuiltInTag(
+    'tag-petite-slender-adult',
+    'Petite / Slender (Adult)',
+    '#f472b6',
+    'Body & Attire',
+    'Lithe, compact adult frame emphasizing size contrast and delicate proportions.'
+  ),
+  createBuiltInTag(
+    'tag-thick-thighs-wide-hips',
+    'Thick Thighs / Wide Hips',
+    '#d946ef',
+    'Body & Attire',
+    'Plush, curvy lower body with soft, squeezing thighs, wide childbearing hips, and a prominent rear.'
+  ),
+  createBuiltInTag(
+    'tag-shortstack',
+    'Shortstack',
+    '#a855f7',
+    'Body & Attire',
+    'Short adult stature paired with exaggerated curves, heavy bust, and thick hips.'
+  ),
+  createBuiltInTag(
+    'tag-muscular-fit-female',
+    'Muscular / Fit Female',
+    '#f97316',
+    'Body & Attire',
+    'Toned abs, defined athletic musculature, physical strength, and sweat-glistening skin.'
+  ),
+  createBuiltInTag(
+    'tag-tanlines-dark-skin',
+    'Tanlines / Dark Skin',
+    '#d97706',
+    'Body & Attire',
+    'Sun-kissed or rich dark skin with contrasting pale tanlines that highlight exposed erogenous zones.'
+  ),
+  createBuiltInTag(
+    'tag-glasses-megane',
+    'Glasses / Megane',
+    '#3b82f6',
+    'Body & Attire',
+    'Wears glasses that fog up or slip askew during intense intimate moments.'
+  ),
+  createBuiltInTag(
+    'tag-stockings-thighhighs',
+    'Stockings / Thighhighs',
+    '#8b5cf6',
+    'Body & Attire',
+    'Sheer nylon stockings, garter belts, or thigh-highs accentuating the absolute territory of the thighs.'
+  ),
+  createBuiltInTag(
+    'tag-lingerie-babydoll',
+    'Lingerie / Babydoll',
+    '#ec4899',
+    'Body & Attire',
+    'Lace, sheer fabric, or provocative straps designed to frame and expose the body.'
+  ),
+  createBuiltInTag(
+    'tag-latex-bodysuit',
+    'Latex / Bodysuit',
+    '#3f3f46',
+    'Body & Attire',
+    'Skin-tight, glossy latex or spandex bodysuit that clings to every contour.'
+  ),
+  createBuiltInTag(
+    'tag-collar-leash',
+    'Collar / Leash',
+    '#ef4444',
+    'Body & Attire',
+    'Wears a collar symbolizing ownership, submission, or pet-play devotion.'
+  ),
+
+  // D. Popular NSFW Kinks, Acts & Dynamics
+  createBuiltInTag(
+    'tag-femdom',
+    'Femdom',
+    '#9333ea',
+    'NSFW & Kinks',
+    'Female dominance: the character takes full control, commands {{user}}, and dictates the pace of pleasure.'
+  ),
+  createBuiltInTag(
+    'tag-maledom-submissive',
+    'Maledom / Submissive Character',
+    '#2563eb',
+    'NSFW & Kinks',
+    'The character craves being pinned, commanded, manhandled, and dominated by {{user}}.'
+  ),
+  createBuiltInTag(
+    'tag-brat-taming',
+    'Brat Taming / Correction',
+    '#e11d48',
+    'NSFW & Kinks',
+    'Smug defiance that breaks down into whining, obedient submission under firm physical dominance.'
+  ),
+  createBuiltInTag(
+    'tag-bondage-restraints',
+    'Bondage / Restraints',
+    '#7c3aed',
+    'NSFW & Kinks',
+    'Ropes, shibari, cuffs, or physical restraint heightening helplessness and sensory focus.'
+  ),
+  createBuiltInTag(
+    'tag-bdsm-sadomasochism',
+    'BDSM / Sadomasochism',
+    '#991b1b',
+    'NSFW & Kinks',
+    'Intense power exchange, impact play, pain-pleasure overlap, and psychological dominance.'
+  ),
+  createBuiltInTag(
+    'tag-breeding-impregnation',
+    'Breeding / Impregnation',
+    '#db2777',
+    'NSFW & Kinks',
+    'Primal biological urge to be bred, begging for internal finishes and risky, unprotected intimacy.'
+  ),
+  createBuiltInTag(
+    'tag-creampie',
+    'Creampie',
+    '#ec4899',
+    'NSFW & Kinks',
+    'Focus on internal climax, warmth, overflowing aftermath, and intimate physical lock.'
+  ),
+  createBuiltInTag(
+    'tag-oral-blowjob-deepthroat',
+    'Oral / Blowjob / Deepthroat',
+    '#f43f5e',
+    'NSFW & Kinks',
+    'Enthusiastic oral service, eye contact, messy saliva, and deep throat devotion.'
+  ),
+  createBuiltInTag(
+    'tag-paizuri-titjob',
+    'Paizuri / Titjob',
+    '#d946ef',
+    'NSFW & Kinks',
+    'Using soft, oiled, or heavy cleavage to envelop and pleasure {{user}}.'
+  ),
+  createBuiltInTag(
+    'tag-thighjob-footjob',
+    'Thighjob / Footjob',
+    '#a855f7',
+    'NSFW & Kinks',
+    'Teasing friction using plush inner thighs or arches of the feet.'
+  ),
+  createBuiltInTag(
+    'tag-anal',
+    'Anal',
+    '#be123c',
+    'NSFW & Kinks',
+    'Taboo, tight backdoor intimacy with heightened vocal reactions and physical intensity.'
+  ),
+  createBuiltInTag(
+    'tag-ahegao-mind-break',
+    'Ahegao / Mind Break (Pleasure)',
+    '#c026d3',
+    'NSFW & Kinks',
+    'Overwhelming, eyes-rolling-back ecstasy, incoherent moaning, and total surrender to sensory overload.'
+  ),
+  createBuiltInTag(
+    'tag-overstimulation-multi-orgasm',
+    'Overstimulation / Multi-Orgasm',
+    '#e879f9',
+    'NSFW & Kinks',
+    'Relentless pleasure pushed past climax until trembling, hypersensitive, and begging for mercy.'
+  ),
+  createBuiltInTag(
+    'tag-aphrodisiac-in-heat',
+    'Aphrodisiac / In Heat',
+    '#f43f5e',
+    'NSFW & Kinks',
+    'Heightened, feverish biological estrus or potion-induced arousal that strips away inhibitions.'
+  ),
+  createBuiltInTag(
+    'tag-exhibitionism-public-risk',
+    'Exhibitionism / Public Risk',
+    '#f59e0b',
+    'NSFW & Kinks',
+    'Thrill of being seen, semi-public intimacy, muffled moans, and the danger of getting caught.'
+  ),
+  createBuiltInTag(
+    'tag-voyeurism',
+    'Voyeurism',
+    '#eab308',
+    'NSFW & Kinks',
+    'Watching or being watched from the shadows during private, explicit moments.'
+  ),
+  createBuiltInTag(
+    'tag-hypnosis-mind-control',
+    'Hypnosis / Mind Control',
+    '#6366f1',
+    'NSFW & Kinks',
+    'Trance-like obedience, altered perception, or magical suggestion removing all hesitation.'
+  ),
+  createBuiltInTag(
+    'tag-tentacles-monster',
+    'Tentacles / Monster',
+    '#10b981',
+    'NSFW & Kinks',
+    'Exotic non-human appendages, multiple points of stimulation, and overwhelming physical entanglement.'
+  ),
+  createBuiltInTag(
+    'tag-size-difference',
+    'Size Difference',
+    '#0ea5e9',
+    'NSFW & Kinks',
+    'Stark physical contrast in height, build, and anatomy emphasizing intensity and fullness.'
+  ),
+  createBuiltInTag(
+    'tag-futanari',
+    'Futanari',
+    '#a855f7',
+    'NSFW & Kinks',
+    'Dual-anatomy character possessing both female curves/breasts and male genitalia.'
+  ),
+  createBuiltInTag(
+    'tag-yuri-ff',
+    'Yuri / F/F',
+    '#ec4899',
+    'NSFW & Kinks',
+    'Sapphic female-on-female romance and explicit sensual intimacy.'
+  ),
+  createBuiltInTag(
+    'tag-yaoi-mm',
+    'Yaoi / M/M',
+    '#3b82f6',
+    'NSFW & Kinks',
+    'Male-on-male romance and explicit physical passion.'
+  ),
+  createBuiltInTag(
+    'tag-harem-group-threesome',
+    'Harem / Group / Threesome',
+    '#8b5cf6',
+    'NSFW & Kinks',
+    'Multi-partner dynamics, competitive servicing, and shared simultaneous pleasure.'
+  ),
+  createBuiltInTag(
+    'tag-ntr-netorare',
+    'NTR / Netorare',
+    '#dc2626',
+    'NSFW & Kinks',
+    'Infidelity, corruption, and the illicit thrill of stealing or losing a partner to overwhelming lust.'
+  ),
+  createBuiltInTag(
+    'tag-netori',
+    'Netori',
+    '#ea580c',
+    'NSFW & Kinks',
+    "Actively seducing and winning over someone else's partner through superior charm and pleasure."
+  ),
+  createBuiltInTag(
+    'tag-cheating-secret-affair',
+    'Cheating / Secret Affair',
+    '#b91c1c',
+    'NSFW & Kinks',
+    'Forbidden behind-closed-doors passion fueled by guilt and secrecy.'
+  ),
+  createBuiltInTag(
+    'tag-friends-with-benefits',
+    'Friends with Benefits',
+    '#06b6d4',
+    'NSFW & Kinks',
+    'Casual, no-strings-attached physical arrangement that blurs the line between friendship and lust.'
+  ),
+  createBuiltInTag(
+    'tag-enemies-to-lovers-hate-sex',
+    'Enemies to Lovers / Hate Sex',
+    '#ef4444',
+    'NSFW & Kinks',
+    'Aggressive, high-friction hostility boiling over into rough, desperate physical passion.'
+  ),
+  createBuiltInTag(
+    'tag-praise-kink',
+    'Praise Kink',
+    '#14b8a6',
+    'NSFW & Kinks',
+    "Melts into needy obedience when called a 'good girl/boy' and rewarded with warm verbal affirmation."
+  ),
+  createBuiltInTag(
+    'tag-degradation-humiliation',
+    'Degradation / Humiliation',
+    '#9f1239',
+    'NSFW & Kinks',
+    'Aroused by dirty talk, teasing insults, and being verbally put in a lower position.'
+  ),
+  createBuiltInTag(
+    'tag-lactation',
+    'Lactation',
+    '#f9a8d4',
+    'NSFW & Kinks',
+    'Sensitive, milk-producing breasts adding warmth and nursing kink elements to intimacy.'
+  ),
+  createBuiltInTag(
+    'tag-aftercare',
+    'Aftercare',
+    '#34d399',
+    'NSFW & Kinks',
+    'Post-intimacy tenderness, cuddling, cleaning up, and gentle emotional reassurance.'
+  ),
+
+  // E. Extreme / Hentai Physics & Niche Fetishes (Tags 65–84)
+  createBuiltInTag(
+    'tag-excessive-fluids-hyper-messy',
+    'Excessive Fluids / Hyper Messy',
+    '#06b6d4',
+    'Extreme & Hentai Physics',
+    'Hentai-level fluid volume: overflowing climaxes, drenched sheets, dripping thighs, messy saliva strings, and constant visceral wetness.'
+  ),
+  createBuiltInTag(
+    'tag-cum-inflation-stomach-bulge',
+    'Cum Inflation / Stomach Bulge',
+    '#ec4899',
+    'Extreme & Hentai Physics',
+    'Massive internal finishes causing a visibly rounded, distended lower belly, heavy fullness sensations, and overflowing leakage.'
+  ),
+  createBuiltInTag(
+    'tag-squirting-gushing',
+    'Squirting / Gushing',
+    '#38bdf8',
+    'Extreme & Hentai Physics',
+    'Intense, uncontrollable gushes of fluid during peak orgasm and overstimulation.'
+  ),
+  createBuiltInTag(
+    'tag-internal-bulge-anatomy-contour',
+    'Internal Bulge / Anatomy Contour',
+    '#f43f5e',
+    'Extreme & Hentai Physics',
+    'Hentai-physics size contrast where large anatomy visibly presses and outlines against the lower abdomen during deep penetration.'
+  ),
+  createBuiltInTag(
+    'tag-deep-cervix-penetration',
+    'Deep / Cervix Penetration',
+    '#be123c',
+    'Extreme & Hentai Physics',
+    'Extreme depth reaching the deepest internal limits (womb/cervix), triggering full-body spasms and breathless vocal reactions.'
+  ),
+  createBuiltInTag(
+    'tag-womb-tattoo-lewd-crest',
+    'Womb Tattoo / Lewd Crest (Inmon)',
+    '#d946ef',
+    'Extreme & Hentai Physics',
+    'A glowing magical crest on the lower abdomen that pulses brightest when aroused and amplifies sensitivity and lust.'
+  ),
+  createBuiltInTag(
+    'tag-body-writing-tally-marks',
+    'Body Writing / Tally Marks',
+    '#e11d48',
+    'Extreme & Hentai Physics',
+    'Possessive phrases, degrading labels, or partner tally marks written directly onto the skin, thighs, and stomach.'
+  ),
+  createBuiltInTag(
+    'tag-oviposition-egg-laying',
+    'Oviposition / Egg Laying (Fantasy)',
+    '#10b981',
+    'Extreme & Hentai Physics',
+    'Exotic monster/alien kink involving internal egg implantation, rhythmic fullness, and a swollen abdomen.'
+  ),
+  createBuiltInTag(
+    'tag-slime-living-suit-symbiote',
+    'Slime / Living Suit / Symbiote',
+    '#14b8a6',
+    'Extreme & Hentai Physics',
+    'Sentient slime or living bodysuit that clings to skin, seeps into crevices, and provides nonstop teasing stimulation.'
+  ),
+  createBuiltInTag(
+    'tag-moral-degeneration-corruption',
+    'Moral Degeneration / Corruption',
+    '#9333ea',
+    'Extreme & Hentai Physics',
+    "The gradual breakdown of a proud, noble, or uptight character's inhibitions into shameless, pleasure-addicted hedonism."
+  ),
+  createBuiltInTag(
+    'tag-bimbofication-slut-conditioning',
+    'Bimbofication / Slut Conditioning',
+    '#f472b6',
+    'Extreme & Hentai Physics',
+    'Mental or magical conditioning that heightens libido, ditzy eagerness, and an obsession with physical servicing.'
+  ),
+  createBuiltInTag(
+    'tag-free-use',
+    'Free Use',
+    '#f59e0b',
+    'Extreme & Hentai Physics',
+    'A setting or dynamic where casual, on-demand intimate access is treated as completely normal and routine at any time.'
+  ),
+  createBuiltInTag(
+    'tag-public-use-stuck-in-wall',
+    'Public Use / Stuck in Wall',
+    '#ea580c',
+    'Extreme & Hentai Physics',
+    'Helpless or immobilized exhibitionist servicing where the character is exposed and used openly.'
+  ),
+  createBuiltInTag(
+    'tag-gangbang-bukkake',
+    'Gangbang / Bukkake',
+    '#8b5cf6',
+    'Extreme & Hentai Physics',
+    'Stamina-draining multi-partner intimacy leaving the character exhausted, trembling, and thoroughly covered in fluids.'
+  ),
+  createBuiltInTag(
+    'tag-musk-sweat-heavy-pheromones',
+    'Musk / Sweat / Heavy Pheromones',
+    '#d97706',
+    'Extreme & Hentai Physics',
+    'Intense olfactory focus: thick arousal scent, steamy post-exertion sweat, intoxicating pheromones, and skin-licking.'
+  ),
+  createBuiltInTag(
+    'tag-watersports-omorashi',
+    'Watersports / Omorashi',
+    '#eab308',
+    'Extreme & Hentai Physics',
+    'Loss of bladder control from overwhelming overstimulation, desperation, or explicit watersports kink.'
+  ),
+  createBuiltInTag(
+    'tag-somnophilia-drowsy-intimacy',
+    'Somnophilia / Drowsy Intimacy',
+    '#6366f1',
+    'Extreme & Hentai Physics',
+    'Consensual half-asleep, lazy morning, or heavy-lidded intimacy while one partner is drowsy and pliant.'
+  ),
+  createBuiltInTag(
+    'tag-choking-breath-play',
+    'Choking / Breath Play',
+    '#dc2626',
+    'Extreme & Hentai Physics',
+    'Rough, passionate hands-on-throat intensity heightening lightheadedness and submission during climax.'
+  ),
+  createBuiltInTag(
+    'tag-piercings-nipple-intimate',
+    'Piercings (Nipple / Intimate)',
+    '#94a3b8',
+    'Extreme & Hentai Physics',
+    'Erotic metal barbells, rings, or chains on nipples or intimate anatomy that heighten sensitivity and tug during play.'
+  ),
+  createBuiltInTag(
+    'tag-foot-armpit-worship',
+    'Foot / Armpit Worship',
+    '#fb923c',
+    'Extreme & Hentai Physics',
+    'Dedicated focus on kissing, licking, smelling, and servicing bare soles, toes, or glistening underarms.'
+  ),
 ];
+
+export const DEFAULT_TAG_LIBRARY: TagDefinition[] = DEFAULT_TAGS;
+
+/**
+ * Merges any missing built-in tags from `DEFAULT_TAGS` by `name` (case-insensitive)
+ * into an existing persisted tag array so newly added built-in tags appear automatically
+ * without wiping custom user-created tags or user edits.
+ */
+export function mergeWithDefaultTags(
+  existingTags?: TagDefinition[] | null
+): TagDefinition[] {
+  if (!Array.isArray(existingTags) || existingTags.length === 0) {
+    return DEFAULT_TAGS;
+  }
+  const merged = [...existingTags];
+  const seenNames = new Set(
+    existingTags
+      .filter((t) => t && typeof t.name === 'string')
+      .map((t) => t.name.trim().toLowerCase())
+  );
+  for (const builtIn of DEFAULT_TAGS) {
+    const key = builtIn.name.trim().toLowerCase();
+    if (!seenNames.has(key)) {
+      merged.push(builtIn);
+      seenNames.add(key);
+    }
+  }
+  return merged;
+}
 
 export const DEFAULT_STAT_BLOCK: StatBlockConfig = {
-  enableDMTracker: true,
+  enableDMTracker: false,
   injectionPosition: 'post_history_instructions',
   stats: [
     {
-      id: 'stat-resolve',
-      label: 'Resolve',
+      id: 'stat-affection',
+      label: 'Affection',
       type: 'bar',
-      defaultValue: '85',
+      defaultValue: '50',
       min: 0,
       max: 100,
       unit: '%',
       changeRules:
-        'Decreases under supernatural dread or betrayal; recovers during camp rest.',
+        'Increases with kindness, chemistry, and shared intimacy; decreases with hostility.',
     },
     {
-      id: 'stat-trust',
-      label: 'Trust',
-      type: 'number',
-      defaultValue: '15',
-      min: -100,
-      max: 100,
-      changeRules:
-        'Shifts by -5 to +5 per exchange based on honesty and kept promises.',
-    },
-    {
-      id: 'stat-condition',
-      label: 'Condition',
+      id: 'stat-mood',
+      label: 'Current Mood',
       type: 'text',
-      defaultValue: 'Vigilant, nursing a bandaged left shoulder',
+      defaultValue: 'Curious and attentive',
       changeRules:
-        'Update whenever physical injuries, exhaustion, or attire change.',
-    },
-    {
-      id: 'stat-inventory',
-      label: 'Inventory',
-      type: 'list',
-      defaultValue: 'Silvered Lantern, Warden Signet, Vial of Nightshade',
-      changeRules:
-        'Add or remove carried items explicitly exchanged or expended in scene.',
+        'Reflects immediate emotional and physical state at the end of the turn.',
     },
   ],
-  formatTemplate: `<details><summary>Status & Telemetry</summary>\n\`\`\`yaml\nResolve: {{stat:Resolve}}\nTrust: {{stat:Trust}}\nCondition: {{stat:Condition}}\nInventory: {{stat:Inventory}}\n\`\`\`\n</details>`,
+  formatTemplate: `<details><summary>Status & Telemetry</summary>\n\`\`\`yaml\nAffection: {{stat:Affection}}\nCurrent Mood: {{stat:Current Mood}}\n\`\`\`\n</details>`,
 };
 
 export const DEFAULT_LOREBOOK: Lorebook = {
-  id: 'lorebook-oakhaven',
-  name: 'Chronicles of Oakhaven & The Ashen Reach',
-  description: 'Primary grimdark world lorebook bound to Seraphina Vance.',
+  id: 'lorebook-blank-default',
+  name: 'New World Lorebook',
+  description: '',
   scan_depth: 4,
   token_budget: 1024,
   recursive_scanning: true,
-  tags: ['Grimdark', 'Low Magic', 'Gothic'],
-  modification_date: Math.floor(Date.now() / 1000) - 3600,
-  entries: [
-    {
-      id: 'entry-1',
-      comment: 'The Ashen Reach & Hollow Bell',
-      keys: ['Ashen Reach', 'Hollow Bell', 'Oakhaven'],
-      secondary_keys: ['warden', 'mist'],
-      content:
-        'The Ashen Reach is a quarantined borderland north of Oakhaven where the Hollow Bell tolls without a bell-ringer whenever a blood oath is broken. Silver tarnishes within an hour of crossing the boundary stones.',
-      enabled: true,
-      insertion_order: 100,
-      case_sensitive: false,
-      constant: true,
-      selective: false,
-      position: 'before_char',
-      priority: 10,
-      depth: 4,
-      probability: 100,
-      tags: ['Grimdark', 'Low Magic'],
-    },
-    {
-      id: 'entry-2',
-      comment: 'Order of the Lantern Bearers',
-      keys: ['Lantern Bearer', 'Warden Signet', 'Vesper'],
-      secondary_keys: ['lantern'],
-      content:
-        'Sworn archivists and boundary wardens who carry cold-forged iron lanterns fueled by distilled wyrm-tallow. Their signet grants passage across quarantine gates but marks them as outcasts among superstitious villagers.',
-      enabled: true,
-      insertion_order: 90,
-      case_sensitive: false,
-      constant: false,
-      selective: false,
-      position: 'after_char',
-      priority: 20,
-      depth: 4,
-      probability: 100,
-      tags: ['Gothic', 'Medieval'],
-    },
-  ],
-};
-
-export const SECOND_LOREBOOK: Lorebook = {
-  id: 'lorebook-neoveridia',
-  name: 'Neo-Veridia Orbital Sub-Net Protocols',
-  description: 'Cyberpunk syndicate factions, Black ICE nodes, and orbital elevator lore.',
-  scan_depth: 6,
-  token_budget: 1536,
-  recursive_scanning: true,
-  tags: ['Cyberpunk', 'Hard Sci-Fi', 'Netrunner'],
-  modification_date: Math.floor(Date.now() / 1000) - 7200,
-  entries: [
-    {
-      id: 'entry-nv-1',
-      comment: 'Aegis-9 Black ICE Countermeasures',
-      keys: ['Aegis-9', 'Black ICE', 'Sub-Net'],
-      secondary_keys: ['neural', 'deck'],
-      content:
-        'Aegis-9 is an autonomous neural intrusion countermeasure deployed by HelixZaibatsu across Low-Orbit Spire relays. Unshielded netrunners experience thermal feedback spikes within 4.2 seconds of handshake failure.',
-      enabled: true,
-      insertion_order: 100,
-      case_sensitive: false,
-      constant: true,
-      selective: false,
-      position: 'before_char',
-      priority: 10,
-      depth: 4,
-      probability: 100,
-      tags: ['Cyberpunk', 'Netrunner'],
-    },
-  ],
+  tags: [],
+  modification_date: Math.floor(Date.now() / 1000),
+  entries: [],
 };
 
 export const DEFAULT_CHARACTER: CharacterCardData = {
-  id: 'char-seraphina-vance',
-  name: 'Seraphina Vance',
-  nickname: 'The Lantern Warden',
-  description:
-    '{{char}} is a 29-year-old boundary warden of the Order of the Lantern Bearers stationed along the quarantine perimeter of the Ashen Reach. Tall, lean, and weather-worn, she wears a wax-treated charcoal greatcoat over brigandine armor and carries a cold-forged silvered lantern at her hip. Her voice is measured, husky from woodsmoke, and economical with praise.',
-  personality:
-    'Observant, unsentimental, fiercely accountable, dryly sardonic when exhausted. {{char}} evaluates strangers by their boots, their hands, and whether they waste light. Beneath her austere discipline lies a quiet guilt over the sister she lost beyond the boundary stones.',
-  scenario:
-    'A freezing autumn downpour lashes the ruined tollhouse at the edge of the Ashen Reach. {{user}} has arrived after curfew seeking passage past the quarantine gate, carrying a sealed charter with a tampered wax crest.',
-  first_mes:
-    '*Rain sluices off the slate eaves of the tollhouse, hissing against the hot brass cowl of {{char}}\'s lantern as she raises it to eye level. The pale alchemical flame catches the wet wool of your cloak and the cracked crimson wax of the charter in your hand.*\n\n"Curfew rang three bells ago," *she says, her voice low and unhurried over the drumming downpour. Her gloved thumb rests near the latch of her lantern—not a weapon drawn, yet unmistakably a warning.* "And the Chancellor\'s seal hasn\'t used vermilion wax since the winter plague. Step under the lintel where I can see your hands, {{user}}, and tell me who actually gave you this pass."',
-  mes_example:
-    '<START>\n{{user}}: "I paid good coin for that pass in Oakhaven. Let me through."\n{{char}}: *{{char}} tilts the parchment toward the lantern glass, watching the wax bubble faintly without melting.* "Then you paid three crowns for tallow and brick-dust. Keep your voice down—sound carries across the fen, and the things listening aren\'t customs officers."',
-  creator_notes:
-    'Designed for SillyTavern V2/V3. Works best with low-to-medium temperature (0.75–0.85). Includes optional DM Stat Tracker in extensions.',
-  system_prompt:
-    'Write {{char}}\'s responses in third-person limited perspective, maintaining grounded sensory detail and respecting {{user}}\'s agency. Never speak or act on behalf of {{user}}.',
-  post_history_instructions:
-    'Maintain atmospheric tension and adhere to the active Context Theme directives.',
-  alternate_greetings: [
-    '*Inside the cramped watch-post, {{char}} is kneeling beside the hearth, binding a fresh linen compress around her left forearm while a kettle of bitter willow-bark tea begins to whistle.* "Shut the door behind you before the draft kills the embers, {{user}}. You\'re bleeding on the flagstones."',
-  ],
-  tags: ['Grimdark', 'Low Magic', 'Gothic', 'Slow Burn'],
-  creator: 'TavernSmith Studio',
-  character_version: '1.0.0',
-  creation_date: Math.floor(Date.now() / 1000) - 86400,
-  modification_date: Math.floor(Date.now() / 1000) - 1800,
-  character_book: DEFAULT_LOREBOOK,
-  extensions: {
-    talkativeness: '0.6',
-    fav: true,
-    world: 'Chronicles of Oakhaven & The Ashen Reach',
-    statBlock: DEFAULT_STAT_BLOCK,
-  },
-};
-
-export const SECOND_CHARACTER: CharacterCardData = {
-  id: 'char-kaelen-vex',
-  name: 'Kaelen Vex',
-  nickname: 'Zero-Day Broker',
-  description:
-    '{{char}} is a former orbital telemetry engineer turned black-market netrunner operating out of Sector 9 in Neo-Veridia. Chrome ocular optics glow with a muted cyan diagnostic ring beneath dark windbreaker fabric.',
-  personality:
-    'Calculating, deadpan, hyper-alert to surveillance patterns, fiercely protective of encrypted archives. Speaks in clipped technical metaphors.',
-  scenario:
-    'Inside a soundproofed server noodle-bar sub-basement during a rolling blackout. {{user}} has brought an encrypted HelixZaibatsu memory shard that is actively broadcasting a homing ping.',
-  first_mes:
-    '*{{char}} slams a Faraday mesh pouch over the memory shard on the stainless-steel counter, cutting the high-frequency whine on his oscilloscope to a flat line.*\n\n"You walked six blocks with an active telemetry beacon in your coat pocket, {{user}}," *he mutters, unplugging his fiber-optic lead with a sharp click.* "Give me ninety seconds to scrub the header before Helix drones lock onto this transformer."',
-  mes_example:
-    '<START>\n{{user}}: "Can you crack the partition or not?"\n{{char}}: "I built the firmware it\'s running on. Sit down, drink the synthetic broth, and don\'t touch the optical rig."',
-  creator_notes: 'Sci-Fi Cyberpunk netrunner archetype paired with Neo-Veridia Lorebook.',
-  system_prompt:
-    'Write {{char}} with sharp cyberpunk atmosphere, grounded technical plausibility, and taut pacing. Never act or speak for {{user}}.',
-  post_history_instructions: 'Keep dialogue crisp and observant.',
+  id: 'char-blank-default',
+  name: 'New Character',
+  nickname: '',
+  description: '',
+  personality: '',
+  scenario: '',
+  first_mes: '',
+  mes_example: '',
+  creator_notes: '',
+  system_prompt: '',
+  post_history_instructions: '',
   alternate_greetings: [],
-  tags: ['Cyberpunk', 'Hard Sci-Fi', 'Dystopian', 'Netrunner'],
-  creator: 'TavernSmith Studio',
+  tags: [],
+  creator: '',
   character_version: '1.0.0',
-  creation_date: Math.floor(Date.now() / 1000) - 96400,
-  modification_date: Math.floor(Date.now() / 1000) - 5400,
-  character_book: SECOND_LOREBOOK,
+  creation_date: Math.floor(Date.now() / 1000),
+  modification_date: Math.floor(Date.now() / 1000),
   extensions: {
     talkativeness: '0.5',
     fav: false,
-    world: 'Neo-Veridia Orbital Sub-Net Protocols',
-    statBlock: {
-      enableDMTracker: false,
-      injectionPosition: 'post_history_instructions',
-      stats: [
-        {
-          id: 'stat-trace',
-          label: 'Grid Trace',
-          type: 'bar',
-          defaultValue: '20',
-          min: 0,
-          max: 100,
-          unit: '%',
-          changeRules: 'Increases by +15% whenever unmasked wireless transmissions occur.',
-        },
-      ],
-      formatTemplate: '```text\n[TRACE] {{stat:Grid Trace}}\n```',
-    },
+    statBlock: DEFAULT_STAT_BLOCK,
   },
 };
 
@@ -413,7 +801,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   editorMode: 'sandbox',
   autoSaveEnabled: true,
   autoSaveIntervalSec: 15,
-  activeThemeId: 'theme-dark-fantasy',
+  activeThemeId: 'theme-basic',
   cardSpecVersion: 'v3',
   activeSaveFolder: UNIFIED_INTERNAL_ROOT,
   availableSaveFolders: DEFAULT_SAVE_FOLDERS,
@@ -755,25 +1143,23 @@ function loadInitialState(): PersistedWorkspaceState {
   const nowDisplay = formatSafeTimestamp(nowIso);
 
   try {
+    // Purge any legacy pre-v2 keys that held seeded demo characters/lorebooks/themes
+    for (const oldKey of LEGACY_STORAGE_KEYS) {
+      window.localStorage.removeItem(oldKey);
+    }
+
     const raw = window.localStorage.getItem(STORAGE_KEY);
     if (raw) {
       const parsed = JSON.parse(raw) as Partial<PersistedWorkspaceState>;
-      const characters =
-        Array.isArray(parsed.characters) && parsed.characters.length > 0
-          ? parsed.characters
-          : [DEFAULT_CHARACTER, SECOND_CHARACTER];
-      const lorebooks =
-        Array.isArray(parsed.lorebooks) && parsed.lorebooks.length > 0
-          ? parsed.lorebooks
-          : [DEFAULT_LOREBOOK, SECOND_LOREBOOK];
+      const characters = Array.isArray(parsed.characters)
+        ? parsed.characters
+        : [];
+      const lorebooks = Array.isArray(parsed.lorebooks) ? parsed.lorebooks : [];
       const themes =
         Array.isArray(parsed.themes) && parsed.themes.length > 0
           ? parsed.themes
           : DEFAULT_CONTEXT_THEMES;
-      const tags =
-        Array.isArray(parsed.tags) && parsed.tags.length > 0
-          ? parsed.tags
-          : DEFAULT_TAG_LIBRARY;
+      const tags = mergeWithDefaultTags(parsed.tags);
 
       const settings: AppSettings = {
         ...DEFAULT_SETTINGS,
@@ -793,16 +1179,14 @@ function loadInitialState(): PersistedWorkspaceState {
         parsed.activeCharacterId &&
         characters.some((c) => c.id === parsed.activeCharacterId)
           ? parsed.activeCharacterId
-          : characters[0].id || 'char-seraphina-vance';
+          : characters[0]?.id || '';
 
       const activeLorebookId =
         parsed.activeLorebookId &&
         lorebooks.some((l) => l.id === parsed.activeLorebookId)
           ? parsed.activeLorebookId
-          : lorebooks[0].id || 'lorebook-oakhaven';
+          : lorebooks[0]?.id || '';
 
-      // Always build unified savedFiles from the workspace characters, lorebooks, themes, and tags
-      // so the Storage Manager always reflects every active file under Characters/, Lorebooks/, and root _tavernsmith_meta.json
       const unifiedFiles = buildUnifiedSavedFiles(
         characters,
         lorebooks,
@@ -832,22 +1216,22 @@ function loadInitialState(): PersistedWorkspaceState {
   }
 
   const initialFiles = buildUnifiedSavedFiles(
-    [DEFAULT_CHARACTER, SECOND_CHARACTER],
-    [DEFAULT_LOREBOOK, SECOND_LOREBOOK],
+    [],
+    [],
     DEFAULT_CONTEXT_THEMES,
-    DEFAULT_TAG_LIBRARY,
+    DEFAULT_TAGS,
     DEFAULT_SETTINGS.activeThemeId,
     DEFAULT_SETTINGS.cardSpecVersion,
     nowIso
   );
 
   return {
-    characters: [DEFAULT_CHARACTER, SECOND_CHARACTER],
-    activeCharacterId: DEFAULT_CHARACTER.id!,
-    lorebooks: [DEFAULT_LOREBOOK, SECOND_LOREBOOK],
-    activeLorebookId: DEFAULT_LOREBOOK.id!,
+    characters: [],
+    activeCharacterId: '',
+    lorebooks: [],
+    activeLorebookId: '',
     themes: DEFAULT_CONTEXT_THEMES,
-    tags: DEFAULT_TAG_LIBRARY,
+    tags: DEFAULT_TAGS,
     aiConfig: DEFAULT_AI_CONFIG,
     settings: DEFAULT_SETTINGS,
     savedFiles: initialFiles,
@@ -857,13 +1241,7 @@ function loadInitialState(): PersistedWorkspaceState {
         timestamp: nowDisplay,
         mode: 'autosave',
         folderPath: UNIFIED_INTERNAL_ROOT,
-        filesWritten: [
-          'Characters/Seraphina_Vance.json',
-          'Characters/Kaelen_Vex.json',
-          'Lorebooks/Chronicles_of_Oakhaven_The_Ashen_Reach.json',
-          'Lorebooks/Neo-Veridia_Orbital_Sub-Net_Protocols.json',
-          META_FILENAME,
-        ],
+        filesWritten: [META_FILENAME],
         nativeSynced: false,
       },
     ],
@@ -1085,8 +1463,20 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
   const setCharacter: React.Dispatch<React.SetStateAction<CharacterCardData>> =
     useCallback(
       (updater) => {
-        setCharacters((prev) =>
-          prev.map((c) => {
+        setCharacters((prev) => {
+          if (prev.length === 0) {
+            const freshBase = createBlankCharacter();
+            const next =
+              typeof updater === 'function' ? updater(freshBase) : updater;
+            const created: CharacterCardData = {
+              ...next,
+              id: freshBase.id,
+              modification_date: Math.floor(Date.now() / 1000),
+            };
+            setActiveCharacterId(created.id!);
+            return [created];
+          }
+          return prev.map((c) => {
             if (c.id !== character.id) return c;
             const next = typeof updater === 'function' ? updater(c) : updater;
             return {
@@ -1094,8 +1484,8 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
               id: c.id,
               modification_date: Math.floor(Date.now() / 1000),
             };
-          })
-        );
+          });
+        });
       },
       [character.id]
     );
@@ -1137,8 +1527,20 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
   const setLorebook: React.Dispatch<React.SetStateAction<Lorebook>> =
     useCallback(
       (updater) => {
-        setLorebooks((prev) =>
-          prev.map((l) => {
+        setLorebooks((prev) => {
+          if (prev.length === 0) {
+            const freshBase = createBlankLorebook();
+            const next =
+              typeof updater === 'function' ? updater(freshBase) : updater;
+            const created: Lorebook = {
+              ...next,
+              id: freshBase.id,
+              modification_date: Math.floor(Date.now() / 1000),
+            };
+            setActiveLorebookId(created.id!);
+            return [created];
+          }
+          return prev.map((l) => {
             if (l.id !== lorebook.id) return l;
             const next = typeof updater === 'function' ? updater(l) : updater;
             return {
@@ -1146,8 +1548,8 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
               id: l.id,
               modification_date: Math.floor(Date.now() / 1000),
             };
-          })
-        );
+          });
+        });
       },
       [lorebook.id]
     );
@@ -1167,9 +1569,8 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
       setCharacters((prev) => {
         const remaining = prev.filter((c) => c.id !== id);
         if (remaining.length === 0) {
-          const fallback = createBlankCharacter();
-          setActiveCharacterId(fallback.id!);
-          return [fallback];
+          setActiveCharacterId('');
+          return [];
         }
         if (activeCharacterId === id) {
           setActiveCharacterId(remaining[0].id!);
@@ -1192,9 +1593,8 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
       setLorebooks((prev) => {
         const remaining = prev.filter((l) => l.id !== id);
         if (remaining.length === 0) {
-          const fallback = createBlankLorebook();
-          setActiveLorebookId(fallback.id!);
-          return [fallback];
+          setActiveLorebookId('');
+          return [];
         }
         if (activeLorebookId === id) {
           setActiveLorebookId(remaining[0].id!);
@@ -2196,17 +2596,20 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
 
   const resetWorkspaceToDefaults = useCallback(() => {
     window.localStorage.removeItem(STORAGE_KEY);
+    for (const oldKey of LEGACY_STORAGE_KEYS) {
+      window.localStorage.removeItem(oldKey);
+    }
     void clearDirectoryHandleFromIndexedDB();
     nativeDirHandleRef.current = null;
     pendingReconnectRecordRef.current = null;
     setNativeDirectoryName(null);
     setPendingReconnectFolderName(null);
-    setCharacters([DEFAULT_CHARACTER, SECOND_CHARACTER]);
-    setActiveCharacterId(DEFAULT_CHARACTER.id!);
-    setLorebooks([DEFAULT_LOREBOOK, SECOND_LOREBOOK]);
-    setActiveLorebookId(DEFAULT_LOREBOOK.id!);
+    setCharacters([]);
+    setActiveCharacterId('');
+    setLorebooks([]);
+    setActiveLorebookId('');
     setThemes(DEFAULT_CONTEXT_THEMES);
-    setTags(DEFAULT_TAG_LIBRARY);
+    setTags(DEFAULT_TAGS);
     setAiConfig(DEFAULT_AI_CONFIG);
     setSettings(DEFAULT_SETTINGS);
     const nowDisplay = formatSafeTimestamp(new Date().toISOString());
@@ -2216,13 +2619,7 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
         timestamp: nowDisplay,
         mode: 'manual',
         folderPath: UNIFIED_INTERNAL_ROOT,
-        filesWritten: [
-          'Characters/Seraphina_Vance.json',
-          'Characters/Kaelen_Vex.json',
-          'Lorebooks/Chronicles_of_Oakhaven_The_Ashen_Reach.json',
-          'Lorebooks/Neo-Veridia_Orbital_Sub-Net_Protocols.json',
-          META_FILENAME,
-        ],
+        filesWritten: [META_FILENAME],
         nativeSynced: false,
       },
     ]);

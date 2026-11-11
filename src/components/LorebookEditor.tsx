@@ -34,6 +34,7 @@ import {
 } from '../types';
 import { SmartEditor } from './SmartEditor';
 import { Tooltip } from './Tooltip';
+import { TagSelector } from './TagSelector';
 import {
   calculateLorebookTokens,
   estimateTokens,
@@ -307,8 +308,8 @@ export const LorebookEditor: React.FC = () => {
     });
   };
 
-  const handleAddCustomLorebookTag = () => {
-    const clean = newCustomTagInput.trim();
+  const handleAddCustomLorebookTag = (directTagName?: string) => {
+    const clean = (directTagName ?? newCustomTagInput).trim();
     if (!clean) return;
     const registered = ensureTagRegistered(clean);
     const tagName = registered ? registered.name : clean;
@@ -456,9 +457,9 @@ export const LorebookEditor: React.FC = () => {
     });
   };
 
-  const handleAddCustomEntryTag = () => {
+  const handleAddCustomEntryTag = (directTagName?: string) => {
     if (!selectedEntry) return;
-    const clean = newCustomTagInput.trim();
+    const clean = (directTagName ?? newCustomTagInput).trim();
     if (!clean) return;
     const registered = ensureTagRegistered(clean);
     const tagName = registered ? registered.name : clean;
@@ -980,6 +981,23 @@ export const LorebookEditor: React.FC = () => {
                 </div>
               );
             })}
+
+            {filteredAndSortedLorebooks.length === 0 && (
+              <div className="py-6 px-3 text-center text-xs text-slate-400 space-y-1.5">
+                {lorebooks.length === 0 ? (
+                  <>
+                    <div className="font-medium text-slate-500 dark:text-slate-300">
+                      Lorebook Roster is Empty
+                    </div>
+                    <div>
+                      Click <strong>+ New</strong> above, start editing on the right, or drop a SillyTavern <code>.JSON</code> World Book here.
+                    </div>
+                  </>
+                ) : (
+                  <div>No lorebooks match your filter.</div>
+                )}
+              </div>
+            )}
           </div>
         </aside>
       ) : (
@@ -1376,60 +1394,14 @@ export const LorebookEditor: React.FC = () => {
                     </div>
                   </div>
 
-                  <div className="space-y-1.5">
-                    <label className="text-xs font-medium text-slate-700 dark:text-slate-300">
-                      Global Lorebook Semantic Tags (Injected into AI Lore Generation)
-                    </label>
-                    <div className="flex flex-wrap gap-1.5">
-                      {tags.map((tag) => {
-                        const active = (lorebook.tags || []).includes(tag.name);
-                        return (
-                          <button
-                            key={tag.id}
-                            type="button"
-                            onClick={() => toggleLorebookGlobalTag(tag.name)}
-                            style={
-                              active
-                                ? {
-                                    borderColor: tag.color,
-                                    backgroundColor: `color-mix(in srgb, ${tag.color} 15%, transparent)`,
-                                  }
-                                : undefined
-                            }
-                            className={`rounded-md border px-2.5 py-1 text-xs font-medium cursor-pointer ${
-                              active
-                                ? 'text-slate-900 dark:text-white'
-                                : 'border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 text-slate-500'
-                            }`}
-                          >
-                            {tag.name}
-                          </button>
-                        );
-                      })}
-                    </div>
-                    <div className="flex items-center gap-1.5 pt-1">
-                      <input
-                        type="text"
-                        value={newCustomTagInput}
-                        onChange={(e) => setNewCustomTagInput(e.target.value)}
-                        onKeyDown={(e) => {
-                          if (e.key === 'Enter') {
-                            e.preventDefault();
-                            handleAddCustomLorebookTag();
-                          }
-                        }}
-                        placeholder="Create & attach custom tag..."
-                        className="theme-focus-ring rounded-md border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 px-2.5 py-1 text-xs text-slate-900 dark:text-white"
-                      />
-                      <button
-                        type="button"
-                        onClick={handleAddCustomLorebookTag}
-                        className="theme-hover-outline rounded-md border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-2.5 py-1 text-xs font-semibold text-slate-700 dark:text-slate-200 cursor-pointer"
-                      >
-                        + Add Tag
-                      </button>
-                    </div>
-                  </div>
+                  <TagSelector
+                    tags={tags}
+                    selectedTagNames={lorebook.tags || []}
+                    onToggleTag={toggleLorebookGlobalTag}
+                    onAddCustomTag={(tagName) => handleAddCustomLorebookTag(tagName)}
+                    label="Global Lorebook Semantic Tags (Injected into AI Lore Generation)"
+                    tooltip="Attach tags from the 64+ SFW & NSFW Tag Library to guide multi-entry worldbuilding and lore generation."
+                  />
                 </div>
               </div>
             )}
@@ -2693,62 +2665,15 @@ export const LorebookEditor: React.FC = () => {
                   </div>
 
                   {/* Entry Semantic Tags */}
-                  <div className="space-y-1.5 pt-2 border-t border-slate-200 dark:border-slate-800">
-                    <label className="flex items-center gap-1.5 text-xs font-medium text-slate-700 dark:text-slate-300">
-                      <span>Entry Semantic Tags (Injected into AI Assist)</span>
-                      <Tooltip content="Tags attached to this Lorebook entry automatically provide their AI Context Descriptions when generating or expanding this entry." />
-                    </label>
-                    <div className="flex flex-wrap gap-1.5">
-                      {tags.map((tag) => {
-                        const active = (selectedEntry.tags || []).includes(
-                          tag.name
-                        );
-                        return (
-                          <button
-                            key={tag.id}
-                            type="button"
-                            onClick={() => toggleEntryTag(tag.name)}
-                            style={
-                              active
-                                ? {
-                                    borderColor: tag.color,
-                                    backgroundColor: `color-mix(in srgb, ${tag.color} 15%, transparent)`,
-                                  }
-                                : undefined
-                            }
-                            className={`rounded-md border px-2.5 py-1 text-xs font-medium transition-colors cursor-pointer whitespace-nowrap ${
-                              active
-                                ? 'text-slate-900 dark:text-white'
-                                : 'border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 text-slate-500 hover:text-slate-900 dark:hover:text-white'
-                            }`}
-                          >
-                            {tag.name}
-                          </button>
-                        );
-                      })}
-                    </div>
-                    <div className="flex items-center gap-1.5 pt-1">
-                      <input
-                        type="text"
-                        value={newCustomTagInput}
-                        onChange={(e) => setNewCustomTagInput(e.target.value)}
-                        onKeyDown={(e) => {
-                          if (e.key === 'Enter') {
-                            e.preventDefault();
-                            handleAddCustomEntryTag();
-                          }
-                        }}
-                        placeholder="Create & attach custom tag..."
-                        className="theme-focus-ring rounded-md border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 px-2.5 py-1 text-xs text-slate-900 dark:text-white"
-                      />
-                      <button
-                        type="button"
-                        onClick={handleAddCustomEntryTag}
-                        className="theme-hover-outline rounded-md border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-2.5 py-1 text-xs font-semibold text-slate-700 dark:text-slate-200 cursor-pointer"
-                      >
-                        + Add Tag
-                      </button>
-                    </div>
+                  <div className="pt-2 border-t border-slate-200 dark:border-slate-800">
+                    <TagSelector
+                      tags={tags}
+                      selectedTagNames={selectedEntry.tags || []}
+                      onToggleTag={toggleEntryTag}
+                      onAddCustomTag={(tagName) => handleAddCustomEntryTag(tagName)}
+                      label="Entry Semantic Tags (Injected into AI Assist)"
+                      tooltip="Tags attached to this Lorebook entry automatically provide their AI Context Descriptions when generating or expanding this entry."
+                    />
                   </div>
                 </div>
               ) : (

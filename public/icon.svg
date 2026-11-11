@@ -1,18 +1,92 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512" fill="none">
   <defs>
-    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+    <linearGradient id="tsBgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
       <stop offset="0%" stop-color="#18181b" />
+      <stop offset="55%" stop-color="#0f0f14" />
       <stop offset="100%" stop-color="#09090b" />
     </linearGradient>
-    <linearGradient id="accentGrad" x1="0%" y1="0%" x2="100%" y2="100%">
-      <stop offset="0%" stop-color="#a855f7" />
-      <stop offset="100%" stop-color="#6366f1" />
+    <linearGradient id="tsBorderGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#818cf8" />
+      <stop offset="50%" stop-color="#6366f1" />
+      <stop offset="100%" stop-color="#a855f7" />
     </linearGradient>
+    <linearGradient id="tsAnvilGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#f4f4f5" />
+      <stop offset="60%" stop-color="#cbd5e1" />
+      <stop offset="100%" stop-color="#94a3b8" />
+    </linearGradient>
+    <linearGradient id="tsQuillGrad" x1="0%" y1="100%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#6366f1" />
+      <stop offset="55%" stop-color="#a855f7" />
+      <stop offset="100%" stop-color="#ec4899" />
+    </linearGradient>
+    <radialGradient id="tsArcaneGlow" cx="50%" cy="42%" r="48%">
+      <stop offset="0%" stop-color="#6366f1" stop-opacity="0.38" />
+      <stop offset="60%" stop-color="#a855f7" stop-opacity="0.12" />
+      <stop offset="100%" stop-color="#09090b" stop-opacity="0" />
+    </radialGradient>
   </defs>
-  <rect width="512" height="512" rx="108" fill="url(#bgGrad)" />
-  <rect x="28" y="28" width="456" height="456" rx="88" fill="none" stroke="url(#accentGrad)" stroke-width="14" />
-  <g fill="#f4f4f5" font-family="system-ui, -apple-system, sans-serif" font-weight="800" text-anchor="middle">
-    <text x="256" y="310" font-size="210" letter-spacing="-8">TS</text>
+
+  <!-- Outer Rounded Crest Base -->
+  <rect width="512" height="512" rx="112" fill="url(#tsBgGrad)" />
+  <circle cx="256" cy="236" r="210" fill="url(#tsArcaneGlow)" />
+  <rect x="24" y="24" width="464" height="464" rx="92" stroke="url(#tsBorderGrad)" stroke-width="12" stroke-opacity="0.9" />
+
+  <!-- Subtle Arcane Forge Ring -->
+  <circle cx="256" cy="252" r="156" stroke="url(#tsBorderGrad)" stroke-width="3" stroke-dasharray="10 10" stroke-opacity="0.45" />
+
+  <!-- Stylized Blacksmith Anvil (Bottom/Center) -->
+  <g>
+    <!-- Anvil Horn & Face -->
+    <path
+      d="M92 292 C122 280, 152 276, 178 276 L372 276 C394 276, 412 288, 418 304 L366 328 L176 328 C142 328, 110 314, 92 292 Z"
+      fill="url(#tsAnvilGrad)"
+    />
+    <!-- Anvil Waist / Core -->
+    <path
+      d="M196 328 L336 328 C324 352, 326 376, 350 396 L176 396 C198 376, 204 352, 196 328 Z"
+      fill="#94a3b8"
+    />
+    <!-- Anvil Heavy Base -->
+    <rect x="148" y="396" width="232" height="32" rx="10" fill="url(#tsAnvilGrad)" />
+    <!-- Glowing Forge Rune Line on Anvil -->
+    <path d="M182 302 L354 302" stroke="url(#tsQuillGrad)" stroke-width="6" stroke-linecap="round" />
   </g>
-  <circle cx="404" cy="116" r="22" fill="url(#accentGrad)" />
+
+  <!-- Stylized Storyteller Quill (Crossing the Anvil) -->
+  <g>
+    <!-- Feather Vane -->
+    <path
+      d="M388 96 C332 96, 274 132, 244 192 C230 220, 224 252, 222 278 C252 274, 286 264, 314 242 C368 202, 398 148, 388 96 Z"
+      fill="url(#tsQuillGrad)"
+    />
+    <!-- Feather Notch Cutouts for Craft Detail -->
+    <path
+      d="M348 158 L314 166 M332 194 L294 200"
+      stroke="#09090b"
+      stroke-width="6"
+      stroke-linecap="round"
+    />
+    <!-- Quill Shaft & Nib Piercing the Anvil Strike Point -->
+    <path
+      d="M376 110 C326 160, 272 222, 214 294"
+      stroke="#f8fafc"
+      stroke-width="10"
+      stroke-linecap="round"
+    />
+  </g>
+
+  <!-- Arcane Spark Emblem Above the Strike Point -->
+  <path
+    d="M186 116 L198 156 L238 168 L198 180 L186 220 L174 180 L134 168 L174 156 Z"
+    fill="#f4f4f5"
+  />
+  <path
+    d="M186 130 L194 158 L222 168 L194 178 L186 206 L178 178 L150 168 L178 158 Z"
+    fill="url(#tsQuillGrad)"
+  />
+  <!-- Secondary Sparks -->
+  <circle cx="136" cy="232" r="7" fill="#a855f7" />
+  <circle cx="384" cy="238" r="8" fill="#818cf8" />
+  <circle cx="256" cy="112" r="6" fill="#ec4899" />
 </svg>

@@ -43,6 +43,7 @@ import {
 import { SmartEditor } from './SmartEditor';
 import { Tooltip } from './Tooltip';
 import { PortraitCropperModal } from './PortraitCropperModal';
+import { TagSelector } from './TagSelector';
 import {
   buildStatTemplatePreset,
   calculateCardTokenBreakdown,
@@ -351,8 +352,8 @@ export const CharacterEditor: React.FC = () => {
     );
   };
 
-  const handleAddCustomCharacterTag = () => {
-    const clean = newCustomTagInput.trim();
+  const handleAddCustomCharacterTag = (directTagName?: string) => {
+    const clean = (directTagName ?? newCustomTagInput).trim();
     if (!clean) return;
     const registered = ensureTagRegistered(clean);
     const tagName = registered ? registered.name : clean;
@@ -1864,8 +1865,19 @@ export const CharacterEditor: React.FC = () => {
             })}
 
             {filteredAndSortedRoster.length === 0 && (
-              <div className="py-6 text-center text-xs text-slate-400">
-                No characters match your filter.
+              <div className="py-6 px-3 text-center text-xs text-slate-400 space-y-1.5">
+                {characters.length === 0 ? (
+                  <>
+                    <div className="font-medium text-slate-500 dark:text-slate-300">
+                      Character Roster is Empty
+                    </div>
+                    <div>
+                      Click <strong>+ New</strong> above, start editing on the right, or drop a SillyTavern <code>.PNG</code> / <code>.JSON</code> card here.
+                    </div>
+                  </>
+                ) : (
+                  <div>No characters match your filter.</div>
+                )}
               </div>
             )}
           </div>
@@ -2206,60 +2218,14 @@ export const CharacterEditor: React.FC = () => {
                         </div>
                       </div>
 
-                      <div className="space-y-1.5">
-                        <label className="text-xs font-medium text-slate-700 dark:text-slate-300">
-                          Attach Semantic Tags (Injected into AI System Prompt)
-                        </label>
-                        <div className="flex flex-wrap gap-1.5">
-                          {tags.map((tag) => {
-                            const active = character.tags.includes(tag.name);
-                            return (
-                              <button
-                                key={tag.id}
-                                type="button"
-                                onClick={() => toggleCharacterTag(tag.name)}
-                                style={
-                                  active
-                                    ? {
-                                        borderColor: tag.color,
-                                        backgroundColor: `color-mix(in srgb, ${tag.color} 15%, transparent)`,
-                                      }
-                                    : undefined
-                                }
-                                className={`rounded-md border px-2.5 py-1 text-xs font-medium cursor-pointer ${
-                                  active
-                                    ? 'text-slate-900 dark:text-white'
-                                    : 'border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 text-slate-500'
-                                }`}
-                              >
-                                {tag.name}
-                              </button>
-                            );
-                          })}
-                        </div>
-                        <div className="flex items-center gap-1.5 pt-1">
-                          <input
-                            type="text"
-                            value={newCustomTagInput}
-                            onChange={(e) => setNewCustomTagInput(e.target.value)}
-                            onKeyDown={(e) => {
-                              if (e.key === 'Enter') {
-                                e.preventDefault();
-                                handleAddCustomCharacterTag();
-                              }
-                            }}
-                            placeholder="Create & attach custom tag..."
-                            className="theme-focus-ring rounded-md border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 px-2.5 py-1 text-xs text-slate-900 dark:text-white"
-                          />
-                          <button
-                            type="button"
-                            onClick={handleAddCustomCharacterTag}
-                            className="theme-hover-outline rounded-md border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-2.5 py-1 text-xs font-semibold text-slate-700 dark:text-slate-200 cursor-pointer"
-                          >
-                            + Add Tag
-                          </button>
-                        </div>
-                      </div>
+                      <TagSelector
+                        tags={tags}
+                        selectedTagNames={character.tags}
+                        onToggleTag={toggleCharacterTag}
+                        onAddCustomTag={(tagName) => handleAddCustomCharacterTag(tagName)}
+                        label="Attach Semantic Tags (Injected into AI System Prompt)"
+                        tooltip="Click tags from your 64+ built-in SFW & NSFW Tag Library to bind their AI Context Directives to concept generation and completions."
+                      />
                     </div>
                   </div>
                 </div>
@@ -2576,60 +2542,15 @@ export const CharacterEditor: React.FC = () => {
                   </div>
 
                   {/* Assigned Semantic Tags */}
-                  <div className="space-y-1.5 pt-1">
-                    <label className="flex items-center gap-1.5 text-xs font-medium text-slate-700 dark:text-slate-300">
-                      <span>Assigned Semantic Character Tags</span>
-                      <Tooltip content="Click tags from your Global Tag Library to bind their AI Context Directives to every AI Assist and Ghost Text completion." />
-                    </label>
-                    <div className="flex flex-wrap gap-1.5">
-                      {tags.map((tag) => {
-                        const active = character.tags.includes(tag.name);
-                        return (
-                          <button
-                            key={tag.id}
-                            type="button"
-                            onClick={() => toggleCharacterTag(tag.name)}
-                            style={
-                              active
-                                ? {
-                                    borderColor: tag.color,
-                                    backgroundColor: `color-mix(in srgb, ${tag.color} 15%, transparent)`,
-                                  }
-                                : undefined
-                            }
-                            className={`rounded-md border px-2.5 py-1 text-xs font-medium transition-colors cursor-pointer whitespace-nowrap ${
-                              active
-                                ? 'text-slate-900 dark:text-white'
-                                : 'border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 text-slate-500 hover:text-slate-900 dark:hover:text-white'
-                            }`}
-                          >
-                            {tag.name}
-                          </button>
-                        );
-                      })}
-                    </div>
-                    <div className="flex items-center gap-1.5 pt-1">
-                      <input
-                        type="text"
-                        value={newCustomTagInput}
-                        onChange={(e) => setNewCustomTagInput(e.target.value)}
-                        onKeyDown={(e) => {
-                          if (e.key === 'Enter') {
-                            e.preventDefault();
-                            handleAddCustomCharacterTag();
-                          }
-                        }}
-                        placeholder="Create & attach custom tag..."
-                        className="theme-focus-ring rounded-md border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 px-2.5 py-1 text-xs text-slate-900 dark:text-white"
-                      />
-                      <button
-                        type="button"
-                        onClick={handleAddCustomCharacterTag}
-                        className="theme-hover-outline rounded-md border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-2.5 py-1 text-xs font-semibold text-slate-700 dark:text-slate-200 cursor-pointer"
-                      >
-                        + Add Tag
-                      </button>
-                    </div>
+                  <div className="pt-1">
+                    <TagSelector
+                      tags={tags}
+                      selectedTagNames={character.tags}
+                      onToggleTag={toggleCharacterTag}
+                      onAddCustomTag={(tagName) => handleAddCustomCharacterTag(tagName)}
+                      label="Assigned Semantic Character Tags"
+                      tooltip="Click tags from your Global Tag Library to bind their AI Context Directives to every AI Assist and Ghost Text completion."
+                    />
                   </div>
                 </div>
               </div>

@@ -304,7 +304,10 @@ export function buildActiveAIContextBlock(
     .filter((t): t is TagDefinition => Boolean(t));
 
   const tagContextLines = matchedTags
-    .map((t) => `- [${t.name}] (${t.category}): ${t.aiContextDescription}`)
+    .map(
+      (t) =>
+        `- [${t.name}] (${t.category}): ${t.aiContextDescription || t.aiDescription || t.description || ''}`
+    )
     .join('\n');
 
   return [

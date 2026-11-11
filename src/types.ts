@@ -114,12 +114,28 @@ export interface SillyTavernV3Wrapper {
   data: CharacterCardData;
 }
 
+export type TagCategory =
+  | 'Rating'
+  | 'Archetype'
+  | 'Body & Attire'
+  | 'NSFW & Kinks'
+  | 'Extreme & Hentai Physics'
+  | 'Custom'
+  | 'genre'
+  | 'archetype'
+  | 'tone'
+  | 'mechanic'
+  | 'world'
+  | 'custom';
+
 export interface TagDefinition {
   id: string;
   name: string;
   color: string;
-  category: 'genre' | 'archetype' | 'tone' | 'mechanic' | 'world' | 'custom';
+  category: TagCategory;
   aiContextDescription: string;
+  aiDescription?: string;
+  description?: string;
 }
 
 export interface ContextTheme {

@@ -21,6 +21,7 @@ import {
 } from '../services/aiService';
 import { Tooltip } from './Tooltip';
 import { PWAInstallButton } from './PWAInstallButton';
+import { AppLogo } from './AppLogo';
 
 export const TopBar: React.FC = () => {
   const {
@@ -117,16 +118,7 @@ export const TopBar: React.FC = () => {
           )}
         </button>
 
-        <div
-          style={{
-            borderColor: 'var(--theme-accent)',
-            backgroundColor:
-              'color-mix(in srgb, var(--theme-accent) 12%, transparent)',
-          }}
-          className="flex h-8 w-8 items-center justify-center rounded-md border text-sm font-bold tracking-tight text-slate-900 dark:text-white"
-        >
-          TS
-        </div>
+        <AppLogo className="h-8 w-8 rounded-lg shadow-xs" size={32} />
         <div className="flex items-baseline gap-2">
           <span className="text-base font-bold tracking-tight text-slate-900 dark:text-white whitespace-nowrap">
             TavernSmith

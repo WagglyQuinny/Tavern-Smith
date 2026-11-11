@@ -46,6 +46,7 @@ import {
 } from '../services/aiService';
 import { AIPresetId, ModelCompatibilityFormat, SavedFileEntry } from '../types';
 import { Tooltip } from '../components/Tooltip';
+import { AppLogo } from '../components/AppLogo';
 import { triggerBrowserDownload } from '../utils/cardIO';
 
 export const OptionsView: React.FC = () => {
@@ -1531,16 +1532,7 @@ export const OptionsView: React.FC = () => {
           >
             <div className="flex items-center justify-between border-b border-slate-200 dark:border-slate-800 pb-3">
               <div className="flex items-center gap-2.5">
-                <div
-                  style={{
-                    borderColor: 'var(--theme-accent)',
-                    backgroundColor:
-                      'color-mix(in srgb, var(--theme-accent) 15%, transparent)',
-                  }}
-                  className="flex h-7 w-7 items-center justify-center rounded border text-xs font-bold text-slate-900 dark:text-white"
-                >
-                  TS
-                </div>
+                <AppLogo className="h-7 w-7 rounded-md" size={28} />
                 <div>
                   <h2
                     id="about-modal-title"

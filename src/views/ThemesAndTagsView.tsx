@@ -16,24 +16,26 @@ import { ContextTheme, TagDefinition } from '../types';
 import { Tooltip } from '../components/Tooltip';
 import { buildActiveAIContextBlock } from '../services/aiService';
 
+import { TagSelector, normalizeTagCategory, TagFilterCategory } from '../components/TagSelector';
+
 const PRESET_SWATCHES = [
-  '#d97706', // Amber
-  '#06b6d4', // Cyan
-  '#10b981', // Emerald
-  '#8b5cf6', // Violet
-  '#f43f5e', // Rose
-  '#3b82f6', // Blue
-  '#eab308', // Gold
+  '#6366f1', // Indigo (Basic Default)
+  '#ef4444', // Red
   '#ec4899', // Pink
+  '#a855f7', // Purple
+  '#f43f5e', // Rose
+  '#10b981', // Emerald
+  '#f59e0b', // Amber
+  '#0ea5e9', // Sky
 ];
 
-const TAG_CATEGORIES: TagDefinition['category'][] = [
-  'genre',
-  'archetype',
-  'tone',
-  'mechanic',
-  'world',
-  'custom',
+const TAG_CATEGORIES: Exclude<TagFilterCategory, 'All'>[] = [
+  'Rating',
+  'Archetype',
+  'Body & Attire',
+  'NSFW & Kinks',
+  'Extreme & Hentai Physics',
+  'Custom',
 ];
 
 export const ThemesAndTagsView: React.FC = () => {
@@ -51,7 +53,7 @@ export const ThemesAndTagsView: React.FC = () => {
   // Search & Filter states
   const [themeSearch, setThemeSearch] = useState('');
   const [tagSearch, setTagSearch] = useState('');
-  const [selectedCategory, setSelectedCategory] = useState<string>('all');
+  const [selectedCategory, setSelectedCategory] = useState<TagFilterCategory>('All');
 
   // Theme Editor state
   const [editingThemeId, setEditingThemeId] = useState<string | null>(activeTheme.id);
@@ -68,8 +70,8 @@ export const ThemesAndTagsView: React.FC = () => {
   const [isCreatingTag, setIsCreatingTag] = useState(false);
   const [tagDraft, setTagDraft] = useState<Omit<TagDefinition, 'id'>>({
     name: '',
-    color: '#8b5cf6',
-    category: 'genre',
+    color: '#6366f1',
+    category: 'Archetype',
     aiContextDescription: '',
   });
 
@@ -84,15 +86,35 @@ export const ThemesAndTagsView: React.FC = () => {
     );
   }, [themes, themeSearch]);
 
+  const categoryCounts = useMemo(() => {
+    const counts: Record<TagFilterCategory, number> = {
+      All: tags.length,
+      Rating: 0,
+      Archetype: 0,
+      'Body & Attire': 0,
+      'NSFW & Kinks': 0,
+      'Extreme & Hentai Physics': 0,
+      Custom: 0,
+    };
+    for (const t of tags) {
+      const norm = normalizeTagCategory(t.category);
+      counts[norm] = (counts[norm] || 0) + 1;
+    }
+    return counts;
+  }, [tags]);
+
   const filteredTags = useMemo(() => {
     const q = tagSearch.trim().toLowerCase();
     return tags.filter((tag) => {
+      const normCat = normalizeTagCategory(tag.category);
       const matchesCat =
-        selectedCategory === 'all' || tag.category === selectedCategory;
+        selectedCategory === 'All' || normCat === selectedCategory;
+      const desc = (tag.aiContextDescription || tag.aiDescription || tag.description || '').toLowerCase();
       const matchesQuery =
         !q ||
         tag.name.toLowerCase().includes(q) ||
-        tag.aiContextDescription.toLowerCase().includes(q);
+        desc.includes(q) ||
+        normCat.toLowerCase().includes(q);
       return matchesCat && matchesQuery;
     });
   }, [tags, tagSearch, selectedCategory]);
@@ -196,7 +218,7 @@ export const ThemesAndTagsView: React.FC = () => {
     setTagDraft({
       name: '',
       color: activeTheme.color,
-      category: 'genre',
+      category: 'Archetype',
       aiContextDescription: '',
     });
   };
@@ -207,8 +229,8 @@ export const ThemesAndTagsView: React.FC = () => {
     setTagDraft({
       name: tag.name,
       color: tag.color,
-      category: tag.category,
-      aiContextDescription: tag.aiContextDescription,
+      category: normalizeTagCategory(tag.category),
+      aiContextDescription: tag.aiContextDescription || tag.aiDescription || '',
     });
   };
 
@@ -574,45 +596,14 @@ export const ThemesAndTagsView: React.FC = () => {
             </div>
 
             {/* Associated Genre Tags Selector */}
-            <div className="space-y-2">
-              <div className="flex items-center justify-between">
-                <label className="flex items-center gap-1.5 text-xs font-medium text-slate-700 dark:text-slate-300">
-                  <span>Associated Genre & Tone Tags</span>
-                  <Tooltip content="Select tags from the Global Tag Library to automatically attach their AI context rules whenever this theme is active." />
-                </label>
-                <span className="font-mono text-[11px] text-slate-400 tabular-nums">
-                  {themeDraft.associatedTags.length} selected
-                </span>
-              </div>
-
-              <div className="flex flex-wrap gap-1.5 pt-0.5">
-                {tags.map((tag) => {
-                  const selected = themeDraft.associatedTags.includes(tag.name);
-                  return (
-                    <button
-                      key={tag.id}
-                      type="button"
-                      onClick={() => toggleTagInThemeDraft(tag.name)}
-                      style={
-                        selected
-                          ? {
-                              borderColor: tag.color,
-                              backgroundColor: `color-mix(in srgb, ${tag.color} 14%, transparent)`,
-                            }
-                          : undefined
-                      }
-                      className={`rounded-md border px-2.5 py-1 text-xs font-medium transition-colors cursor-pointer whitespace-nowrap ${
-                        selected
-                          ? 'text-slate-900 dark:text-white'
-                          : 'border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
-                      }`}
-                    >
-                      {tag.name}
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
+            <TagSelector
+              tags={tags}
+              selectedTagNames={themeDraft.associatedTags}
+              onToggleTag={toggleTagInThemeDraft}
+              label="Associated Genre & Tone Tags"
+              tooltip="Select tags from the Global Tag Library to automatically attach their AI context rules whenever this theme is active."
+              maxHeightClass="max-h-48"
+            />
           </form>
 
           {/* Live Synthesized AI Context Prompt Preview */}
@@ -660,38 +651,47 @@ export const ThemesAndTagsView: React.FC = () => {
                 type="text"
                 value={tagSearch}
                 onChange={(e) => setTagSearch(e.target.value)}
-                placeholder="Search tags..."
-                className="theme-focus-ring rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 pl-8 pr-3 py-1.5 text-xs text-slate-900 dark:text-white"
+                placeholder="Search 84+ tags or AI directives..."
+                className="theme-focus-ring rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 pl-8 pr-7 py-1.5 text-xs text-slate-900 dark:text-white"
               />
+              {tagSearch && (
+                <button
+                  type="button"
+                  onClick={() => setTagSearch('')}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200"
+                >
+                  <X className="h-3.5 w-3.5" />
+                </button>
+              )}
             </div>
 
-            {/* Category Segmented Filter */}
-            <div className="flex items-center gap-1 rounded-lg bg-slate-100 dark:bg-slate-950 p-1 border border-slate-200 dark:border-slate-800">
-              <button
-                type="button"
-                onClick={() => setSelectedCategory('all')}
-                className={`rounded px-2 py-1 text-xs font-medium capitalize transition-colors cursor-pointer whitespace-nowrap ${
-                  selectedCategory === 'all'
-                    ? 'bg-white dark:bg-slate-800 text-slate-900 dark:text-white shadow-2xs'
-                    : 'text-slate-500 hover:text-slate-900 dark:hover:text-white'
-                }`}
-              >
-                All
-              </button>
-              {TAG_CATEGORIES.map((cat) => (
-                <button
-                  key={cat}
-                  type="button"
-                  onClick={() => setSelectedCategory(cat)}
-                  className={`rounded px-2 py-1 text-xs font-medium capitalize transition-colors cursor-pointer whitespace-nowrap ${
-                    selectedCategory === cat
-                      ? 'bg-white dark:bg-slate-800 text-slate-900 dark:text-white shadow-2xs'
-                      : 'text-slate-500 hover:text-slate-900 dark:hover:text-white'
-                  }`}
-                >
-                  {cat}
-                </button>
-              ))}
+            {/* Category Segmented Filter Pills */}
+            <div className="flex flex-wrap items-center gap-1 rounded-lg bg-slate-100 dark:bg-slate-950 p-1 border border-slate-200 dark:border-slate-800">
+              {(
+                [
+                  'All',
+                  'Rating',
+                  'Archetype',
+                  'Body & Attire',
+                  'NSFW & Kinks',
+                  'Extreme & Hentai Physics',
+                ] as TagFilterCategory[]
+              )
+                .concat(categoryCounts.Custom > 0 ? ['Custom'] : [])
+                .map((cat) => (
+                  <button
+                    key={cat}
+                    type="button"
+                    onClick={() => setSelectedCategory(cat)}
+                    className={`rounded px-2.5 py-1 text-xs font-medium transition-colors cursor-pointer whitespace-nowrap ${
+                      selectedCategory === cat
+                        ? 'bg-[var(--theme-accent)] text-white shadow-2xs'
+                        : 'text-slate-500 hover:text-slate-900 dark:hover:text-white'
+                    }`}
+                  >
+                    {cat} ({categoryCounts[cat] ?? 0})
+                  </button>
+                ))}
             </div>
           </div>
         </div>
