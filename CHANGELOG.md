@@ -2,6 +2,14 @@
 
 All notable changes to **TavernSmith** are documented in this file. This file is synced with the in-app **About & Changelog** modal and the automated GitHub Release workflow (`.github/workflows/release.yml`).
 
+## [v2.0.0] - 2026-11-11
+
+### Highlights
+Lots of changes! improoved character handling, more included tags, NSFW tags, ETC.
+
+### Commits & Changes
+- feat(ui): redesign branding and enhance roster UX (f19ed18)
+
 ## [v1.0.3] - 2026-11-11
 
 ### Highlights
