@@ -10,6 +10,8 @@ import {
   FolderOpen,
   Sun,
   Moon,
+  PanelLeftOpen,
+  PanelLeftClose,
 } from 'lucide-react';
 import { useStore } from '../context/StoreContext';
 import {
@@ -35,6 +37,8 @@ export const TopBar: React.FC = () => {
     saveNow,
     setActiveTab,
     nativeDirectoryName,
+    isMainSidebarOpen,
+    toggleMainSidebar,
   } = useStore();
 
   const handleQuickColorChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -72,10 +76,47 @@ export const TopBar: React.FC = () => {
   return (
     <header
       style={{ borderColor: 'var(--theme-accent)' }}
-      className="sticky top-0 z-30 flex flex-wrap items-center justify-between gap-3 border-b bg-[#ffffff]/95 dark:bg-[#121215]/95 px-5 py-2.5 backdrop-blur-sm transition-colors"
+      className="sticky top-0 z-30 flex flex-wrap items-center justify-between gap-3 border-b bg-[#ffffff]/95 dark:bg-[#121215]/95 px-4 md:px-5 py-2.5 backdrop-blur-sm transition-colors"
     >
-      {/* Left Zone: Brand Identity + Active Spec Indicator */}
-      <div className="flex items-center gap-3 shrink-0">
+      {/* Left Zone: Sidebar Toggle + Brand Identity + Active Spec Indicator */}
+      <div className="flex items-center gap-2.5 shrink-0">
+        <button
+          type="button"
+          onClick={toggleMainSidebar}
+          style={
+            !isMainSidebarOpen
+              ? { borderColor: 'var(--theme-accent)' }
+              : undefined
+          }
+          title={
+            isMainSidebarOpen
+              ? 'Collapse Workspace Views Sidebar'
+              : 'Open Workspace Views Sidebar'
+          }
+          aria-label={
+            isMainSidebarOpen
+              ? 'Collapse Workspace Views Sidebar'
+              : 'Open Workspace Views Sidebar'
+          }
+          className={`theme-hover-outline flex items-center gap-1.5 rounded-md border px-2 py-1.5 text-xs font-medium transition-colors cursor-pointer ${
+            isMainSidebarOpen
+              ? 'border-slate-200 dark:border-zinc-800 bg-slate-50 dark:bg-zinc-900 text-slate-600 dark:text-slate-300'
+              : 'bg-slate-900 dark:bg-white text-white dark:text-slate-900 font-semibold'
+          }`}
+        >
+          {isMainSidebarOpen ? (
+            <PanelLeftClose className="h-3.5 w-3.5" />
+          ) : (
+            <>
+              <PanelLeftOpen
+                className="h-3.5 w-3.5"
+                style={{ color: 'var(--theme-accent)' }}
+              />
+              <span className="hidden sm:inline">Views</span>
+            </>
+          )}
+        </button>
+
         <div
           style={{
             borderColor: 'var(--theme-accent)',

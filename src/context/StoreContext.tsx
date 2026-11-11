@@ -385,8 +385,8 @@ export const DEFAULT_AI_CONFIG: AIBackendConfig = {
 
 export const DEFAULT_SAVE_FOLDERS = [
   '/TavernSmith/Saves/Default',
-  '/TavernSmith/Saves/Campaigns',
-  '/TavernSmith/Saves/Archive',
+  '/TavernSmith/Saves/Characters',
+  '/TavernSmith/Saves/Lorebooks',
 ];
 
 export const DEFAULT_SETTINGS: AppSettings = {
@@ -398,7 +398,77 @@ export const DEFAULT_SETTINGS: AppSettings = {
   cardSpecVersion: 'v3',
   activeSaveFolder: '/TavernSmith/Saves/Default',
   availableSaveFolders: DEFAULT_SAVE_FOLDERS,
+  mainSidebarOpen: true,
 };
+
+/**
+ * Safely formats any ISO string, Unix timestamp, or legacy time string into a clean
+ * human-readable timestamp (e.g., "Today, 03:15 PM") and NEVER returns "Invalid Date".
+ */
+export function formatSafeTimestamp(
+  raw: string | number | undefined | null
+): string {
+  if (raw === undefined || raw === null || raw === '') {
+    return 'Today, ' +
+      new Date().toLocaleTimeString([], {
+        hour: '2-digit',
+        minute: '2-digit',
+      });
+  }
+
+  if (typeof raw === 'number') {
+    const ms = raw < 10_000_000_000 ? raw * 1000 : raw;
+    const d = new Date(ms);
+    if (!Number.isNaN(d.getTime())) {
+      const isToday = d.toDateString() === new Date().toDateString();
+      const timeStr = d.toLocaleTimeString([], {
+        hour: '2-digit',
+        minute: '2-digit',
+      });
+      return isToday
+        ? `Today, ${timeStr}`
+        : `${d.toLocaleDateString([], { month: 'short', day: 'numeric' })}, ${timeStr}`;
+    }
+  }
+
+  if (typeof raw === 'string') {
+    const trimmed = raw.trim();
+    const parsedDate = new Date(trimmed);
+    if (!Number.isNaN(parsedDate.getTime())) {
+      const isToday = parsedDate.toDateString() === new Date().toDateString();
+      const timeStr = parsedDate.toLocaleTimeString([], {
+        hour: '2-digit',
+        minute: '2-digit',
+      });
+      return isToday
+        ? `Today, ${timeStr}`
+        : `${parsedDate.toLocaleDateString([], { month: 'short', day: 'numeric' })}, ${timeStr}`;
+    }
+    // If raw is already a formatted time like "10:15:30 AM" or "Today, 03:15 PM"
+    if (/^\d{1,2}:\d{2}/.test(trimmed) || trimmed.startsWith('Today')) {
+      return trimmed.startsWith('Today') ? trimmed : `Today, ${trimmed}`;
+    }
+  }
+
+  return (
+    'Today, ' +
+    new Date().toLocaleTimeString([], {
+      hour: '2-digit',
+      minute: '2-digit',
+    })
+  );
+}
+
+function normalizeFolderPath(path: string): string {
+  if (!path) return '/TavernSmith/Saves/Default';
+  if (path === '/TavernSmith/Saves/Campaigns') {
+    return '/TavernSmith/Saves/Characters';
+  }
+  if (path === '/TavernSmith/Saves/Archive') {
+    return '/TavernSmith/Saves/Lorebooks';
+  }
+  return path;
+}
 
 interface PersistedWorkspaceState {
   characters: CharacterCardData[];
@@ -417,12 +487,17 @@ interface PersistedWorkspaceState {
 interface StoreContextValue {
   activeTab: WorkspaceTab;
   setActiveTab: (tab: WorkspaceTab) => void;
+  // Main Navigation Sidebar Collapse State
+  isMainSidebarOpen: boolean;
+  setMainSidebarOpen: (open: boolean) => void;
+  toggleMainSidebar: () => void;
   // Multi-Character Library Roster
   characters: CharacterCardData[];
   activeCharacterId: string;
   setActiveCharacterId: (id: string) => void;
   createNewCharacter: (partial?: Partial<CharacterCardData>) => string;
   deleteCharacter: (id: string) => void;
+  bindLorebookToCharacter: (characterId: string, lorebookToBind: Lorebook) => void;
   // Active Character Accessors
   character: CharacterCardData;
   setCharacter: React.Dispatch<React.SetStateAction<CharacterCardData>>;
@@ -553,11 +628,7 @@ export function createBlankLorebook(partial?: Partial<Lorebook>): Lorebook {
 }
 
 function buildInitialSavedFiles(): SavedFileEntry[] {
-  const nowStr = new Date().toLocaleTimeString([], {
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-  });
+  const nowIso = new Date().toISOString();
   const charJson = JSON.stringify(
     serializeCharacterCard(DEFAULT_CHARACTER, 'v3', DEFAULT_LOREBOOK),
     null,
@@ -583,7 +654,7 @@ function buildInitialSavedFiles(): SavedFileEntry[] {
       fileName: 'Seraphina_Vance.json',
       kind: 'character',
       sizeBytes: new Blob([charJson]).size,
-      updatedAt: nowStr,
+      updatedAt: nowIso,
       content: charJson,
     },
     {
@@ -592,18 +663,15 @@ function buildInitialSavedFiles(): SavedFileEntry[] {
       fileName: 'Chronicles_of_Oakhaven_The_Ashen_Reach.json',
       kind: 'lorebook',
       sizeBytes: new Blob([loreJson]).size,
-      updatedAt: nowStr,
+      updatedAt: nowIso,
       content: loreJson,
     },
   ];
 }
 
 function loadInitialState(): PersistedWorkspaceState {
-  const nowStr = new Date().toLocaleTimeString([], {
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-  });
+  const nowIso = new Date().toISOString();
+  const nowDisplay = formatSafeTimestamp(nowIso);
 
   try {
     const raw = window.localStorage.getItem(STORAGE_KEY);
@@ -621,17 +689,29 @@ function loadInitialState(): PersistedWorkspaceState {
         Array.isArray(parsed.themes) && parsed.themes.length > 0
           ? parsed.themes
           : DEFAULT_CONTEXT_THEMES;
+
+      const rawFolders =
+        Array.isArray(parsed.settings?.availableSaveFolders) &&
+        parsed.settings!.availableSaveFolders.length > 0
+          ? parsed.settings!.availableSaveFolders.map(normalizeFolderPath)
+          : DEFAULT_SAVE_FOLDERS;
+
+      const mergedFolders = Array.from(
+        new Set([...DEFAULT_SAVE_FOLDERS, ...rawFolders])
+      );
+
       const settings: AppSettings = {
         ...DEFAULT_SETTINGS,
         ...(parsed.settings || {}),
-        activeSaveFolder:
+        activeSaveFolder: normalizeFolderPath(
           parsed.settings?.activeSaveFolder ||
-          DEFAULT_SETTINGS.activeSaveFolder,
-        availableSaveFolders:
-          Array.isArray(parsed.settings?.availableSaveFolders) &&
-          parsed.settings!.availableSaveFolders.length > 0
-            ? parsed.settings!.availableSaveFolders
-            : DEFAULT_SAVE_FOLDERS,
+            DEFAULT_SETTINGS.activeSaveFolder
+        ),
+        availableSaveFolders: mergedFolders,
+        mainSidebarOpen:
+          parsed.settings?.mainSidebarOpen !== undefined
+            ? parsed.settings.mainSidebarOpen
+            : true,
       };
       if (!themes.some((t) => t.id === settings.activeThemeId)) {
         settings.activeThemeId = themes[0].id;
@@ -649,6 +729,18 @@ function loadInitialState(): PersistedWorkspaceState {
           ? parsed.activeLorebookId
           : lorebooks[0].id || 'lorebook-oakhaven';
 
+      const migratedFiles =
+        Array.isArray(parsed.savedFiles) && parsed.savedFiles.length > 0
+          ? parsed.savedFiles.map((f) => ({
+              ...f,
+              folderPath: normalizeFolderPath(f.folderPath),
+              updatedAt:
+                f.updatedAt && !Number.isNaN(new Date(f.updatedAt).getTime())
+                  ? f.updatedAt
+                  : nowIso,
+            }))
+          : buildInitialSavedFiles();
+
       return {
         characters,
         activeCharacterId,
@@ -661,12 +753,14 @@ function loadInitialState(): PersistedWorkspaceState {
             : DEFAULT_TAG_LIBRARY,
         aiConfig: { ...DEFAULT_AI_CONFIG, ...(parsed.aiConfig || {}) },
         settings,
-        savedFiles:
-          Array.isArray(parsed.savedFiles) && parsed.savedFiles.length > 0
-            ? parsed.savedFiles
-            : buildInitialSavedFiles(),
-        saveLogs: Array.isArray(parsed.saveLogs) ? parsed.saveLogs : [],
-        lastSavedAt: parsed.lastSavedAt || nowStr,
+        savedFiles: migratedFiles,
+        saveLogs: Array.isArray(parsed.saveLogs)
+          ? parsed.saveLogs.map((l) => ({
+              ...l,
+              folderPath: normalizeFolderPath(l.folderPath),
+            }))
+          : [],
+        lastSavedAt: parsed.lastSavedAt || nowDisplay,
       };
     }
   } catch {
@@ -686,7 +780,7 @@ function loadInitialState(): PersistedWorkspaceState {
     saveLogs: [
       {
         id: 'log-init',
-        timestamp: nowStr,
+        timestamp: nowDisplay,
         mode: 'autosave',
         folderPath: '/TavernSmith/Saves/Default',
         filesWritten: [
@@ -696,7 +790,7 @@ function loadInitialState(): PersistedWorkspaceState {
         nativeSynced: false,
       },
     ],
-    lastSavedAt: nowStr,
+    lastSavedAt: nowDisplay,
   };
 }
 
@@ -1021,15 +1115,28 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
     [savedFiles, settings.activeSaveFolder]
   );
 
+  const bindLorebookToCharacter = useCallback(
+    (characterId: string, lorebookToBind: Lorebook) => {
+      setCharacters((prev) =>
+        prev.map((c) => {
+          if (c.id !== characterId) return c;
+          return {
+            ...c,
+            character_book: lorebookToBind,
+            modification_date: Math.floor(Date.now() / 1000),
+          };
+        })
+      );
+    },
+    []
+  );
+
   // Unified Manual Save & Auto-Save Target:
   // Writes active Character (`[name].json`) and Lorebook (`[name].json`) directly to the selected Save Folder
   const saveNow = useCallback(
     (mode: 'manual' | 'autosave' = 'manual') => {
-      const timestamp = new Date().toLocaleTimeString([], {
-        hour: '2-digit',
-        minute: '2-digit',
-        second: '2-digit',
-      });
+      const nowIso = new Date().toISOString();
+      const displayTime = formatSafeTimestamp(nowIso);
 
       const targetFolder =
         settings.activeSaveFolder || '/TavernSmith/Saves/Default';
@@ -1061,7 +1168,7 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
         fileName: charFileName,
         kind: 'character',
         sizeBytes: new Blob([charSerialized]).size,
-        updatedAt: timestamp,
+        updatedAt: nowIso,
         content: charSerialized,
       };
 
@@ -1071,7 +1178,7 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
         fileName: loreFileName,
         kind: 'lorebook',
         sizeBytes: new Blob([loreSerialized]).size,
-        updatedAt: timestamp,
+        updatedAt: nowIso,
         content: loreSerialized,
       };
 
@@ -1084,7 +1191,7 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
 
       const newLog: SaveLogEntry = {
         id: `savelog-${Date.now()}`,
-        timestamp,
+        timestamp: displayTime,
         mode,
         folderPath: targetFolder,
         filesWritten: [charFileName, loreFileName],
@@ -1117,7 +1224,7 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
         })();
       }
 
-      setLastSavedAt(timestamp);
+      setLastSavedAt(displayTime);
       setIsDirty(false);
     },
     [character, lorebook, settings.activeSaveFolder, settings.cardSpecVersion]
@@ -1234,6 +1341,19 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
     setSettings((prev) => ({ ...prev, ...partial }));
   }, []);
 
+  const isMainSidebarOpen = settings.mainSidebarOpen !== false;
+
+  const setMainSidebarOpen = useCallback((open: boolean) => {
+    setSettings((prev) => ({ ...prev, mainSidebarOpen: open }));
+  }, []);
+
+  const toggleMainSidebar = useCallback(() => {
+    setSettings((prev) => ({
+      ...prev,
+      mainSidebarOpen: prev.mainSidebarOpen === false ? true : false,
+    }));
+  }, []);
+
   const setActiveThemeId = useCallback((id: string) => {
     setSettings((prev) => ({ ...prev, activeThemeId: id }));
   }, []);
@@ -1251,15 +1371,11 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
     setAiConfig(DEFAULT_AI_CONFIG);
     setSettings(DEFAULT_SETTINGS);
     setSavedFiles(buildInitialSavedFiles());
-    const now = new Date().toLocaleTimeString([], {
-      hour: '2-digit',
-      minute: '2-digit',
-      second: '2-digit',
-    });
+    const nowDisplay = formatSafeTimestamp(new Date().toISOString());
     setSaveLogs([
       {
         id: `log-reset-${Date.now()}`,
-        timestamp: now,
+        timestamp: nowDisplay,
         mode: 'manual',
         folderPath: DEFAULT_SETTINGS.activeSaveFolder,
         filesWritten: [
@@ -1269,7 +1385,7 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
         nativeSynced: false,
       },
     ]);
-    setLastSavedAt(now);
+    setLastSavedAt(nowDisplay);
     setIsDirty(false);
   }, []);
 
@@ -1305,11 +1421,15 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
     () => ({
       activeTab,
       setActiveTab,
+      isMainSidebarOpen,
+      setMainSidebarOpen,
+      toggleMainSidebar,
       characters,
       activeCharacterId,
       setActiveCharacterId,
       createNewCharacter,
       deleteCharacter,
+      bindLorebookToCharacter,
       character,
       setCharacter,
       updateCharacterField,
@@ -1351,10 +1471,14 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
     }),
     [
       activeTab,
+      isMainSidebarOpen,
+      setMainSidebarOpen,
+      toggleMainSidebar,
       characters,
       activeCharacterId,
       createNewCharacter,
       deleteCharacter,
+      bindLorebookToCharacter,
       character,
       setCharacter,
       updateCharacterField,

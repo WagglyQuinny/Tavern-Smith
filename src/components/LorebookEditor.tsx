@@ -17,6 +17,11 @@ import {
   Cpu,
   Upload,
   Download,
+  Sliders,
+  Wand2,
+  ChevronLeft,
+  ChevronRight,
+  GripVertical,
 } from 'lucide-react';
 import { useStore } from '../context/StoreContext';
 import {
@@ -42,6 +47,34 @@ const LOREBOOK_POSITIONS: { value: LorebookPosition; label: string }[] = [
   { value: 'at_depth', label: 'At Custom Chat Depth (at_depth)' },
 ];
 
+const LOREBOOK_WIZARD_STEPS = [
+  {
+    step: 1,
+    title: 'World Concept & Meta',
+    subtitle: 'Title, tags & ✨ AI Multi-Entry Generator',
+  },
+  {
+    step: 2,
+    title: 'Core Entries Builder',
+    subtitle: 'Factions, locations, systems & ✨ AI Entry Assist',
+  },
+  {
+    step: 3,
+    title: 'Trigger Keys & Rules',
+    subtitle: 'Primary/Secondary keys & ✨ AI Key Suggest',
+  },
+  {
+    step: 4,
+    title: 'Budget & Mechanics',
+    subtitle: 'Scan depth, token budget, order & positions',
+  },
+  {
+    step: 5,
+    title: 'Review, Bind & Export',
+    subtitle: 'Token audit, 1-click Character bind & JSON export',
+  },
+];
+
 export const LorebookEditor: React.FC = () => {
   const {
     lorebooks,
@@ -51,11 +84,15 @@ export const LorebookEditor: React.FC = () => {
     deleteLorebook,
     lorebook,
     setLorebook,
+    characters,
     character,
     updateCharacterField,
+    bindLorebookToCharacter,
     tags,
     activeTheme,
     aiConfig,
+    settings,
+    updateSettings,
     importFromFiles,
   } = useStore();
 
@@ -66,7 +103,34 @@ export const LorebookEditor: React.FC = () => {
   const [rosterSort, setRosterSort] = useState<RosterSortOption>('modified_desc');
   const [deleteTargetLorebook, setDeleteTargetLorebook] =
     useState<Lorebook | null>(null);
+  const [isDraggingFile, setIsDraggingFile] = useState(false);
+  const [importStatusBanner, setImportStatusBanner] = useState<string | null>(
+    null
+  );
   const lorebookFileInputRef = useRef<HTMLInputElement | null>(null);
+
+  // Drag-and-Drop Reordering for Lorebook Entries
+  const [draggedEntryId, setDraggedEntryId] = useState<string | number | null>(
+    null
+  );
+  const [dragOverEntryId, setDragOverEntryId] = useState<
+    string | number | null
+  >(null);
+
+  // 5-Step Lorebook Wizard State
+  const [wizardStep, setWizardStep] = useState<number>(1);
+  const [worldConceptPrompt, setWorldConceptPrompt] = useState<string>('');
+  const [isGeneratingMultiLore, setIsGeneratingMultiLore] =
+    useState<boolean>(false);
+  const [entryDraftPrompt, setEntryDraftPrompt] = useState<string>('');
+  const [isDraftingEntryContent, setIsDraftingEntryContent] =
+    useState<boolean>(false);
+  const [suggestingEntryId, setSuggestingEntryId] = useState<
+    string | number | null
+  >(null);
+  const [boundCharacterNotice, setBoundCharacterNotice] = useState<
+    string | null
+  >(null);
 
   // Entry List Filter & Selection State
   const [entrySearch, setEntrySearch] = useState('');
@@ -87,6 +151,24 @@ export const LorebookEditor: React.FC = () => {
 
   const abortRef = useRef<AbortController | null>(null);
 
+  const handleLorebookFilesDropped = async (
+    files: FileList | File[] | null
+  ) => {
+    if (!files || files.length === 0) return;
+    try {
+      const res = await importFromFiles(files);
+      setImportStatusBanner(res.summary);
+      window.setTimeout(() => setImportStatusBanner(null), 4000);
+    } catch (err: unknown) {
+      setAiKeyError({
+        message:
+          err instanceof Error
+            ? err.message
+            : 'Failed to import Lorebook or Character file.',
+      });
+    }
+  };
+
   useEffect(() => {
     return () => {
       if (abortRef.current) {
@@ -97,9 +179,7 @@ export const LorebookEditor: React.FC = () => {
 
   // Keep selectedEntryId valid when switching lorebooks
   useEffect(() => {
-    if (
-      !lorebook.entries.some((e) => e.id === selectedEntryId)
-    ) {
+    if (!lorebook.entries.some((e) => e.id === selectedEntryId)) {
       setSelectedEntryId(lorebook.entries[0]?.id ?? null);
     }
   }, [lorebook.id, lorebook.entries, selectedEntryId]);
@@ -189,17 +269,54 @@ export const LorebookEditor: React.FC = () => {
     });
   };
 
+  const handleDropReorderEntries = (
+    fromId: string | number,
+    toId: string | number
+  ) => {
+    if (fromId === toId) return;
+    updateLorebookAndSync((prev) => {
+      const fromIdx = prev.entries.findIndex((e) => e.id === fromId);
+      const toIdx = prev.entries.findIndex((e) => e.id === toId);
+      if (fromIdx === -1 || toIdx === -1) return prev;
+      const next = [...prev.entries];
+      const [moved] = next.splice(fromIdx, 1);
+      next.splice(toIdx, 0, moved);
+      return { ...prev, entries: next };
+    });
+  };
+
+  const toggleLorebookGlobalTag = (tagName: string) => {
+    updateLorebookAndSync((prev) => {
+      const current = prev.tags || [];
+      const exists = current.includes(tagName);
+      return {
+        ...prev,
+        tags: exists
+          ? current.filter((t) => t !== tagName)
+          : [...current, tagName],
+      };
+    });
+  };
+
   const handleBindToActiveCharacter = () => {
     updateCharacterField('character_book', lorebook);
     setSyncSuccessBanner(true);
     window.setTimeout(() => setSyncSuccessBanner(false), 3000);
   };
 
+  const handleBindToAnyCharacter = (charId: string, charName: string) => {
+    bindLorebookToCharacter(charId, lorebook);
+    setBoundCharacterNotice(`Bound "${lorebook.name}" to ${charName}.`);
+    window.setTimeout(() => setBoundCharacterNotice(null), 3500);
+  };
+
   // Entry CRUD Handlers
-  const handleCreateEntry = () => {
+  const handleCreateEntry = (customCategoryLabel?: string) => {
     const newEntry: LorebookEntry = {
       id: `entry-${Date.now()}`,
-      comment: `New World Info Entry #${lorebook.entries.length + 1}`,
+      comment:
+        customCategoryLabel ||
+        `New World Info Entry #${lorebook.entries.length + 1}`,
       keys: ['keyword'],
       secondary_keys: [],
       content: '',
@@ -212,7 +329,7 @@ export const LorebookEditor: React.FC = () => {
       priority: 10,
       depth: 4,
       probability: 100,
-      tags: [],
+      tags: [...(lorebook.tags || [])],
     };
     updateLorebookAndSync((prev) => ({
       ...prev,
@@ -244,38 +361,49 @@ export const LorebookEditor: React.FC = () => {
     });
   };
 
-  const handleUpdateSelectedEntry = (patch: Partial<LorebookEntry>) => {
-    if (!selectedEntry) return;
+  const handleUpdateEntryById = (
+    id: string | number,
+    patch: Partial<LorebookEntry>
+  ) => {
     updateLorebookAndSync((prev) => ({
       ...prev,
-      entries: prev.entries.map((e) =>
-        e.id === selectedEntry.id ? { ...e, ...patch } : e
-      ),
+      entries: prev.entries.map((e) => (e.id === id ? { ...e, ...patch } : e)),
     }));
+  };
+
+  const handleUpdateSelectedEntry = (patch: Partial<LorebookEntry>) => {
+    if (!selectedEntry) return;
+    handleUpdateEntryById(selectedEntry.id, patch);
   };
 
   const handleAddKeyChip = (
     type: 'keys' | 'secondary_keys',
-    rawInput: string
+    rawInput: string,
+    targetEntry?: LorebookEntry
   ) => {
-    if (!selectedEntry || !rawInput.trim()) return;
+    const entry = targetEntry || selectedEntry;
+    if (!entry || !rawInput.trim()) return;
     const newKeys = rawInput
       .split(',')
       .map((k) => k.trim())
       .filter(Boolean);
-    const merged = Array.from(new Set([...selectedEntry[type], ...newKeys]));
-    handleUpdateSelectedEntry({ [type]: merged });
-    if (type === 'keys') setPrimaryKeyInput('');
-    else setSecondaryKeyInput('');
+    const merged = Array.from(new Set([...entry[type], ...newKeys]));
+    handleUpdateEntryById(entry.id, { [type]: merged });
+    if (!targetEntry) {
+      if (type === 'keys') setPrimaryKeyInput('');
+      else setSecondaryKeyInput('');
+    }
   };
 
   const handleRemoveKeyChip = (
     type: 'keys' | 'secondary_keys',
-    keyToRemove: string
+    keyToRemove: string,
+    targetEntry?: LorebookEntry
   ) => {
-    if (!selectedEntry) return;
-    handleUpdateSelectedEntry({
-      [type]: selectedEntry[type].filter((k) => k !== keyToRemove),
+    const entry = targetEntry || selectedEntry;
+    if (!entry) return;
+    handleUpdateEntryById(entry.id, {
+      [type]: entry[type].filter((k) => k !== keyToRemove),
     });
   };
 
@@ -290,20 +418,215 @@ export const LorebookEditor: React.FC = () => {
     });
   };
 
-  // 1-Click AI Auto-Key Suggestion
-  const handleSuggestTriggerKeysWithAI = async () => {
+  // Wizard Step 1: "✨ AI Generate Multi-Entry Lorebook from Concept"
+  const handleGenerateMultiEntryLorebook = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!worldConceptPrompt.trim()) return;
+
+    if (abortRef.current) abortRef.current.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
+    setIsGeneratingMultiLore(true);
+    setAiKeyError(null);
+
+    const prompt = [
+      `Design a rich SillyTavern World Info / Lorebook based on this concept: "${worldConceptPrompt.trim()}"`,
+      lorebook.name && lorebook.name !== 'New Lorebook'
+        ? `Lorebook Title: ${lorebook.name}`
+        : '',
+      `Return a valid JSON object with this exact schema (containing 4 distinct, high-craft entries covering Locations, Factions, Lore/Rules, and Key Entities):`,
+      `{`,
+      `  "name": "Lorebook Title",`,
+      `  "description": "Concise 1-2 sentence overview of the world setting",`,
+      `  "entries": [`,
+      `    {`,
+      `      "comment": "Entry Title (e.g. Location, Faction, Magic/Tech System)",`,
+      `      "keys": ["primary keyword 1", "primary keyword 2", "proper noun"],`,
+      `      "secondary_keys": [],`,
+      `      "content": "Detailed 1-2 paragraph worldbuilding lore ready for SillyTavern prompt injection.",`,
+      `      "constant": false,`,
+      `      "insertion_order": 100`,
+      `    }`,
+      `  ]`,
+      `}`,
+      `Output ONLY valid JSON without markdown codeblocks or extra commentary.`,
+    ]
+      .filter(Boolean)
+      .join('\n');
+
+    try {
+      const detailed = await generateCompletionDetailed(
+        prompt,
+        `Active Context Theme: ${activeTheme.name}\nLorebook Description: ${lorebook.description}`,
+        aiConfig,
+        controller.signal,
+        {
+          maxTokens: 1400,
+          temperature: aiConfig.temperature,
+          activeTheme,
+          allTags: tags,
+          characterTags: lorebook.tags || [],
+        }
+      );
+
+      if (!controller.signal.aborted && detailed.content) {
+        const jsonMatch = detailed.content.match(/\{[\s\S]*\}/);
+        const rawJson = jsonMatch ? jsonMatch[0] : detailed.content;
+        const parsed = JSON.parse(rawJson) as {
+          name?: string;
+          description?: string;
+          entries?: Array<{
+            comment?: string;
+            keys?: string[];
+            secondary_keys?: string[];
+            content?: string;
+            constant?: boolean;
+            insertion_order?: number;
+          }>;
+        };
+
+        const builtEntries: LorebookEntry[] = (parsed.entries || []).map(
+          (item, idx) => ({
+            id: `entry-${Date.now()}-${idx}`,
+            comment: item.comment || `Lore Entry #${idx + 1}`,
+            keys:
+              Array.isArray(item.keys) && item.keys.length > 0
+                ? item.keys
+                : ['world'],
+            secondary_keys: Array.isArray(item.secondary_keys)
+              ? item.secondary_keys
+              : [],
+            content: item.content || '',
+            enabled: true,
+            insertion_order:
+              typeof item.insertion_order === 'number'
+                ? item.insertion_order
+                : 100 - idx * 5,
+            case_sensitive: false,
+            constant: Boolean(item.constant) || idx === 0,
+            selective: false,
+            position: 'before_char',
+            priority: 10,
+            depth: 4,
+            probability: 100,
+            tags: [...(lorebook.tags || [])],
+          })
+        );
+
+        updateLorebookAndSync((prev) => ({
+          ...prev,
+          name: parsed.name || prev.name,
+          description: parsed.description || prev.description,
+          entries:
+            builtEntries.length > 0
+              ? [...builtEntries, ...prev.entries]
+              : prev.entries,
+        }));
+
+        if (builtEntries[0]) {
+          setSelectedEntryId(builtEntries[0].id);
+        }
+      }
+    } catch (err: unknown) {
+      if (err instanceof DOMException && err.name === 'AbortError') return;
+      if (err instanceof AIServiceError) {
+        setAiKeyError({
+          message: err.message,
+          corsHint: err.isCorsOrNetworkError ? err.corsHint : undefined,
+        });
+      } else {
+        setAiKeyError({
+          message:
+            err instanceof Error
+              ? `Could not parse AI Lorebook response: ${err.message}`
+              : 'Failed to generate multi-entry lorebook.',
+        });
+      }
+    } finally {
+      if (!controller.signal.aborted) {
+        setIsGeneratingMultiLore(false);
+      }
+    }
+  };
+
+  // Wizard Step 2: Per-Entry "✨ AI Assist" Draft from Short Prompt
+  const handleDraftSelectedEntryWithAI = async () => {
     if (!selectedEntry) return;
     if (abortRef.current) abortRef.current.abort();
 
     const controller = new AbortController();
     abortRef.current = controller;
+    setIsDraftingEntryContent(true);
+    setAiKeyError(null);
+
+    const prompt = [
+      `Write a rich, atmospheric SillyTavern World Info / Lorebook entry (1 to 2 concise paragraphs) for:`,
+      `Entry Title: "${selectedEntry.comment || 'World Lore'}"`,
+      entryDraftPrompt.trim()
+        ? `Specific Directive / Concept: "${entryDraftPrompt.trim()}"`
+        : '',
+      selectedEntry.keys.length > 0
+        ? `Associated Keywords: ${selectedEntry.keys.join(', ')}`
+        : '',
+      `Focus on concrete worldbuilding facts, sensory details, faction rules, or narrative hooks that help the AI roleplay accurately. Output ONLY the lore entry text.`,
+    ]
+      .filter(Boolean)
+      .join('\n');
+
+    try {
+      const detailed = await generateCompletionDetailed(
+        prompt,
+        `Lorebook: ${lorebook.name} (${lorebook.description})`,
+        aiConfig,
+        controller.signal,
+        {
+          maxTokens: 450,
+          temperature: aiConfig.temperature,
+          activeTheme,
+          allTags: tags,
+          characterTags: selectedEntry.tags || lorebook.tags || [],
+        }
+      );
+
+      if (!controller.signal.aborted && detailed.content.trim()) {
+        handleUpdateSelectedEntry({ content: detailed.content.trim() });
+        setEntryDraftPrompt('');
+      }
+    } catch (err: unknown) {
+      if (err instanceof DOMException && err.name === 'AbortError') return;
+      if (err instanceof AIServiceError) {
+        setAiKeyError({
+          message: err.message,
+          corsHint: err.isCorsOrNetworkError ? err.corsHint : undefined,
+        });
+      } else {
+        setAiKeyError({
+          message: 'Failed to draft entry content with AI.',
+        });
+      }
+    } finally {
+      if (!controller.signal.aborted) {
+        setIsDraftingEntryContent(false);
+      }
+    }
+  };
+
+  // 1-Click AI Auto-Key Suggestion (works for selectedEntry or any entry passed in Wizard Step 3)
+  const handleSuggestTriggerKeysForEntry = async (targetEntry?: LorebookEntry) => {
+    const entry = targetEntry || selectedEntry;
+    if (!entry) return;
+    if (abortRef.current) abortRef.current.abort();
+
+    const controller = new AbortController();
+    abortRef.current = controller;
     setIsSuggestingKeys(true);
+    setSuggestingEntryId(entry.id);
     setAiKeyError(null);
 
     const prompt = [
       `Analyze this SillyTavern Lorebook / World Info entry and suggest 4 to 7 concise, high-signal trigger keywords or proper nouns that should activate this entry when mentioned in roleplay chat.`,
-      `Entry Title: ${selectedEntry.comment || 'Untitled'}`,
-      `Entry Content: ${selectedEntry.content || '(Empty)'}`,
+      `Entry Title: ${entry.comment || 'Untitled'}`,
+      `Entry Content: ${entry.content || '(Empty)'}`,
       `Output ONLY a comma-separated list of trigger keywords (e.g., Ashen Reach, Hollow Bell, Warden Signet, Oakhaven). Do not include numbering or explanations.`,
     ].join('\n');
 
@@ -318,7 +641,7 @@ export const LorebookEditor: React.FC = () => {
           temperature: 0.4,
           activeTheme,
           allTags: tags,
-          characterTags: selectedEntry.tags,
+          characterTags: entry.tags || lorebook.tags,
         }
       );
 
@@ -329,10 +652,8 @@ export const LorebookEditor: React.FC = () => {
           .filter((s) => s.length > 1 && s.length < 40);
 
         if (suggested.length > 0) {
-          const merged = Array.from(
-            new Set([...selectedEntry.keys, ...suggested])
-          );
-          handleUpdateSelectedEntry({ keys: merged });
+          const merged = Array.from(new Set([...entry.keys, ...suggested]));
+          handleUpdateEntryById(entry.id, { keys: merged });
         }
       }
     } catch (err: unknown) {
@@ -350,6 +671,7 @@ export const LorebookEditor: React.FC = () => {
     } finally {
       if (!controller.signal.aborted) {
         setIsSuggestingKeys(false);
+        setSuggestingEntryId(null);
       }
     }
   };
@@ -359,7 +681,27 @@ export const LorebookEditor: React.FC = () => {
     character.character_book?.name === lorebook.name;
 
   return (
-    <div className="flex flex-col lg:flex-row gap-6 items-start">
+    <div
+      onDragOver={(e) => {
+        if (e.dataTransfer.types.includes('Files')) {
+          e.preventDefault();
+          setIsDraggingFile(true);
+        }
+      }}
+      onDragLeave={(e) => {
+        if (e.currentTarget === e.target) {
+          setIsDraggingFile(false);
+        }
+      }}
+      onDrop={(e) => {
+        if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+          e.preventDefault();
+          setIsDraggingFile(false);
+          void handleLorebookFilesDropped(e.dataTransfer.files);
+        }
+      }}
+      className="flex flex-col lg:flex-row gap-6 items-start min-w-0 w-full"
+    >
       {/* Collapsible Lorebook Library Roster Sidebar */}
       {rosterOpen ? (
         <aside
@@ -419,22 +761,44 @@ export const LorebookEditor: React.FC = () => {
             accept=".json,.png,application/json,image/png"
             multiple
             className="hidden"
-            onChange={async (e) => {
+            onChange={(e) => {
               if (e.target.files && e.target.files.length > 0) {
-                try {
-                  await importFromFiles(e.target.files);
-                } catch (err: unknown) {
-                  setAiKeyError({
-                    message:
-                      err instanceof Error
-                        ? err.message
-                        : 'Failed to import Lorebook file.',
-                  });
-                }
+                void handleLorebookFilesDropped(e.target.files);
                 e.target.value = '';
               }
             }}
           />
+
+          {/* Drag & Drop Lorebook JSON / PNG Dropzone */}
+          <div
+            onDragOver={(e) => {
+              e.preventDefault();
+              setIsDraggingFile(true);
+            }}
+            onDragLeave={() => setIsDraggingFile(false)}
+            onDrop={(e) => {
+              e.preventDefault();
+              setIsDraggingFile(false);
+              void handleLorebookFilesDropped(e.dataTransfer.files);
+            }}
+            onClick={() => lorebookFileInputRef.current?.click()}
+            style={
+              isDraggingFile ? { borderColor: 'var(--theme-accent)' } : undefined
+            }
+            className={`rounded-lg border border-dashed p-2.5 text-center text-[11px] transition-colors cursor-pointer ${
+              isDraggingFile
+                ? 'bg-slate-100 dark:bg-zinc-800 text-slate-900 dark:text-white'
+                : 'border-slate-300 dark:border-zinc-800 text-slate-500 dark:text-slate-400 hover:border-slate-400'
+            }`}
+          >
+            Drop SillyTavern <strong>.JSON</strong> Lorebook or <strong>.PNG</strong> Card here
+          </div>
+
+          {importStatusBanner && (
+            <div className="rounded-lg border border-emerald-500/40 bg-emerald-500/10 px-2.5 py-1.5 text-[11px] font-medium text-emerald-800 dark:text-emerald-200">
+              {importStatusBanner}
+            </div>
+          )}
 
           {/* Search, Sort & Tag Filter Controls */}
           <div className="space-y-2">
@@ -555,7 +919,7 @@ export const LorebookEditor: React.FC = () => {
 
       {/* Main Lorebook Workbench Area */}
       <div className="flex-1 min-w-0 w-full space-y-6">
-        {/* Top Lorebook Header & Global Settings */}
+        {/* Top Lorebook Header & Mode Switcher */}
         <div
           style={{
             borderColor:
@@ -563,10 +927,10 @@ export const LorebookEditor: React.FC = () => {
           }}
           className="rounded-xl border bg-white dark:bg-slate-900 p-5 space-y-4"
         >
-          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-200 dark:border-slate-800 pb-3.5">
-            <div>
+          <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 dark:border-slate-800 pb-3.5">
+            <div className="min-w-0">
               <div className="flex items-center gap-2">
-                <h1 className="text-lg font-bold tracking-tight text-slate-900 dark:text-white">
+                <h1 className="text-lg font-bold tracking-tight text-slate-900 dark:text-white truncate">
                   {lorebook.name || 'Untitled Lorebook'}
                 </h1>
                 <Tooltip content="SillyTavern World Info / Character Book settings and trigger entries." />
@@ -579,6 +943,34 @@ export const LorebookEditor: React.FC = () => {
             </div>
 
             <div className="flex flex-wrap items-center gap-2 shrink-0">
+              {/* Full Sandbox | 5-Step Wizard Toggle */}
+              <div className="flex items-center rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-100 dark:bg-slate-950 p-0.5">
+                <button
+                  type="button"
+                  onClick={() => updateSettings({ editorMode: 'sandbox' })}
+                  className={`flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs font-medium cursor-pointer ${
+                    settings.editorMode === 'sandbox'
+                      ? 'bg-white dark:bg-slate-800 text-slate-900 dark:text-white shadow-2xs'
+                      : 'text-slate-500 hover:text-slate-900 dark:hover:text-white'
+                  }`}
+                >
+                  <Sliders className="h-3.5 w-3.5" />
+                  <span>Full Sandbox</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => updateSettings({ editorMode: 'wizard' })}
+                  className={`flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs font-medium cursor-pointer ${
+                    settings.editorMode === 'wizard'
+                      ? 'bg-white dark:bg-slate-800 text-slate-900 dark:text-white shadow-2xs'
+                      : 'text-slate-500 hover:text-slate-900 dark:hover:text-white'
+                  }`}
+                >
+                  <Wand2 className="h-3.5 w-3.5" />
+                  <span>5-Step Wizard</span>
+                </button>
+              </div>
+
               <button
                 type="button"
                 onClick={handleBindToActiveCharacter}
@@ -614,7 +1006,7 @@ export const LorebookEditor: React.FC = () => {
 
               <button
                 type="button"
-                onClick={handleCreateEntry}
+                onClick={() => handleCreateEntry()}
                 style={{ borderColor: 'var(--theme-accent)' }}
                 className="theme-hover-outline flex items-center gap-1.5 rounded-lg border bg-slate-900 dark:bg-white px-3.5 py-1.5 text-xs font-semibold text-white dark:text-slate-900 cursor-pointer"
               >
@@ -625,8 +1017,14 @@ export const LorebookEditor: React.FC = () => {
           </div>
 
           {/* Lorebook Metadata Row */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3">
-            <div className="sm:col-span-2 space-y-1">
+          <div
+            style={{
+              gridTemplateColumns:
+                'repeat(auto-fit, minmax(min(100%, 190px), 1fr))',
+            }}
+            className="grid gap-3 items-end"
+          >
+            <div className="space-y-1">
               <label className="text-xs font-medium text-slate-700 dark:text-slate-300">
                 Lorebook Title
               </label>
@@ -684,7 +1082,7 @@ export const LorebookEditor: React.FC = () => {
               />
             </div>
 
-            <div className="flex items-end pb-1.5">
+            <div className="pb-1.5">
               <label className="flex items-center gap-2 text-xs font-medium text-slate-700 dark:text-slate-300 cursor-pointer">
                 <input
                   type="checkbox"
@@ -704,549 +1102,1563 @@ export const LorebookEditor: React.FC = () => {
           </div>
         </div>
 
-        {/* Split Grid: Left 5 Cols Entries List + Right 7 Cols Entry Workbench */}
-        <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
-          {/* Left 5 Columns: Entries List & Filter */}
-          <div
-            style={{
-              borderColor:
-                'color-mix(in srgb, var(--theme-accent) 35%, transparent)',
-            }}
-            className="lg:col-span-5 rounded-xl border bg-white dark:bg-slate-900 p-4 space-y-3.5"
-          >
-            <div className="flex items-center justify-between">
-              <h2 className="text-xs font-bold uppercase tracking-wider text-slate-700 dark:text-slate-200">
-                Entries ({filteredEntries.length} / {lorebook.entries.length})
-              </h2>
-              <button
-                type="button"
-                onClick={handleCreateEntry}
-                className="text-xs font-semibold hover:underline cursor-pointer"
-                style={{ color: 'var(--theme-accent)' }}
-              >
-                + Add Entry
-              </button>
-            </div>
-
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
-              <div className="sm:col-span-2 relative">
-                <Search className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-slate-400" />
-                <input
-                  type="text"
-                  value={entrySearch}
-                  onChange={(e) => setEntrySearch(e.target.value)}
-                  placeholder="Search entries or keys..."
-                  className="theme-focus-ring w-full rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 pl-8 pr-2.5 py-1.5 text-xs text-slate-900 dark:text-white"
-                />
-              </div>
-
-              <select
-                aria-label="Filter Entries by Tag"
-                value={entryTagFilter}
-                onChange={(e) => setEntryTagFilter(e.target.value)}
-                className="theme-focus-ring rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 px-2 py-1.5 text-xs text-slate-700 dark:text-slate-200 cursor-pointer"
-              >
-                <option value="all">All Tags</option>
-                {tags.map((t) => (
-                  <option key={t.id} value={t.name}>
-                    {t.name}
-                  </option>
-                ))}
-              </select>
-            </div>
-
-            <div className="space-y-2 max-h-[65vh] overflow-y-auto pr-0.5">
-              {filteredEntries.map((entry) => {
-                const isSelected = selectedEntry?.id === entry.id;
-                const entryTokens = estimateTokens(entry.content);
-                return (
-                  <div
-                    key={entry.id}
-                    style={
-                      isSelected
-                        ? {
-                            borderColor: 'var(--theme-accent)',
-                            backgroundColor:
-                              'color-mix(in srgb, var(--theme-accent) 10%, transparent)',
-                          }
-                        : undefined
-                    }
-                    className={`rounded-lg border p-3 transition-colors ${
-                      isSelected
-                        ? 'bg-slate-50 dark:bg-slate-800/70'
-                        : 'border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-950/50'
-                    }`}
-                  >
-                    <div className="flex items-start justify-between gap-2">
-                      <div className="flex items-center gap-2 min-w-0">
-                        <input
-                          type="checkbox"
-                          checked={entry.enabled}
-                          onChange={() =>
-                            updateLorebookAndSync((prev) => ({
-                              ...prev,
-                              entries: prev.entries.map((e) =>
-                                e.id === entry.id
-                                  ? { ...e, enabled: !e.enabled }
-                                  : e
-                              ),
-                            }))
-                          }
-                          style={{ accentColor: 'var(--theme-accent)' }}
-                          className="h-3.5 w-3.5 cursor-pointer shrink-0"
-                        />
-                        <button
-                          type="button"
-                          onClick={() => setSelectedEntryId(entry.id)}
-                          className="text-left text-xs font-semibold text-slate-900 dark:text-white hover:underline truncate cursor-pointer"
-                        >
-                          {entry.comment || 'Untitled Entry'}
-                        </button>
-                      </div>
-
-                      <div className="flex items-center gap-1 shrink-0">
-                        <button
-                          type="button"
-                          onClick={() => handleDuplicateEntry(entry)}
-                          title="Duplicate Entry"
-                          className="p-1 text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 cursor-pointer"
-                        >
-                          <Copy className="h-3.5 w-3.5" />
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => handleDeleteEntry(entry.id)}
-                          title="Delete Entry"
-                          className="p-1 text-slate-400 hover:text-rose-600 dark:hover:text-rose-400 cursor-pointer"
-                        >
-                          <Trash2 className="h-3.5 w-3.5" />
-                        </button>
-                      </div>
-                    </div>
-
-                    <div className="mt-1.5 font-mono text-[11px] text-slate-500 dark:text-slate-400 truncate">
-                      Keys: {entry.keys.join(', ') || 'None'}
-                    </div>
-
-                    <div className="mt-2 flex items-center justify-between text-[10px] text-slate-500 dark:text-slate-400">
-                      <span>
-                        {entry.constant
-                          ? 'Constant'
-                          : entry.selective
-                            ? 'Selective'
-                            : 'Keyword'}{' '}
-                        · Order {entry.insertion_order}
-                      </span>
-                      <span className="font-mono font-semibold tabular-nums">
-                        {entryTokens} tkn
-                      </span>
-                    </div>
-                  </div>
-                );
-              })}
-
-              {filteredEntries.length === 0 && (
-                <div className="py-8 text-center text-xs text-slate-400">
-                  No Lorebook entries found. Click &ldquo;+ Add Entry&rdquo; to create one.
-                </div>
-              )}
-            </div>
-          </div>
-
-          {/* Right 7 Columns: Selected Entry Editor */}
-          <div className="lg:col-span-7">
-            {selectedEntry ? (
-              <div
-                style={{ borderColor: 'var(--theme-accent)' }}
-                className="rounded-xl border bg-white dark:bg-slate-900 p-5 space-y-5"
-              >
-                {/* Entry Title & Enabled Switch */}
-                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-200 dark:border-slate-800 pb-3.5">
-                  <div className="flex-1 space-y-1">
-                    <label className="text-[11px] font-medium text-slate-500">
-                      Entry Title / Comment
-                    </label>
-                    <input
-                      type="text"
-                      value={selectedEntry.comment || ''}
-                      onChange={(e) =>
-                        handleUpdateSelectedEntry({ comment: e.target.value })
-                      }
-                      placeholder="Entry title or summary..."
-                      className="theme-focus-ring w-full rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 px-3 py-1.5 text-xs font-semibold text-slate-900 dark:text-white"
-                    />
-                  </div>
-
-                  <div className="flex items-center gap-3 shrink-0 pt-2 sm:pt-4">
-                    <label className="flex items-center gap-1.5 text-xs font-medium text-slate-700 dark:text-slate-300 cursor-pointer">
-                      <input
-                        type="checkbox"
-                        checked={selectedEntry.enabled}
-                        onChange={(e) =>
-                          handleUpdateSelectedEntry({
-                            enabled: e.target.checked,
-                          })
-                        }
-                        style={{ accentColor: 'var(--theme-accent)' }}
-                        className="h-4 w-4 cursor-pointer"
-                      />
-                      <span>Enabled</span>
-                    </label>
-                  </div>
-                </div>
-
-                {aiKeyError && (
-                  <div className="flex items-start justify-between gap-2 rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 text-xs text-amber-900 dark:text-amber-200">
-                    <div className="flex items-start gap-2">
-                      <AlertTriangle className="h-4 w-4 text-amber-500 shrink-0 mt-0.5" />
-                      <div>
-                        <div className="font-semibold">{aiKeyError.message}</div>
-                        {aiKeyError.corsHint && (
-                          <div className="text-[11px] opacity-90">
-                            {aiKeyError.corsHint}
-                          </div>
-                        )}
-                      </div>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => setAiKeyError(null)}
-                      className="text-amber-700 dark:text-amber-300 cursor-pointer"
-                    >
-                      <X className="h-3.5 w-3.5" />
-                    </button>
+        {/* AI Error Banner */}
+        {aiKeyError && (
+          <div className="flex items-start justify-between gap-2 rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 text-xs text-amber-900 dark:text-amber-200">
+            <div className="flex items-start gap-2">
+              <AlertTriangle className="h-4 w-4 text-amber-500 shrink-0 mt-0.5" />
+              <div>
+                <div className="font-semibold">{aiKeyError.message}</div>
+                {aiKeyError.corsHint && (
+                  <div className="text-[11px] opacity-90">
+                    {aiKeyError.corsHint}
                   </div>
                 )}
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => setAiKeyError(null)}
+              className="text-amber-700 dark:text-amber-300 cursor-pointer"
+            >
+              <X className="h-3.5 w-3.5" />
+            </button>
+          </div>
+        )}
 
-                {/* Trigger Keys & Secondary Keys with 1-Click AI Auto-Key Suggestion */}
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                  {/* Primary Keys */}
-                  <div className="space-y-2 rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50/60 dark:bg-slate-950/60 p-3">
-                    <div className="flex items-center justify-between">
-                      <label className="flex items-center gap-1.5 text-xs font-semibold text-slate-800 dark:text-slate-200">
-                        <Key
-                          className="h-3.5 w-3.5"
-                          style={{ color: 'var(--theme-accent)' }}
-                        />
-                        <span>Primary Trigger Keys</span>
-                      </label>
-                      <button
-                        type="button"
-                        disabled={isSuggestingKeys}
-                        onClick={handleSuggestTriggerKeysWithAI}
-                        style={{ borderColor: 'var(--theme-accent)' }}
-                        className="theme-hover-outline flex items-center gap-1 rounded border bg-white dark:bg-slate-900 px-2 py-0.5 text-[11px] font-medium text-slate-900 dark:text-white disabled:opacity-50 cursor-pointer"
-                      >
-                        {isSuggestingKeys ? (
-                          <Loader2
-                            className="h-3 w-3 animate-spin"
-                            style={{ color: 'var(--theme-accent)' }}
-                          />
-                        ) : (
-                          <Sparkles
-                            className="h-3 w-3"
-                            style={{ color: 'var(--theme-accent)' }}
-                          />
-                        )}
-                        <span>AI Suggest Keys</span>
-                      </button>
-                    </div>
-
-                    <div className="flex gap-1.5">
-                      <input
-                        type="text"
-                        value={primaryKeyInput}
-                        onChange={(e) => setPrimaryKeyInput(e.target.value)}
-                        onKeyDown={(e) => {
-                          if (e.key === 'Enter') {
-                            e.preventDefault();
-                            handleAddKeyChip('keys', primaryKeyInput);
-                          }
-                        }}
-                        placeholder="Add key(s), comma-separated..."
-                        className="theme-focus-ring flex-1 rounded border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-2.5 py-1 text-xs text-slate-900 dark:text-white"
-                      />
-                      <button
-                        type="button"
-                        onClick={() =>
-                          handleAddKeyChip('keys', primaryKeyInput)
-                        }
-                        className="rounded border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-2.5 py-1 text-xs font-medium text-slate-700 dark:text-slate-200 cursor-pointer"
-                      >
-                        Add
-                      </button>
-                    </div>
-
-                    <div className="flex flex-wrap gap-1.5 pt-1">
-                      {selectedEntry.keys.map((k) => (
-                        <span
-                          key={k}
-                          className="inline-flex items-center gap-1 rounded border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-2 py-0.5 font-mono text-[11px] text-slate-800 dark:text-slate-200"
-                        >
-                          <span>{k}</span>
-                          <button
-                            type="button"
-                            onClick={() => handleRemoveKeyChip('keys', k)}
-                            className="text-slate-400 hover:text-rose-500 cursor-pointer"
-                          >
-                            <X className="h-3 w-3" />
-                          </button>
-                        </span>
-                      ))}
-                    </div>
-                  </div>
-
-                  {/* Secondary Selective Keys */}
-                  <div className="space-y-2 rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50/60 dark:bg-slate-950/60 p-3">
-                    <div className="flex items-center justify-between">
-                      <label className="flex items-center gap-1.5 text-xs font-semibold text-slate-800 dark:text-slate-200">
-                        <span>Secondary Keys (Selective)</span>
-                        <Tooltip content="When Selective mode is enabled, at least one secondary key must also appear alongside a primary key." />
-                      </label>
-                    </div>
-
-                    <div className="flex gap-1.5">
-                      <input
-                        type="text"
-                        value={secondaryKeyInput}
-                        onChange={(e) => setSecondaryKeyInput(e.target.value)}
-                        onKeyDown={(e) => {
-                          if (e.key === 'Enter') {
-                            e.preventDefault();
-                            handleAddKeyChip(
-                              'secondary_keys',
-                              secondaryKeyInput
-                            );
-                          }
-                        }}
-                        placeholder="Add secondary key(s)..."
-                        className="theme-focus-ring flex-1 rounded border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-2.5 py-1 text-xs text-slate-900 dark:text-white"
-                      />
-                      <button
-                        type="button"
-                        onClick={() =>
-                          handleAddKeyChip('secondary_keys', secondaryKeyInput)
-                        }
-                        className="rounded border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-2.5 py-1 text-xs font-medium text-slate-700 dark:text-slate-200 cursor-pointer"
-                      >
-                        Add
-                      </button>
-                    </div>
-
-                    <div className="flex flex-wrap gap-1.5 pt-1">
-                      {selectedEntry.secondary_keys.map((k) => (
-                        <span
-                          key={k}
-                          className="inline-flex items-center gap-1 rounded border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-2 py-0.5 font-mono text-[11px] text-slate-800 dark:text-slate-200"
-                        >
-                          <span>{k}</span>
-                          <button
-                            type="button"
-                            onClick={() =>
-                              handleRemoveKeyChip('secondary_keys', k)
+        {/* MODE A: 5-STEP LOREBOOK WIZARD */}
+        {settings.editorMode === 'wizard' ? (
+          <div className="space-y-6">
+            {/* Stepper Header */}
+            <div
+              style={{
+                borderColor:
+                  'color-mix(in srgb, var(--theme-accent) 35%, transparent)',
+              }}
+              className="rounded-xl border bg-white dark:bg-slate-900 p-4"
+            >
+              <div
+                style={{
+                  gridTemplateColumns:
+                    'repeat(auto-fit, minmax(min(100%, 170px), 1fr))',
+                }}
+                className="grid gap-2"
+              >
+                {LOREBOOK_WIZARD_STEPS.map((item) => {
+                  const isCurrent = wizardStep === item.step;
+                  const isCompleted = wizardStep > item.step;
+                  return (
+                    <button
+                      key={item.step}
+                      type="button"
+                      onClick={() => setWizardStep(item.step)}
+                      style={
+                        isCurrent
+                          ? {
+                              borderColor: 'var(--theme-accent)',
+                              backgroundColor:
+                                'color-mix(in srgb, var(--theme-accent) 12%, transparent)',
                             }
-                            className="text-slate-400 hover:text-rose-500 cursor-pointer"
-                          >
-                            <X className="h-3 w-3" />
-                          </button>
+                          : undefined
+                      }
+                      className={`rounded-lg border p-2.5 text-left transition-colors cursor-pointer ${
+                        isCurrent
+                          ? 'text-slate-900 dark:text-white'
+                          : isCompleted
+                            ? 'border-emerald-500/30 bg-emerald-500/5 text-slate-700 dark:text-slate-200'
+                            : 'border-slate-200 dark:border-slate-800 text-slate-500 dark:text-slate-400'
+                      }`}
+                    >
+                      <div className="flex items-center justify-between text-xs font-semibold">
+                        <span>
+                          0{item.step}. {item.title}
                         </span>
-                      ))}
+                        {isCompleted && (
+                          <Check className="h-3.5 w-3.5 text-emerald-500" />
+                        )}
+                      </div>
+                      <div className="mt-0.5 text-[11px] opacity-80 truncate">
+                        {item.subtitle}
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* STEP 1: World / Lore Concept & Metadata */}
+            {wizardStep === 1 && (
+              <div className="space-y-6">
+                <form
+                  onSubmit={handleGenerateMultiEntryLorebook}
+                  style={{ borderColor: 'var(--theme-accent)' }}
+                  className="rounded-xl border bg-white dark:bg-slate-900 p-5 space-y-3"
+                >
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div className="flex items-center gap-2">
+                      <Sparkles
+                        className="h-4 w-4"
+                        style={{ color: 'var(--theme-accent)' }}
+                      />
+                      <h2 className="text-sm font-semibold text-slate-900 dark:text-white">
+                        ✨ AI Generate Multi-Entry Lorebook from Concept
+                      </h2>
+                    </div>
+                    <span className="text-xs text-slate-500">
+                      Uses Active Theme ({activeTheme.name}) &amp; Lorebook Tags
+                    </span>
+                  </div>
+                  <p className="text-xs text-slate-500 dark:text-slate-400">
+                    Describe your world setting, faction conflict, or magic/tech rules in 1–3 sentences. TavernSmith will automatically draft a multi-entry Lorebook with trigger keys.
+                  </p>
+                  <div className="flex flex-col sm:flex-row gap-2.5">
+                    <input
+                      type="text"
+                      value={worldConceptPrompt}
+                      onChange={(e) => setWorldConceptPrompt(e.target.value)}
+                      placeholder="e.g., A sunken bioluminescent archipelago ruled by rival deep-sea salvage guilds and ancient leviathan cults..."
+                      className="theme-focus-ring flex-1 rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 px-3.5 py-2 text-xs text-slate-900 dark:text-white"
+                    />
+                    <button
+                      type="submit"
+                      disabled={
+                        isGeneratingMultiLore || !worldConceptPrompt.trim()
+                      }
+                      style={{ borderColor: 'var(--theme-accent)' }}
+                      className="theme-hover-outline flex items-center justify-center gap-2 rounded-lg border bg-slate-900 dark:bg-white px-4 py-2 text-xs font-semibold text-white dark:text-slate-900 disabled:opacity-50 cursor-pointer whitespace-nowrap"
+                    >
+                      {isGeneratingMultiLore ? (
+                        <>
+                          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                          <span>Generating Entries...</span>
+                        </>
+                      ) : (
+                        <>
+                          <Sparkles className="h-3.5 w-3.5" />
+                          <span>✨ AI Generate Multi-Entry Lorebook</span>
+                        </>
+                      )}
+                    </button>
+                  </div>
+                </form>
+
+                <div
+                  style={{
+                    borderColor:
+                      'color-mix(in srgb, var(--theme-accent) 35%, transparent)',
+                  }}
+                  className="rounded-xl border bg-white dark:bg-slate-900 p-5 space-y-4"
+                >
+                  <h3 className="text-sm font-semibold text-slate-900 dark:text-white">
+                    World Metadata &amp; Global Semantic Tags
+                  </h3>
+
+                  <div
+                    style={{
+                      gridTemplateColumns:
+                        'repeat(auto-fit, minmax(min(100%, 260px), 1fr))',
+                    }}
+                    className="grid gap-4"
+                  >
+                    <div className="space-y-1">
+                      <label className="text-xs font-medium text-slate-700 dark:text-slate-300">
+                        Lorebook Title
+                      </label>
+                      <input
+                        type="text"
+                        value={lorebook.name}
+                        onChange={(e) =>
+                          updateLorebookAndSync((prev) => ({
+                            ...prev,
+                            name: e.target.value,
+                          }))
+                        }
+                        className="theme-focus-ring w-full rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 px-3 py-1.5 text-xs font-medium text-slate-900 dark:text-white"
+                      />
+                    </div>
+
+                    <div className="space-y-1">
+                      <label className="text-xs font-medium text-slate-700 dark:text-slate-300">
+                        World Synopsis / Description
+                      </label>
+                      <input
+                        type="text"
+                        value={lorebook.description}
+                        onChange={(e) =>
+                          updateLorebookAndSync((prev) => ({
+                            ...prev,
+                            description: e.target.value,
+                          }))
+                        }
+                        placeholder="High-level summary of this Lorebook..."
+                        className="theme-focus-ring w-full rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 px-3 py-1.5 text-xs text-slate-900 dark:text-white"
+                      />
                     </div>
                   </div>
-                </div>
 
-                {/* SmartEditor for Lorebook Entry Content */}
-                <SmartEditor
-                  label={`Entry Content · ${selectedEntry.comment || 'World Info'}`}
-                  fieldKey="lorebook_entry_content"
-                  value={selectedEntry.content}
-                  onChange={(val) =>
-                    handleUpdateSelectedEntry({ content: val })
-                  }
-                  tooltip="Worldbuilding facts, faction lore, or environmental rules injected into the prompt when triggered."
-                  rows={6}
-                  isPermanentTokenField={selectedEntry.constant}
-                  extraContextSummary={`Lorebook: ${lorebook.name}\nEntry Title: ${selectedEntry.comment || ''}\nTrigger Keys: ${selectedEntry.keys.join(', ')}`}
-                  additionalTags={selectedEntry.tags}
-                />
-
-                {/* Insertion Order, Position & Trigger Flags */}
-                <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 pt-1">
-                  <div className="space-y-1">
-                    <label className="flex items-center gap-1 text-xs font-medium text-slate-700 dark:text-slate-300">
-                      <span>Insertion Position</span>
-                      <Tooltip content="Controls where in the prompt stack this entry is injected." />
+                  <div className="space-y-1.5">
+                    <label className="text-xs font-medium text-slate-700 dark:text-slate-300">
+                      Global Lorebook Semantic Tags (Injected into AI Lore Generation)
                     </label>
-                    <select
-                      value={selectedEntry.position}
-                      onChange={(e) =>
-                        handleUpdateSelectedEntry({
-                          position: e.target.value as LorebookPosition,
-                        })
-                      }
-                      className="theme-focus-ring w-full rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 px-2.5 py-1.5 text-xs text-slate-900 dark:text-white cursor-pointer"
-                    >
-                      {LOREBOOK_POSITIONS.map((p) => (
-                        <option key={p.value} value={p.value}>
-                          {p.label}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-
-                  <div className="space-y-1">
-                    <label className="flex items-center gap-1 text-xs font-medium text-slate-700 dark:text-slate-300">
-                      <span>Insertion Order</span>
-                      <Tooltip content="Higher numbers are inserted closer to the bottom of the prompt (higher influence)." />
-                    </label>
-                    <input
-                      type="number"
-                      value={selectedEntry.insertion_order}
-                      onChange={(e) =>
-                        handleUpdateSelectedEntry({
-                          insertion_order: Number(e.target.value),
-                        })
-                      }
-                      className="theme-focus-ring font-mono w-full rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 px-3 py-1.5 text-xs text-slate-900 dark:text-white tabular-nums"
-                    />
-                  </div>
-
-                  <div className="space-y-1">
-                    <label className="flex items-center gap-1 text-xs font-medium text-slate-700 dark:text-slate-300">
-                      <span>Depth (when at_depth)</span>
-                      <Tooltip content="Chat history depth from the bottom when position is set to at_depth." />
-                    </label>
-                    <input
-                      type="number"
-                      min={0}
-                      max={100}
-                      value={selectedEntry.depth ?? 4}
-                      onChange={(e) =>
-                        handleUpdateSelectedEntry({
-                          depth: Number(e.target.value),
-                        })
-                      }
-                      className="theme-focus-ring font-mono w-full rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 px-3 py-1.5 text-xs text-slate-900 dark:text-white tabular-nums"
-                    />
-                  </div>
-                </div>
-
-                {/* Boolean Trigger Switches */}
-                <div className="flex flex-wrap items-center gap-6 pt-1 border-t border-slate-200 dark:border-slate-800">
-                  <label className="flex items-center gap-2 text-xs font-medium text-slate-700 dark:text-slate-300 cursor-pointer pt-2">
-                    <input
-                      type="checkbox"
-                      checked={selectedEntry.constant}
-                      onChange={(e) =>
-                        handleUpdateSelectedEntry({
-                          constant: e.target.checked,
-                        })
-                      }
-                      style={{ accentColor: 'var(--theme-accent)' }}
-                      className="h-4 w-4 cursor-pointer"
-                    />
-                    <span>Constant (Always Active)</span>
-                  </label>
-
-                  <label className="flex items-center gap-2 text-xs font-medium text-slate-700 dark:text-slate-300 cursor-pointer pt-2">
-                    <input
-                      type="checkbox"
-                      checked={selectedEntry.selective}
-                      onChange={(e) =>
-                        handleUpdateSelectedEntry({
-                          selective: e.target.checked,
-                        })
-                      }
-                      style={{ accentColor: 'var(--theme-accent)' }}
-                      className="h-4 w-4 cursor-pointer"
-                    />
-                    <span>Selective (Require Secondary Key)</span>
-                  </label>
-
-                  <label className="flex items-center gap-2 text-xs font-medium text-slate-700 dark:text-slate-300 cursor-pointer pt-2">
-                    <input
-                      type="checkbox"
-                      checked={selectedEntry.case_sensitive}
-                      onChange={(e) =>
-                        handleUpdateSelectedEntry({
-                          case_sensitive: e.target.checked,
-                        })
-                      }
-                      style={{ accentColor: 'var(--theme-accent)' }}
-                      className="h-4 w-4 cursor-pointer"
-                    />
-                    <span>Case Sensitive Keys</span>
-                  </label>
-                </div>
-
-                {/* Entry Semantic Tags */}
-                <div className="space-y-1.5 pt-2 border-t border-slate-200 dark:border-slate-800">
-                  <label className="flex items-center gap-1.5 text-xs font-medium text-slate-700 dark:text-slate-300">
-                    <span>Entry Semantic Tags (Injected into AI Assist)</span>
-                    <Tooltip content="Tags attached to this Lorebook entry automatically provide their AI Context Descriptions when generating or expanding this entry." />
-                  </label>
-                  <div className="flex flex-wrap gap-1.5">
-                    {tags.map((tag) => {
-                      const active = (selectedEntry.tags || []).includes(
-                        tag.name
-                      );
-                      return (
-                        <button
-                          key={tag.id}
-                          type="button"
-                          onClick={() => toggleEntryTag(tag.name)}
-                          style={
-                            active
-                              ? {
-                                  borderColor: tag.color,
-                                  backgroundColor: `color-mix(in srgb, ${tag.color} 15%, transparent)`,
-                                }
-                              : undefined
-                          }
-                          className={`rounded-md border px-2.5 py-1 text-xs font-medium transition-colors cursor-pointer whitespace-nowrap ${
-                            active
-                              ? 'text-slate-900 dark:text-white'
-                              : 'border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 text-slate-500 hover:text-slate-900 dark:hover:text-white'
-                          }`}
-                        >
-                          {tag.name}
-                        </button>
-                      );
-                    })}
+                    <div className="flex flex-wrap gap-1.5">
+                      {tags.map((tag) => {
+                        const active = (lorebook.tags || []).includes(tag.name);
+                        return (
+                          <button
+                            key={tag.id}
+                            type="button"
+                            onClick={() => toggleLorebookGlobalTag(tag.name)}
+                            style={
+                              active
+                                ? {
+                                    borderColor: tag.color,
+                                    backgroundColor: `color-mix(in srgb, ${tag.color} 15%, transparent)`,
+                                  }
+                                : undefined
+                            }
+                            className={`rounded-md border px-2.5 py-1 text-xs font-medium cursor-pointer ${
+                              active
+                                ? 'text-slate-900 dark:text-white'
+                                : 'border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 text-slate-500'
+                            }`}
+                          >
+                            {tag.name}
+                          </button>
+                        );
+                      })}
+                    </div>
                   </div>
                 </div>
               </div>
-            ) : (
+            )}
+
+            {/* STEP 2: Core Entries & Entities Builder */}
+            {wizardStep === 2 && (
+              <div className="space-y-5">
+                <div
+                  style={{
+                    borderColor:
+                      'color-mix(in srgb, var(--theme-accent) 35%, transparent)',
+                  }}
+                  className="rounded-xl border bg-white dark:bg-slate-900 p-4 flex flex-wrap items-center justify-between gap-2"
+                >
+                  <div>
+                    <h3 className="text-xs font-bold uppercase tracking-wider text-slate-700 dark:text-slate-200">
+                      Quick-Add World Entity Archetypes
+                    </h3>
+                    <p className="text-xs text-slate-500">
+                      Add structured entries for Factions, Locations, Magic/Tech Systems, Key NPCs, or Artifacts.
+                    </p>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    {[
+                      'Faction: New Syndicate',
+                      'Location: Landmark',
+                      'System: Magic / Tech Rules',
+                      'NPC: Notable Figure',
+                      'Artifact: Relic / Item',
+                    ].map((presetLabel) => (
+                      <button
+                        key={presetLabel}
+                        type="button"
+                        onClick={() => handleCreateEntry(presetLabel)}
+                        style={{ borderColor: 'var(--theme-accent)' }}
+                        className="theme-hover-outline rounded-lg border bg-slate-50 dark:bg-slate-950 px-2.5 py-1.5 text-xs font-semibold text-slate-800 dark:text-slate-200 cursor-pointer"
+                      >
+                        + {presetLabel.split(':')[0]}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                <div
+                  style={{
+                    gridTemplateColumns:
+                      'repeat(auto-fit, minmax(min(100%, 340px), 1fr))',
+                  }}
+                  className="grid gap-6 items-start"
+                >
+                  {/* Left: Entry Selector Cards with Drag-and-Drop Reordering */}
+                  <div
+                    style={{
+                      borderColor:
+                        'color-mix(in srgb, var(--theme-accent) 35%, transparent)',
+                    }}
+                    className="rounded-xl border bg-white dark:bg-slate-900 p-4 space-y-3"
+                  >
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-bold uppercase tracking-wider text-slate-700 dark:text-slate-200">
+                        Lorebook Entries ({lorebook.entries.length})
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => handleCreateEntry()}
+                        className="text-xs font-semibold hover:underline cursor-pointer"
+                        style={{ color: 'var(--theme-accent)' }}
+                      >
+                        + Blank Entry
+                      </button>
+                    </div>
+
+                    <div className="space-y-2 max-h-[55vh] overflow-y-auto pr-1">
+                      {lorebook.entries.map((entry) => {
+                        const isSelected = selectedEntry?.id === entry.id;
+                        const isDragOver = dragOverEntryId === entry.id;
+                        return (
+                          <div
+                            key={entry.id}
+                            draggable
+                            onDragStart={() => setDraggedEntryId(entry.id)}
+                            onDragOver={(e) => {
+                              e.preventDefault();
+                              if (
+                                draggedEntryId !== null &&
+                                draggedEntryId !== entry.id
+                              ) {
+                                setDragOverEntryId(entry.id);
+                              }
+                            }}
+                            onDragLeave={() => {
+                              if (dragOverEntryId === entry.id) {
+                                setDragOverEntryId(null);
+                              }
+                            }}
+                            onDrop={(e) => {
+                              e.preventDefault();
+                              if (draggedEntryId !== null) {
+                                handleDropReorderEntries(
+                                  draggedEntryId,
+                                  entry.id
+                                );
+                              }
+                              setDraggedEntryId(null);
+                              setDragOverEntryId(null);
+                            }}
+                            onDragEnd={() => {
+                              setDraggedEntryId(null);
+                              setDragOverEntryId(null);
+                            }}
+                            style={
+                              isSelected
+                                ? {
+                                    borderColor: 'var(--theme-accent)',
+                                    backgroundColor:
+                                      'color-mix(in srgb, var(--theme-accent) 10%, transparent)',
+                                  }
+                                : isDragOver
+                                  ? { borderColor: 'var(--theme-accent)' }
+                                  : undefined
+                            }
+                            className={`rounded-lg border p-3 transition-colors ${
+                              isSelected
+                                ? 'bg-slate-50 dark:bg-slate-800/70'
+                                : 'border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-950/50'
+                            }`}
+                          >
+                            <div className="flex items-center justify-between gap-2">
+                              <div className="flex items-center gap-1.5 min-w-0 flex-1">
+                                <span
+                                  title="Drag to reorder entry"
+                                  className="cursor-grab active:cursor-grabbing text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 shrink-0"
+                                >
+                                  <GripVertical className="h-3.5 w-3.5" />
+                                </span>
+                                <button
+                                  type="button"
+                                  onClick={() => setSelectedEntryId(entry.id)}
+                                  className="flex-1 text-left text-xs font-semibold text-slate-900 dark:text-white truncate cursor-pointer"
+                                >
+                                  {entry.comment || 'Untitled Entry'}
+                                </button>
+                              </div>
+                              <button
+                                type="button"
+                                onClick={() => handleDeleteEntry(entry.id)}
+                                className="p-1 text-slate-400 hover:text-rose-500 cursor-pointer"
+                              >
+                                <Trash2 className="h-3.5 w-3.5" />
+                              </button>
+                            </div>
+                            <p className="mt-1 text-[11px] text-slate-500 dark:text-slate-400 line-clamp-2">
+                              {entry.content || 'No content drafted yet...'}
+                            </p>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  {/* Right: Guided Entry Content Builder with ✨ AI Assist */}
+                  <div
+                    style={{ borderColor: 'var(--theme-accent)' }}
+                    className="rounded-xl border bg-white dark:bg-slate-900 p-5 space-y-4"
+                  >
+                    {selectedEntry ? (
+                      <>
+                        <div className="space-y-1">
+                          <label className="text-xs font-medium text-slate-700 dark:text-slate-300">
+                            Entry Title / Entity Name
+                          </label>
+                          <input
+                            type="text"
+                            value={selectedEntry.comment || ''}
+                            onChange={(e) =>
+                              handleUpdateSelectedEntry({
+                                comment: e.target.value,
+                              })
+                            }
+                            className="theme-focus-ring w-full rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 px-3 py-1.5 text-xs font-semibold text-slate-900 dark:text-white"
+                          />
+                        </div>
+
+                        {/* Per-Entry ✨ AI Assist Draft Bar */}
+                        <div className="rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-950/60 p-3 space-y-2">
+                          <div className="flex items-center justify-between">
+                            <span className="text-xs font-semibold text-slate-800 dark:text-slate-200">
+                              ✨ AI Assist Entry Drafter
+                            </span>
+                            <span className="text-[11px] text-slate-500">
+                              Drafts lore from title &amp; optional prompt
+                            </span>
+                          </div>
+                          <div className="flex flex-col sm:flex-row gap-2">
+                            <input
+                              type="text"
+                              value={entryDraftPrompt}
+                              onChange={(e) =>
+                                setEntryDraftPrompt(e.target.value)
+                              }
+                              placeholder="Optional note (e.g. 'Secretive guild of chronomancers operating under the clocktower')..."
+                              className="theme-focus-ring flex-1 rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-3 py-1.5 text-xs text-slate-900 dark:text-white"
+                            />
+                            <button
+                              type="button"
+                              disabled={isDraftingEntryContent}
+                              onClick={handleDraftSelectedEntryWithAI}
+                              style={{ borderColor: 'var(--theme-accent)' }}
+                              className="theme-hover-outline flex items-center justify-center gap-1.5 rounded-lg border bg-slate-900 dark:bg-white px-3.5 py-1.5 text-xs font-semibold text-white dark:text-slate-900 disabled:opacity-50 cursor-pointer whitespace-nowrap"
+                            >
+                              {isDraftingEntryContent ? (
+                                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                              ) : (
+                                <Sparkles className="h-3.5 w-3.5" />
+                              )}
+                              <span>✨ AI Assist Draft</span>
+                            </button>
+                          </div>
+                        </div>
+
+                        <SmartEditor
+                          label={`Entry Content · ${selectedEntry.comment || 'World Info'}`}
+                          fieldKey="lorebook_entry_content"
+                          value={selectedEntry.content}
+                          onChange={(val) =>
+                            handleUpdateSelectedEntry({ content: val })
+                          }
+                          tooltip="Worldbuilding facts, faction lore, or environmental rules injected into the prompt when triggered."
+                          rows={7}
+                          isPermanentTokenField={selectedEntry.constant}
+                          extraContextSummary={`Lorebook: ${lorebook.name}\nEntry Title: ${selectedEntry.comment || ''}\nTrigger Keys: ${selectedEntry.keys.join(', ')}`}
+                          additionalTags={selectedEntry.tags}
+                        />
+                      </>
+                    ) : (
+                      <div className="py-8 text-center text-xs text-slate-400">
+                        Select or create an entry to start drafting.
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* STEP 3: Trigger Keys & Discovery Rules */}
+            {wizardStep === 3 && (
               <div
                 style={{
                   borderColor:
                     'color-mix(in srgb, var(--theme-accent) 35%, transparent)',
                 }}
-                className="rounded-xl border bg-white dark:bg-slate-900 p-8 text-center space-y-3"
+                className="rounded-xl border bg-white dark:bg-slate-900 p-5 space-y-4"
               >
-                <Cpu
-                  className="mx-auto h-6 w-6"
-                  style={{ color: 'var(--theme-accent)' }}
-                />
-                <div className="text-sm font-semibold text-slate-900 dark:text-white">
-                  No Lorebook Entry Selected
+                <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 dark:border-slate-800 pb-3">
+                  <div>
+                    <h3 className="text-sm font-semibold text-slate-900 dark:text-white">
+                      Trigger Keys &amp; Discovery Rules Across Entries
+                    </h3>
+                    <p className="text-xs text-slate-500">
+                      Configure Primary <code className="font-mono">keys</code> and Selective <code className="font-mono">secondary_keys</code>, or click <strong>✨ AI Suggest Trigger Keys from Content</strong> on any entry.
+                    </p>
+                  </div>
                 </div>
-                <p className="text-xs text-slate-500">
-                  Select an entry from the list or create a new World Info entry to start editing.
-                </p>
-                <button
-                  type="button"
-                  onClick={handleCreateEntry}
-                  style={{ borderColor: 'var(--theme-accent)' }}
-                  className="theme-hover-outline inline-flex items-center gap-1.5 rounded-lg border bg-slate-900 dark:bg-white px-4 py-2 text-xs font-semibold text-white dark:text-slate-900 cursor-pointer"
+
+                <div
+                  style={{
+                    gridTemplateColumns:
+                      'repeat(auto-fit, minmax(min(100%, 340px), 1fr))',
+                  }}
+                  className="grid gap-4"
                 >
-                  <Plus className="h-3.5 w-3.5" />
-                  <span>Create First Entry</span>
-                </button>
+                  {lorebook.entries.map((entry) => {
+                    const isBusy =
+                      isSuggestingKeys && suggestingEntryId === entry.id;
+                    return (
+                      <div
+                        key={entry.id}
+                        className="rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-950/60 p-4 space-y-3"
+                      >
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <div className="text-xs font-bold text-slate-900 dark:text-white truncate">
+                            {entry.comment || 'Untitled Entry'}
+                          </div>
+                          <button
+                            type="button"
+                            disabled={isBusy}
+                            onClick={() =>
+                              handleSuggestTriggerKeysForEntry(entry)
+                            }
+                            style={{ borderColor: 'var(--theme-accent)' }}
+                            className="theme-hover-outline inline-flex items-center gap-1 rounded-md border bg-white dark:bg-slate-900 px-2.5 py-1 text-[11px] font-semibold text-slate-900 dark:text-white disabled:opacity-50 cursor-pointer"
+                          >
+                            {isBusy ? (
+                              <Loader2
+                                className="h-3 w-3 animate-spin"
+                                style={{ color: 'var(--theme-accent)' }}
+                              />
+                            ) : (
+                              <Sparkles
+                                className="h-3 w-3"
+                                style={{ color: 'var(--theme-accent)' }}
+                              />
+                            )}
+                            <span>✨ AI Suggest Trigger Keys from Content</span>
+                          </button>
+                        </div>
+
+                        <div className="space-y-1">
+                          <label className="text-[11px] font-medium text-slate-600 dark:text-slate-400">
+                            Primary Trigger Keys (comma-separated)
+                          </label>
+                          <input
+                            type="text"
+                            value={entry.keys.join(', ')}
+                            onChange={(e) =>
+                              handleUpdateEntryById(entry.id, {
+                                keys: e.target.value
+                                  .split(',')
+                                  .map((k) => k.trim())
+                                  .filter(Boolean),
+                              })
+                            }
+                            placeholder="e.g. Oakhaven, Hollow Bell, Warden"
+                            className="theme-focus-ring font-mono w-full rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-3 py-1.5 text-xs text-slate-900 dark:text-white"
+                          />
+                        </div>
+
+                        <div className="space-y-1">
+                          <label className="text-[11px] font-medium text-slate-600 dark:text-slate-400">
+                            Secondary Keys (Selective Mode)
+                          </label>
+                          <input
+                            type="text"
+                            value={entry.secondary_keys.join(', ')}
+                            onChange={(e) =>
+                              handleUpdateEntryById(entry.id, {
+                                secondary_keys: e.target.value
+                                  .split(',')
+                                  .map((k) => k.trim())
+                                  .filter(Boolean),
+                              })
+                            }
+                            placeholder="Optional secondary filter keys..."
+                            className="theme-focus-ring font-mono w-full rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-3 py-1.5 text-xs text-slate-900 dark:text-white"
+                          />
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
               </div>
             )}
+
+            {/* STEP 4: Token Budget & Activation Mechanics */}
+            {wizardStep === 4 && (
+              <div className="space-y-6">
+                <div
+                  style={{
+                    borderColor:
+                      'color-mix(in srgb, var(--theme-accent) 35%, transparent)',
+                  }}
+                  className="rounded-xl border bg-white dark:bg-slate-900 p-5 space-y-5"
+                >
+                  <div>
+                    <h3 className="text-sm font-semibold text-slate-900 dark:text-white">
+                      Global Scanning &amp; Token Budget Mechanics
+                    </h3>
+                    <p className="text-xs text-slate-500">
+                      Tune how SillyTavern scans chat messages and budgets context tokens for this Lorebook.
+                    </p>
+                  </div>
+
+                  <div
+                    style={{
+                      gridTemplateColumns:
+                        'repeat(auto-fit, minmax(min(100%, 260px), 1fr))',
+                    }}
+                    className="grid gap-5"
+                  >
+                    <div className="rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 p-4 space-y-2">
+                      <div className="flex items-center justify-between text-xs">
+                        <span className="font-semibold text-slate-800 dark:text-slate-200">
+                          Scan Depth
+                        </span>
+                        <span className="font-mono font-bold">
+                          {lorebook.scan_depth} msgs
+                        </span>
+                      </div>
+                      <input
+                        type="range"
+                        min={1}
+                        max={30}
+                        value={lorebook.scan_depth}
+                        onChange={(e) =>
+                          updateLorebookAndSync((prev) => ({
+                            ...prev,
+                            scan_depth: Number(e.target.value),
+                          }))
+                        }
+                        style={{ accentColor: 'var(--theme-accent)' }}
+                        className="w-full cursor-pointer"
+                      />
+                      <p className="text-[11px] text-slate-500">
+                        How many recent chat messages SillyTavern scans for trigger keywords (2–6 recommended for fast response focus).
+                      </p>
+                    </div>
+
+                    <div className="rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 p-4 space-y-2">
+                      <div className="flex items-center justify-between text-xs">
+                        <span className="font-semibold text-slate-800 dark:text-slate-200">
+                          Token Budget
+                        </span>
+                        <span className="font-mono font-bold">
+                          {lorebook.token_budget} tkn
+                        </span>
+                      </div>
+                      <input
+                        type="range"
+                        min={256}
+                        max={8192}
+                        step={128}
+                        value={lorebook.token_budget}
+                        onChange={(e) =>
+                          updateLorebookAndSync((prev) => ({
+                            ...prev,
+                            token_budget: Number(e.target.value),
+                          }))
+                        }
+                        style={{ accentColor: 'var(--theme-accent)' }}
+                        className="w-full cursor-pointer"
+                      />
+                      <p className="text-[11px] text-slate-500">
+                        Maximum tokens allocated to activated Lorebook entries per turn before lower-priority entries are trimmed.
+                      </p>
+                    </div>
+
+                    <div className="rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 p-4 space-y-2">
+                      <label className="flex items-center justify-between text-xs font-semibold text-slate-800 dark:text-slate-200 cursor-pointer">
+                        <span>Recursive Scanning</span>
+                        <input
+                          type="checkbox"
+                          checked={lorebook.recursive_scanning}
+                          onChange={(e) =>
+                            updateLorebookAndSync((prev) => ({
+                              ...prev,
+                              recursive_scanning: e.target.checked,
+                            }))
+                          }
+                          style={{ accentColor: 'var(--theme-accent)' }}
+                          className="h-4 w-4 cursor-pointer"
+                        />
+                      </label>
+                      <p className="text-[11px] text-slate-500">
+                        When enabled, activated entries are themselves scanned for keywords that can chain-activate related lore entries.
+                      </p>
+                    </div>
+                  </div>
+
+                  {/* Per-Entry Position, Order & Constant/Selective Matrix */}
+                  <div className="space-y-2.5 pt-2 border-t border-slate-200 dark:border-slate-800">
+                    <h4 className="text-xs font-bold uppercase tracking-wider text-slate-700 dark:text-slate-300">
+                      Entry Activation Priority &amp; Placement
+                    </h4>
+                    <div className="space-y-2">
+                      {lorebook.entries.map((entry) => (
+                        <div
+                          key={entry.id}
+                          style={{
+                            gridTemplateColumns:
+                              'repeat(auto-fit, minmax(min(100%, 160px), 1fr))',
+                          }}
+                          className="grid gap-3 items-center rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-950/60 p-3 text-xs"
+                        >
+                          <div className="font-semibold text-slate-900 dark:text-white truncate">
+                            {entry.comment || 'Untitled Entry'}
+                          </div>
+
+                          <div>
+                            <select
+                              value={entry.position}
+                              onChange={(e) =>
+                                handleUpdateEntryById(entry.id, {
+                                  position: e.target.value as LorebookPosition,
+                                })
+                              }
+                              className="theme-focus-ring w-full rounded border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-2 py-1 text-xs text-slate-800 dark:text-slate-200 cursor-pointer"
+                            >
+                              {LOREBOOK_POSITIONS.map((p) => (
+                                <option key={p.value} value={p.value}>
+                                  {p.label}
+                                </option>
+                              ))}
+                            </select>
+                          </div>
+
+                          <div className="flex items-center gap-2">
+                            <span className="text-slate-500 whitespace-nowrap">
+                              Order:
+                            </span>
+                            <input
+                              type="number"
+                              value={entry.insertion_order}
+                              onChange={(e) =>
+                                handleUpdateEntryById(entry.id, {
+                                  insertion_order: Number(e.target.value),
+                                })
+                              }
+                              className="font-mono w-20 rounded border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-2 py-1 text-xs text-slate-900 dark:text-white"
+                            />
+                          </div>
+
+                          <div className="flex items-center gap-4">
+                            <label className="flex items-center gap-1.5 cursor-pointer">
+                              <input
+                                type="checkbox"
+                                checked={entry.constant}
+                                onChange={(e) =>
+                                  handleUpdateEntryById(entry.id, {
+                                    constant: e.target.checked,
+                                  })
+                                }
+                                style={{ accentColor: 'var(--theme-accent)' }}
+                                className="h-3.5 w-3.5 cursor-pointer"
+                              />
+                              <span>Constant</span>
+                            </label>
+                            <label className="flex items-center gap-1.5 cursor-pointer">
+                              <input
+                                type="checkbox"
+                                checked={entry.selective}
+                                onChange={(e) =>
+                                  handleUpdateEntryById(entry.id, {
+                                    selective: e.target.checked,
+                                  })
+                                }
+                                style={{ accentColor: 'var(--theme-accent)' }}
+                                className="h-3.5 w-3.5 cursor-pointer"
+                              />
+                              <span>Selective</span>
+                            </label>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* STEP 5: Review, Bind to Character & Export */}
+            {wizardStep === 5 && (
+              <div
+                style={{
+                  gridTemplateColumns:
+                    'repeat(auto-fit, minmax(min(100%, 340px), 1fr))',
+                }}
+                className="grid gap-6 items-start"
+              >
+                <div
+                  style={{
+                    borderColor:
+                      'color-mix(in srgb, var(--theme-accent) 35%, transparent)',
+                  }}
+                  className="rounded-xl border bg-white dark:bg-slate-900 p-5 space-y-4"
+                >
+                  <h3 className="text-sm font-semibold text-slate-900 dark:text-white">
+                    Lorebook Token &amp; Entry Readiness Summary
+                  </h3>
+
+                  <div className="space-y-2 text-xs">
+                    <div className="flex justify-between py-1.5 border-b border-slate-100 dark:border-slate-800">
+                      <span className="text-slate-500">Total Entries</span>
+                      <span className="font-mono font-semibold">
+                        {lorebook.entries.length} (
+                        {lorebook.entries.filter((e) => e.enabled).length}{' '}
+                        enabled)
+                      </span>
+                    </div>
+                    <div className="flex justify-between py-1.5 border-b border-slate-100 dark:border-slate-800">
+                      <span className="text-slate-500">
+                        Constant Entries (Always Active)
+                      </span>
+                      <span className="font-mono font-semibold">
+                        {
+                          lorebook.entries.filter(
+                            (e) => e.enabled && e.constant
+                          ).length
+                        }{' '}
+                        entries · {activeLorebookTokens.constant} tkn
+                      </span>
+                    </div>
+                    <div className="flex justify-between py-1.5 border-b border-slate-100 dark:border-slate-800">
+                      <span className="text-slate-500">
+                        Keyword-Triggered Entries
+                      </span>
+                      <span className="font-mono font-semibold">
+                        {
+                          lorebook.entries.filter(
+                            (e) => e.enabled && !e.constant
+                          ).length
+                        }{' '}
+                        entries · {activeLorebookTokens.triggered} tkn
+                      </span>
+                    </div>
+                    <div className="flex justify-between py-1.5">
+                      <span className="text-slate-500">
+                        Total Lorebook Footprint / Budget
+                      </span>
+                      <span className="font-mono font-bold">
+                        {activeLorebookTokens.total} / {lorebook.token_budget}{' '}
+                        tkn
+                      </span>
+                    </div>
+                  </div>
+
+                  <div className="pt-2 flex flex-wrap gap-2">
+                    <button
+                      type="button"
+                      onClick={() => exportLorebookAsJson(lorebook)}
+                      style={{ borderColor: 'var(--theme-accent)' }}
+                      className="theme-hover-outline flex items-center gap-1.5 rounded-lg border bg-slate-900 dark:bg-white px-4 py-2 text-xs font-semibold text-white dark:text-slate-900 cursor-pointer"
+                    >
+                      <Download className="h-3.5 w-3.5" />
+                      <span>Export Lorebook .JSON</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => updateSettings({ editorMode: 'sandbox' })}
+                      className="theme-hover-outline rounded-lg border border-slate-200 dark:border-slate-800 px-4 py-2 text-xs font-medium text-slate-700 dark:text-slate-200 cursor-pointer"
+                    >
+                      Open in Full Sandbox
+                    </button>
+                  </div>
+                </div>
+
+                {/* 1-Click Bind to Any Character in Library */}
+                <div
+                  style={{
+                    borderColor:
+                      'color-mix(in srgb, var(--theme-accent) 35%, transparent)',
+                  }}
+                  className="rounded-xl border bg-white dark:bg-slate-900 p-5 space-y-4"
+                >
+                  <div>
+                    <h3 className="text-sm font-semibold text-slate-900 dark:text-white">
+                      1-Click Bind to Character Card
+                    </h3>
+                    <p className="text-xs text-slate-500">
+                      Embed this Lorebook directly into any Character&apos;s{' '}
+                      <code className="font-mono">character_book</code> field.
+                    </p>
+                  </div>
+
+                  {boundCharacterNotice && (
+                    <div className="rounded-lg border border-emerald-500/40 bg-emerald-500/10 px-3 py-2 text-xs font-medium text-emerald-800 dark:text-emerald-200">
+                      {boundCharacterNotice}
+                    </div>
+                  )}
+
+                  <div className="space-y-2 max-h-64 overflow-y-auto pr-1">
+                    {characters.map((charItem) => {
+                      const isBound =
+                        charItem.character_book?.id === lorebook.id ||
+                        charItem.character_book?.name === lorebook.name;
+                      return (
+                        <div
+                          key={charItem.id}
+                          className="flex items-center justify-between gap-2 rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 p-2.5"
+                        >
+                          <div className="min-w-0">
+                            <div className="text-xs font-semibold text-slate-900 dark:text-white truncate">
+                              {charItem.name}
+                            </div>
+                            <div className="text-[11px] text-slate-500 truncate">
+                              {charItem.character_book?.name
+                                ? `Current Book: ${charItem.character_book.name}`
+                                : 'No bound Lorebook'}
+                            </div>
+                          </div>
+
+                          <button
+                            type="button"
+                            onClick={() =>
+                              handleBindToAnyCharacter(
+                                charItem.id!,
+                                charItem.name
+                              )
+                            }
+                            style={{ borderColor: 'var(--theme-accent)' }}
+                            className="theme-hover-outline flex items-center gap-1 rounded-md border bg-white dark:bg-slate-900 px-2.5 py-1 text-xs font-semibold text-slate-900 dark:text-white cursor-pointer shrink-0"
+                          >
+                            {isBound ? (
+                              <>
+                                <Check className="h-3.5 w-3.5 text-emerald-500" />
+                                <span>Bound</span>
+                              </>
+                            ) : (
+                              <>
+                                <Link2
+                                  className="h-3.5 w-3.5"
+                                  style={{ color: 'var(--theme-accent)' }}
+                                />
+                                <span>Bind</span>
+                              </>
+                            )}
+                          </button>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Wizard Bottom Navigation Bar */}
+            <div className="flex items-center justify-between border-t border-slate-200 dark:border-slate-800 pt-4">
+              <button
+                type="button"
+                disabled={wizardStep === 1}
+                onClick={() => setWizardStep((s) => Math.max(1, s - 1))}
+                className="flex items-center gap-1.5 rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-4 py-2 text-xs font-medium text-slate-700 dark:text-slate-200 disabled:opacity-40 cursor-pointer"
+              >
+                <ChevronLeft className="h-4 w-4" />
+                <span>Previous Step</span>
+              </button>
+              <span className="font-mono text-xs text-slate-500">
+                Step {wizardStep} of 5
+              </span>
+              {wizardStep < 5 ? (
+                <button
+                  type="button"
+                  onClick={() => setWizardStep((s) => Math.min(5, s + 1))}
+                  style={{ borderColor: 'var(--theme-accent)' }}
+                  className="theme-hover-outline flex items-center gap-1.5 rounded-lg border bg-slate-900 dark:bg-white px-4 py-2 text-xs font-semibold text-white dark:text-slate-900 cursor-pointer"
+                >
+                  <span>Next Step</span>
+                  <ChevronRight className="h-4 w-4" />
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => updateSettings({ editorMode: 'sandbox' })}
+                  style={{ borderColor: 'var(--theme-accent)' }}
+                  className="theme-hover-outline flex items-center gap-1.5 rounded-lg border bg-slate-900 dark:bg-white px-4 py-2 text-xs font-semibold text-white dark:text-slate-900 cursor-pointer"
+                >
+                  <Check className="h-4 w-4" />
+                  <span>Finish Wizard</span>
+                </button>
+              )}
+            </div>
           </div>
-        </div>
+        ) : (
+          /* MODE B: FULL SANDBOX LOREBOOK WORKBENCH (Fluid Auto-Reflowing Grid) */
+          <div
+            style={{
+              gridTemplateColumns:
+                'repeat(auto-fit, minmax(min(100%, 340px), 1fr))',
+            }}
+            className="grid gap-6 items-start"
+          >
+            {/* Left Column: Entries List & Filter with Drag-and-Drop Reordering */}
+            <div
+              style={{
+                borderColor:
+                  'color-mix(in srgb, var(--theme-accent) 35%, transparent)',
+              }}
+              className="rounded-xl border bg-white dark:bg-slate-900 p-4 space-y-3.5"
+            >
+              <div className="flex items-center justify-between">
+                <h2 className="text-xs font-bold uppercase tracking-wider text-slate-700 dark:text-slate-200">
+                  Entries ({filteredEntries.length} / {lorebook.entries.length})
+                </h2>
+                <button
+                  type="button"
+                  onClick={() => handleCreateEntry()}
+                  className="text-xs font-semibold hover:underline cursor-pointer"
+                  style={{ color: 'var(--theme-accent)' }}
+                >
+                  + Add Entry
+                </button>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                <div className="sm:col-span-2 relative">
+                  <Search className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-slate-400" />
+                  <input
+                    type="text"
+                    value={entrySearch}
+                    onChange={(e) => setEntrySearch(e.target.value)}
+                    placeholder="Search entries or keys..."
+                    className="theme-focus-ring w-full rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 pl-8 pr-2.5 py-1.5 text-xs text-slate-900 dark:text-white"
+                  />
+                </div>
+
+                <select
+                  aria-label="Filter Entries by Tag"
+                  value={entryTagFilter}
+                  onChange={(e) => setEntryTagFilter(e.target.value)}
+                  className="theme-focus-ring rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 px-2 py-1.5 text-xs text-slate-700 dark:text-slate-200 cursor-pointer"
+                >
+                  <option value="all">All Tags</option>
+                  {tags.map((t) => (
+                    <option key={t.id} value={t.name}>
+                      {t.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="space-y-2 max-h-[65vh] overflow-y-auto pr-0.5">
+                {filteredEntries.map((entry) => {
+                  const isSelected = selectedEntry?.id === entry.id;
+                  const isDragOver = dragOverEntryId === entry.id;
+                  const entryTokens = estimateTokens(entry.content);
+                  return (
+                    <div
+                      key={entry.id}
+                      draggable
+                      onDragStart={() => setDraggedEntryId(entry.id)}
+                      onDragOver={(e) => {
+                        e.preventDefault();
+                        if (
+                          draggedEntryId !== null &&
+                          draggedEntryId !== entry.id
+                        ) {
+                          setDragOverEntryId(entry.id);
+                        }
+                      }}
+                      onDragLeave={() => {
+                        if (dragOverEntryId === entry.id) {
+                          setDragOverEntryId(null);
+                        }
+                      }}
+                      onDrop={(e) => {
+                        e.preventDefault();
+                        if (draggedEntryId !== null) {
+                          handleDropReorderEntries(draggedEntryId, entry.id);
+                        }
+                        setDraggedEntryId(null);
+                        setDragOverEntryId(null);
+                      }}
+                      onDragEnd={() => {
+                        setDraggedEntryId(null);
+                        setDragOverEntryId(null);
+                      }}
+                      style={
+                        isSelected
+                          ? {
+                              borderColor: 'var(--theme-accent)',
+                              backgroundColor:
+                                'color-mix(in srgb, var(--theme-accent) 10%, transparent)',
+                            }
+                          : isDragOver
+                            ? { borderColor: 'var(--theme-accent)' }
+                            : undefined
+                      }
+                      className={`rounded-lg border p-3 transition-colors ${
+                        isSelected
+                          ? 'bg-slate-50 dark:bg-slate-800/70'
+                          : 'border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-950/50'
+                      }`}
+                    >
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="flex items-center gap-1.5 min-w-0">
+                          <span
+                            title="Drag to reorder entry"
+                            className="cursor-grab active:cursor-grabbing text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 shrink-0"
+                          >
+                            <GripVertical className="h-3.5 w-3.5" />
+                          </span>
+                          <input
+                            type="checkbox"
+                            checked={entry.enabled}
+                            onChange={() =>
+                              updateLorebookAndSync((prev) => ({
+                                ...prev,
+                                entries: prev.entries.map((e) =>
+                                  e.id === entry.id
+                                    ? { ...e, enabled: !e.enabled }
+                                    : e
+                                ),
+                              }))
+                            }
+                            style={{ accentColor: 'var(--theme-accent)' }}
+                            className="h-3.5 w-3.5 cursor-pointer shrink-0"
+                          />
+                          <button
+                            type="button"
+                            onClick={() => setSelectedEntryId(entry.id)}
+                            className="text-left text-xs font-semibold text-slate-900 dark:text-white hover:underline truncate cursor-pointer"
+                          >
+                            {entry.comment || 'Untitled Entry'}
+                          </button>
+                        </div>
+
+                        <div className="flex items-center gap-1 shrink-0">
+                          <button
+                            type="button"
+                            onClick={() => handleDuplicateEntry(entry)}
+                            title="Duplicate Entry"
+                            className="p-1 text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 cursor-pointer"
+                          >
+                            <Copy className="h-3.5 w-3.5" />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleDeleteEntry(entry.id)}
+                            title="Delete Entry"
+                            className="p-1 text-slate-400 hover:text-rose-600 dark:hover:text-rose-400 cursor-pointer"
+                          >
+                            <Trash2 className="h-3.5 w-3.5" />
+                          </button>
+                        </div>
+                      </div>
+
+                      <div className="mt-1.5 font-mono text-[11px] text-slate-500 dark:text-slate-400 truncate">
+                        Keys: {entry.keys.join(', ') || 'None'}
+                      </div>
+
+                      <div className="mt-2 flex items-center justify-between text-[10px] text-slate-500 dark:text-slate-400">
+                        <span>
+                          {entry.constant
+                            ? 'Constant'
+                            : entry.selective
+                              ? 'Selective'
+                              : 'Keyword'}{' '}
+                          · Order {entry.insertion_order}
+                        </span>
+                        <span className="font-mono font-semibold tabular-nums">
+                          {entryTokens} tkn
+                        </span>
+                      </div>
+                    </div>
+                  );
+                })}
+
+                {filteredEntries.length === 0 && (
+                  <div className="py-8 text-center text-xs text-slate-400">
+                    No Lorebook entries found. Click &ldquo;+ Add Entry&rdquo; to create one.
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* Right Column: Selected Entry Editor */}
+            <div className="min-w-0">
+              {selectedEntry ? (
+                <div
+                  style={{ borderColor: 'var(--theme-accent)' }}
+                  className="rounded-xl border bg-white dark:bg-slate-900 p-5 space-y-5"
+                >
+                  {/* Entry Title & Enabled Switch */}
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-200 dark:border-slate-800 pb-3.5">
+                    <div className="flex-1 space-y-1">
+                      <label className="text-[11px] font-medium text-slate-500">
+                        Entry Title / Comment
+                      </label>
+                      <input
+                        type="text"
+                        value={selectedEntry.comment || ''}
+                        onChange={(e) =>
+                          handleUpdateSelectedEntry({ comment: e.target.value })
+                        }
+                        placeholder="Entry title or summary..."
+                        className="theme-focus-ring w-full rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 px-3 py-1.5 text-xs font-semibold text-slate-900 dark:text-white"
+                      />
+                    </div>
+
+                    <div className="flex items-center gap-3 shrink-0 pt-2 sm:pt-4">
+                      <label className="flex items-center gap-1.5 text-xs font-medium text-slate-700 dark:text-slate-300 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={selectedEntry.enabled}
+                          onChange={(e) =>
+                            handleUpdateSelectedEntry({
+                              enabled: e.target.checked,
+                            })
+                          }
+                          style={{ accentColor: 'var(--theme-accent)' }}
+                          className="h-4 w-4 cursor-pointer"
+                        />
+                        <span>Enabled</span>
+                      </label>
+                    </div>
+                  </div>
+
+                  {/* Trigger Keys & Secondary Keys with 1-Click AI Auto-Key Suggestion */}
+                  <div
+                    style={{
+                      gridTemplateColumns:
+                        'repeat(auto-fit, minmax(min(100%, 240px), 1fr))',
+                    }}
+                    className="grid gap-4"
+                  >
+                    {/* Primary Keys */}
+                    <div className="space-y-2 rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50/60 dark:bg-slate-950/60 p-3">
+                      <div className="flex flex-wrap items-center justify-between gap-1">
+                        <label className="flex items-center gap-1.5 text-xs font-semibold text-slate-800 dark:text-slate-200">
+                          <Key
+                            className="h-3.5 w-3.5"
+                            style={{ color: 'var(--theme-accent)' }}
+                          />
+                          <span>Primary Trigger Keys</span>
+                        </label>
+                        <button
+                          type="button"
+                          disabled={isSuggestingKeys}
+                          onClick={() => handleSuggestTriggerKeysForEntry()}
+                          style={{ borderColor: 'var(--theme-accent)' }}
+                          className="theme-hover-outline flex items-center gap-1 rounded border bg-white dark:bg-slate-900 px-2 py-0.5 text-[11px] font-medium text-slate-900 dark:text-white disabled:opacity-50 cursor-pointer"
+                        >
+                          {isSuggestingKeys ? (
+                            <Loader2
+                              className="h-3 w-3 animate-spin"
+                              style={{ color: 'var(--theme-accent)' }}
+                            />
+                          ) : (
+                            <Sparkles
+                              className="h-3 w-3"
+                              style={{ color: 'var(--theme-accent)' }}
+                            />
+                          )}
+                          <span>✨ AI Suggest Keys</span>
+                        </button>
+                      </div>
+
+                      <div className="flex gap-1.5">
+                        <input
+                          type="text"
+                          value={primaryKeyInput}
+                          onChange={(e) => setPrimaryKeyInput(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter') {
+                              e.preventDefault();
+                              handleAddKeyChip('keys', primaryKeyInput);
+                            }
+                          }}
+                          placeholder="Add key(s), comma-separated..."
+                          className="theme-focus-ring flex-1 rounded border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-2.5 py-1 text-xs text-slate-900 dark:text-white"
+                        />
+                        <button
+                          type="button"
+                          onClick={() =>
+                            handleAddKeyChip('keys', primaryKeyInput)
+                          }
+                          className="rounded border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-2.5 py-1 text-xs font-medium text-slate-700 dark:text-slate-200 cursor-pointer"
+                        >
+                          Add
+                        </button>
+                      </div>
+
+                      <div className="flex flex-wrap gap-1.5 pt-1">
+                        {selectedEntry.keys.map((k) => (
+                          <span
+                            key={k}
+                            className="inline-flex items-center gap-1 rounded border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-2 py-0.5 font-mono text-[11px] text-slate-800 dark:text-slate-200"
+                          >
+                            <span>{k}</span>
+                            <button
+                              type="button"
+                              onClick={() => handleRemoveKeyChip('keys', k)}
+                              className="text-slate-400 hover:text-rose-500 cursor-pointer"
+                            >
+                              <X className="h-3 w-3" />
+                            </button>
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+
+                    {/* Secondary Selective Keys */}
+                    <div className="space-y-2 rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50/60 dark:bg-slate-950/60 p-3">
+                      <div className="flex items-center justify-between">
+                        <label className="flex items-center gap-1.5 text-xs font-semibold text-slate-800 dark:text-slate-200">
+                          <span>Secondary Keys (Selective)</span>
+                          <Tooltip content="When Selective mode is enabled, at least one secondary key must also appear alongside a primary key." />
+                        </label>
+                      </div>
+
+                      <div className="flex gap-1.5">
+                        <input
+                          type="text"
+                          value={secondaryKeyInput}
+                          onChange={(e) => setSecondaryKeyInput(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter') {
+                              e.preventDefault();
+                              handleAddKeyChip(
+                                'secondary_keys',
+                                secondaryKeyInput
+                              );
+                            }
+                          }}
+                          placeholder="Add secondary key(s)..."
+                          className="theme-focus-ring flex-1 rounded border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-2.5 py-1 text-xs text-slate-900 dark:text-white"
+                        />
+                        <button
+                          type="button"
+                          onClick={() =>
+                            handleAddKeyChip(
+                              'secondary_keys',
+                              secondaryKeyInput
+                            )
+                          }
+                          className="rounded border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-2.5 py-1 text-xs font-medium text-slate-700 dark:text-slate-200 cursor-pointer"
+                        >
+                          Add
+                        </button>
+                      </div>
+
+                      <div className="flex flex-wrap gap-1.5 pt-1">
+                        {selectedEntry.secondary_keys.map((k) => (
+                          <span
+                            key={k}
+                            className="inline-flex items-center gap-1 rounded border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-2 py-0.5 font-mono text-[11px] text-slate-800 dark:text-slate-200"
+                          >
+                            <span>{k}</span>
+                            <button
+                              type="button"
+                              onClick={() =>
+                                handleRemoveKeyChip('secondary_keys', k)
+                              }
+                              className="text-slate-400 hover:text-rose-500 cursor-pointer"
+                            >
+                              <X className="h-3 w-3" />
+                            </button>
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* SmartEditor for Lorebook Entry Content */}
+                  <SmartEditor
+                    label={`Entry Content · ${selectedEntry.comment || 'World Info'}`}
+                    fieldKey="lorebook_entry_content"
+                    value={selectedEntry.content}
+                    onChange={(val) =>
+                      handleUpdateSelectedEntry({ content: val })
+                    }
+                    tooltip="Worldbuilding facts, faction lore, or environmental rules injected into the prompt when triggered."
+                    rows={6}
+                    isPermanentTokenField={selectedEntry.constant}
+                    extraContextSummary={`Lorebook: ${lorebook.name}\nEntry Title: ${selectedEntry.comment || ''}\nTrigger Keys: ${selectedEntry.keys.join(', ')}`}
+                    additionalTags={selectedEntry.tags}
+                  />
+
+                  {/* Insertion Order, Position & Trigger Flags */}
+                  <div
+                    style={{
+                      gridTemplateColumns:
+                        'repeat(auto-fit, minmax(min(100%, 160px), 1fr))',
+                    }}
+                    className="grid gap-4 pt-1"
+                  >
+                    <div className="space-y-1">
+                      <label className="flex items-center gap-1 text-xs font-medium text-slate-700 dark:text-slate-300">
+                        <span>Insertion Position</span>
+                        <Tooltip content="Controls where in the prompt stack this entry is injected." />
+                      </label>
+                      <select
+                        value={selectedEntry.position}
+                        onChange={(e) =>
+                          handleUpdateSelectedEntry({
+                            position: e.target.value as LorebookPosition,
+                          })
+                        }
+                        className="theme-focus-ring w-full rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 px-2.5 py-1.5 text-xs text-slate-900 dark:text-white cursor-pointer"
+                      >
+                        {LOREBOOK_POSITIONS.map((p) => (
+                          <option key={p.value} value={p.value}>
+                            {p.label}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+
+                    <div className="space-y-1">
+                      <label className="flex items-center gap-1 text-xs font-medium text-slate-700 dark:text-slate-300">
+                        <span>Insertion Order</span>
+                        <Tooltip content="Higher numbers are inserted closer to the bottom of the prompt (higher influence)." />
+                      </label>
+                      <input
+                        type="number"
+                        value={selectedEntry.insertion_order}
+                        onChange={(e) =>
+                          handleUpdateSelectedEntry({
+                            insertion_order: Number(e.target.value),
+                          })
+                        }
+                        className="theme-focus-ring font-mono w-full rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 px-3 py-1.5 text-xs text-slate-900 dark:text-white tabular-nums"
+                      />
+                    </div>
+
+                    <div className="space-y-1">
+                      <label className="flex items-center gap-1 text-xs font-medium text-slate-700 dark:text-slate-300">
+                        <span>Depth (when at_depth)</span>
+                        <Tooltip content="Chat history depth from the bottom when position is set to at_depth." />
+                      </label>
+                      <input
+                        type="number"
+                        min={0}
+                        max={100}
+                        value={selectedEntry.depth ?? 4}
+                        onChange={(e) =>
+                          handleUpdateSelectedEntry({
+                            depth: Number(e.target.value),
+                          })
+                        }
+                        className="theme-focus-ring font-mono w-full rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 px-3 py-1.5 text-xs text-slate-900 dark:text-white tabular-nums"
+                      />
+                    </div>
+                  </div>
+
+                  {/* Boolean Trigger Switches */}
+                  <div className="flex flex-wrap items-center gap-6 pt-1 border-t border-slate-200 dark:border-slate-800">
+                    <label className="flex items-center gap-2 text-xs font-medium text-slate-700 dark:text-slate-300 cursor-pointer pt-2">
+                      <input
+                        type="checkbox"
+                        checked={selectedEntry.constant}
+                        onChange={(e) =>
+                          handleUpdateSelectedEntry({
+                            constant: e.target.checked,
+                          })
+                        }
+                        style={{ accentColor: 'var(--theme-accent)' }}
+                        className="h-4 w-4 cursor-pointer"
+                      />
+                      <span>Constant (Always Active)</span>
+                    </label>
+
+                    <label className="flex items-center gap-2 text-xs font-medium text-slate-700 dark:text-slate-300 cursor-pointer pt-2">
+                      <input
+                        type="checkbox"
+                        checked={selectedEntry.selective}
+                        onChange={(e) =>
+                          handleUpdateSelectedEntry({
+                            selective: e.target.checked,
+                          })
+                        }
+                        style={{ accentColor: 'var(--theme-accent)' }}
+                        className="h-4 w-4 cursor-pointer"
+                      />
+                      <span>Selective (Require Secondary Key)</span>
+                    </label>
+
+                    <label className="flex items-center gap-2 text-xs font-medium text-slate-700 dark:text-slate-300 cursor-pointer pt-2">
+                      <input
+                        type="checkbox"
+                        checked={selectedEntry.case_sensitive}
+                        onChange={(e) =>
+                          handleUpdateSelectedEntry({
+                            case_sensitive: e.target.checked,
+                          })
+                        }
+                        style={{ accentColor: 'var(--theme-accent)' }}
+                        className="h-4 w-4 cursor-pointer"
+                      />
+                      <span>Case Sensitive Keys</span>
+                    </label>
+                  </div>
+
+                  {/* Entry Semantic Tags */}
+                  <div className="space-y-1.5 pt-2 border-t border-slate-200 dark:border-slate-800">
+                    <label className="flex items-center gap-1.5 text-xs font-medium text-slate-700 dark:text-slate-300">
+                      <span>Entry Semantic Tags (Injected into AI Assist)</span>
+                      <Tooltip content="Tags attached to this Lorebook entry automatically provide their AI Context Descriptions when generating or expanding this entry." />
+                    </label>
+                    <div className="flex flex-wrap gap-1.5">
+                      {tags.map((tag) => {
+                        const active = (selectedEntry.tags || []).includes(
+                          tag.name
+                        );
+                        return (
+                          <button
+                            key={tag.id}
+                            type="button"
+                            onClick={() => toggleEntryTag(tag.name)}
+                            style={
+                              active
+                                ? {
+                                    borderColor: tag.color,
+                                    backgroundColor: `color-mix(in srgb, ${tag.color} 15%, transparent)`,
+                                  }
+                                : undefined
+                            }
+                            className={`rounded-md border px-2.5 py-1 text-xs font-medium transition-colors cursor-pointer whitespace-nowrap ${
+                              active
+                                ? 'text-slate-900 dark:text-white'
+                                : 'border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 text-slate-500 hover:text-slate-900 dark:hover:text-white'
+                            }`}
+                          >
+                            {tag.name}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                </div>
+              ) : (
+                <div
+                  style={{
+                    borderColor:
+                      'color-mix(in srgb, var(--theme-accent) 35%, transparent)',
+                  }}
+                  className="rounded-xl border bg-white dark:bg-slate-900 p-8 text-center space-y-3"
+                >
+                  <Cpu
+                    className="mx-auto h-6 w-6"
+                    style={{ color: 'var(--theme-accent)' }}
+                  />
+                  <div className="text-sm font-semibold text-slate-900 dark:text-white">
+                    No Lorebook Entry Selected
+                  </div>
+                  <p className="text-xs text-slate-500">
+                    Select an entry from the list or create a new World Info entry to start editing.
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => handleCreateEntry()}
+                    style={{ borderColor: 'var(--theme-accent)' }}
+                    className="theme-hover-outline inline-flex items-center gap-1.5 rounded-lg border bg-slate-900 dark:bg-white px-4 py-2 text-xs font-semibold text-white dark:text-slate-900 cursor-pointer"
+                  >
+                    <Plus className="h-3.5 w-3.5" />
+                    <span>Create First Entry</span>
+                  </button>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Permanent Delete Lorebook Confirmation Modal */}

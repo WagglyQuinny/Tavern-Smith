@@ -276,6 +276,8 @@ export interface ConnectionTestResult {
   ok: boolean;
   latencyMs: number;
   models: string[];
+  detectedFormatLabel: string;
+  diagnosticSummary: string;
   message: string;
   corsHint?: string;
 }
@@ -365,10 +367,14 @@ export async function fetchModels(
     config.preset === 'gemini' ||
     config.url.includes('generativelanguage.googleapis.com')
   ) {
+    if (!config.apiKey.trim()) {
+      throw new AIServiceError(
+        'Invalid or missing API Key for Google Gemini endpoint',
+        { statusCode: 401 }
+      );
+    }
     try {
-      const keyParam = config.apiKey.trim()
-        ? `?key=${encodeURIComponent(config.apiKey.trim())}`
-        : '';
+      const keyParam = `?key=${encodeURIComponent(config.apiKey.trim())}`;
       const geminiRes = await fetch(
         `https://generativelanguage.googleapis.com/v1beta/models${keyParam}`,
         {
@@ -387,9 +393,15 @@ export async function fetchModels(
             .filter((name: string) => name.startsWith('gemini'));
           if (parsed.length > 0) return parsed;
         }
+      } else if (geminiRes.status === 400 || geminiRes.status === 401 || geminiRes.status === 403) {
+        throw new AIServiceError(
+          `Invalid API Key (HTTP ${geminiRes.status})`,
+          { statusCode: geminiRes.status }
+        );
       }
     } catch (err: unknown) {
       if (err instanceof DOMException && err.name === 'AbortError') throw err;
+      if (err instanceof AIServiceError) throw err;
     }
   }
 
@@ -419,6 +431,13 @@ export async function fetchModels(
           .filter(Boolean);
         if (list.length > 0) return list;
       }
+    }
+
+    if (response.status === 401 || response.status === 403) {
+      throw new AIServiceError(
+        `Invalid API Key or unauthorized access (HTTP ${response.status})`,
+        { statusCode: response.status }
+      );
     }
 
     // 3. Ollama Native Fallback: `GET /api/tags`
@@ -468,44 +487,71 @@ export async function fetchModels(
     if (err instanceof AIServiceError) {
       throw err;
     }
-    const rawMessage = err instanceof Error ? err.message : 'Network error';
-    throw new AIServiceError(`Failed to reach ${config.url}: ${rawMessage}`, {
+    const isLocal =
+      config.url.includes('localhost') || config.url.includes('127.0.0.1');
+    const diagnostic = isLocal
+      ? 'Server Offline or Localhost CORS blocked'
+      : `Server unreachable at ${config.url}`;
+    throw new AIServiceError(diagnostic, {
       isCorsOrNetworkError: true,
     });
   }
 }
 
 /**
- * Wrapper used by Options View and TopBar to scan available models and measure latency.
+ * Wrapper used by Options View and TopBar to test connection reliability, scan available models, and measure latency.
  */
 export async function testBackendConnection(
   config: AIBackendConfig,
   signal?: AbortSignal
 ): Promise<ConnectionTestResult> {
   const start = performance.now();
+  const presetMeta = AI_BACKEND_PRESETS.find((p) => p.id === config.preset);
+
+  if (presetMeta?.requiresKey && !config.apiKey.trim()) {
+    const fmt = COMPATIBILITY_FORMAT_LABELS[resolveEffectiveFormat(config)];
+    return {
+      ok: false,
+      latencyMs: 0,
+      models: [],
+      detectedFormatLabel: fmt,
+      diagnosticSummary: `Invalid or missing API Key for ${presetMeta.label}`,
+      message: `🔴 Connection Failed • Invalid or missing API Key for ${presetMeta.label}`,
+    };
+  }
+
   try {
     const models = await fetchModels(config, signal);
-    const latencyMs = Math.round(performance.now() - start);
+    const latencyMs = Math.max(1, Math.round(performance.now() - start));
+    const chosenModel = models[0] || config.modelName;
+    const detectedFmtKey = detectModelCompatibilityFormat(
+      chosenModel,
+      config.preset
+    );
+    const detectedFormatLabel = COMPATIBILITY_FORMAT_LABELS[detectedFmtKey];
+
     return {
       ok: true,
       latencyMs,
       models,
-      message:
-        models.length > 0
-          ? `Connected (${latencyMs}ms) · ${models.length} model${models.length === 1 ? '' : 's'} discovered`
-          : `Connected (${latencyMs}ms) · Endpoint reachable`,
+      detectedFormatLabel,
+      diagnosticSummary: `${latencyMs}ms latency • ${models.length} models detected • Format: ${detectedFormatLabel}`,
+      message: `🟢 Connected & Verified • ${latencyMs}ms latency • ${models.length} models detected • Format: ${detectedFormatLabel}`,
     };
   } catch (err: unknown) {
     if (err instanceof DOMException && err.name === 'AbortError') {
       throw err;
     }
-    const latencyMs = Math.round(performance.now() - start);
+    const latencyMs = Math.max(1, Math.round(performance.now() - start));
+    const fmt = COMPATIBILITY_FORMAT_LABELS[resolveEffectiveFormat(config)];
     if (err instanceof AIServiceError) {
       return {
         ok: false,
         latencyMs,
         models: [],
-        message: err.message,
+        detectedFormatLabel: fmt,
+        diagnosticSummary: err.message,
+        message: `🔴 Connection Failed • ${err.message}`,
         corsHint: err.isCorsOrNetworkError ? err.corsHint : undefined,
       };
     }
@@ -513,7 +559,10 @@ export async function testBackendConnection(
       ok: false,
       latencyMs,
       models: [],
-      message: 'Connection failed. Verify the server URL and CORS settings.',
+      detectedFormatLabel: fmt,
+      diagnosticSummary: 'Server Offline or Localhost CORS blocked',
+      message:
+        '🔴 Connection Failed • Server Offline or Localhost CORS blocked',
       corsHint:
         'Enable CORS in LM Studio (Developer -> Enable CORS) or run Ollama with OLLAMA_ORIGINS="*".',
     };

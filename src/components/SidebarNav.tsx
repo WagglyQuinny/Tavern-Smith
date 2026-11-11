@@ -5,6 +5,7 @@ import {
   Palette,
   FileJson,
   Settings,
+  PanelLeftClose,
 } from 'lucide-react';
 import { useStore } from '../context/StoreContext';
 import { WorkspaceTab } from '../types';
@@ -21,6 +22,7 @@ export const SidebarNav: React.FC = () => {
   const {
     activeTab,
     setActiveTab,
+    setMainSidebarOpen,
     characters,
     character,
     lorebooks,
@@ -70,11 +72,22 @@ export const SidebarNav: React.FC = () => {
       style={{
         borderColor: 'color-mix(in srgb, var(--theme-accent) 32%, transparent)',
       }}
-      className="w-full md:w-60 shrink-0 border-b md:border-b-0 md:border-r bg-slate-50/70 dark:bg-slate-900/50 p-3 flex flex-col justify-between"
+      className="w-full md:w-60 shrink-0 border-b md:border-b-0 md:border-r bg-slate-50/70 dark:bg-slate-900/50 p-3 flex flex-col justify-between transition-all"
     >
       <nav aria-label="Primary Workspace Views" className="space-y-1">
-        <div className="px-2.5 py-1.5 text-xs font-medium text-slate-400 dark:text-slate-500">
-          Workspace Views
+        <div className="flex items-center justify-between px-2.5 py-1.5">
+          <span className="text-xs font-semibold uppercase tracking-wider text-slate-400 dark:text-slate-500">
+            Workspace Views
+          </span>
+          <button
+            type="button"
+            onClick={() => setMainSidebarOpen(false)}
+            title="Hide Main Navigation Sidebar"
+            aria-label="Hide Main Navigation Sidebar"
+            className="rounded-md p-1 text-slate-400 hover:bg-slate-200/70 dark:hover:bg-slate-800 hover:text-slate-700 dark:hover:text-slate-200 transition-colors cursor-pointer"
+          >
+            <PanelLeftClose className="h-4 w-4" />
+          </button>
         </div>
         {navItems.map((item) => {
           const Icon = item.icon;

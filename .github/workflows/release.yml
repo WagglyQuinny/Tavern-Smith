@@ -1,0 +1,58 @@
+name: TavernSmith CI/CD & Release
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - 'v*.*.*'
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    name: Build, Verify & Package TavernSmith
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - name: Install Dependencies
+        run: npm ci
+
+      - name: Run TypeScript & Lint Verification
+        run: npm run lint
+
+      - name: Build Production Bundle
+        run: npm run build
+
+      - name: Package dist into TavernSmith-Release.zip
+        run: |
+          cd dist
+          zip -r ../TavernSmith-Release.zip .
+
+      - name: Upload Build Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: TavernSmith-Release
+          path: TavernSmith-Release.zip
+
+      - name: Publish GitHub Release on Tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: TavernSmith-Release.zip
+          body_path: CHANGELOG.md
+          generate_release_notes: true

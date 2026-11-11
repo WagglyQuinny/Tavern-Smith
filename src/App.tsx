@@ -9,11 +9,11 @@ import { JsonInspectorView } from './views/JsonInspectorView';
 import { OptionsView } from './views/OptionsView';
 
 const WorkspaceShell: React.FC = () => {
-  const { activeTab, settings } = useStore();
+  const { activeTab, settings, isMainSidebarOpen } = useStore();
 
   return (
     <div
-      className={`min-h-screen flex flex-col transition-colors ${
+      className={`min-h-screen w-full flex flex-col transition-colors ${
         settings.appearance === 'dark'
           ? 'dark bg-[#09090b] text-[#f4f4f5]'
           : 'light bg-[#f4f4f5] text-[#09090b]'
@@ -21,10 +21,10 @@ const WorkspaceShell: React.FC = () => {
     >
       <TopBar />
 
-      <div className="flex-1 flex flex-col md:flex-row min-h-0">
-        <SidebarNav />
+      <div className="flex-1 flex flex-col md:flex-row min-h-0 min-w-0 w-full">
+        {isMainSidebarOpen && <SidebarNav />}
 
-        <main className="flex-1 min-w-0 p-5 md:p-7 max-w-[1440px]">
+        <main className="flex-1 min-w-0 w-full p-4 md:p-6 lg:p-7">
           {activeTab === 'character' && <CharacterView />}
           {activeTab === 'lorebook' && <LorebookView />}
           {activeTab === 'themes_tags' && <ThemesAndTagsView />}

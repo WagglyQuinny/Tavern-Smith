@@ -10,10 +10,8 @@ import {
   AlertTriangle,
   Edit3,
   Eye,
-  GitBranch,
   ShieldCheck,
   BarChart3,
-  FileCode2,
   BookOpen,
   Sparkles,
 } from 'lucide-react';
@@ -24,147 +22,16 @@ import {
   exportCharacterAsPng,
   exportCharacterAsJson,
   exportLorebookAsJson,
-  triggerBrowserDownload,
 } from '../utils/cardIO';
 import { calculateCardTokenBreakdown } from '../utils/tokenCounter';
 
-type InspectorTab = 'v2' | 'v3' | 'lorebook' | 'github_kit';
-type ReleaseKitDoc = 'workflow' | 'readme' | 'changelog';
+type InspectorTab = 'v2' | 'v3' | 'lorebook';
 
 interface ValidationIssue {
   level: 'ok' | 'warn' | 'error';
   label: string;
   detail: string;
 }
-
-const GITHUB_RELEASE_WORKFLOW_YML = `name: TavernSmith CI/CD & Release Kit
-
-on:
-  push:
-    branches: [ main ]
-    tags:
-      - 'v*.*.*'
-  pull_request:
-    branches: [ main ]
-  workflow_dispatch:
-
-permissions:
-  contents: write
-  pages: write
-  id-token: write
-
-concurrency:
-  group: "pages-and-release-\${{ github.ref }}"
-  cancel-in-progress: true
-
-jobs:
-  build-and-verify:
-    name: Typecheck, Lint & Production Vite Bundle
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout Repository
-        uses: actions/checkout@v4
-
-      - name: Setup Node.js 22
-        uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-          cache: 'npm'
-
-      - name: Install Dependencies
-        run: npm ci
-
-      - name: TypeScript Strict Verification
-        run: npm run lint
-
-      - name: Build Production SPA Bundle
-        run: npm run build
-
-      - name: Upload Pages Artifact
-        if: github.ref == 'refs/heads/main'
-        uses: actions/upload-pages-artifact@v3
-        with:
-          path: ./dist
-
-      - name: Archive Release Zip for Tag
-        if: startsWith(github.ref, 'refs/tags/v')
-        run: |
-          cd dist
-          zip -r ../tavernsmith-\${{ github.ref_name }}-web-bundle.zip .
-
-      - name: Create Automated GitHub Release
-        if: startsWith(github.ref, 'refs/tags/v')
-        uses: softprops/action-gh-release@v2
-        with:
-          files: tavernsmith-\${{ github.ref_name }}-web-bundle.zip
-          generate_release_notes: true
-          body_path: CHANGELOG.md
-
-  deploy-pages:
-    if: github.ref == 'refs/heads/main'
-    needs: build-and-verify
-    name: Deploy to GitHub Pages
-    runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: \${{ steps.deployment.outputs.page_url }}
-    steps:
-      - name: Deploy to GitHub Pages
-        id: deployment
-        uses: actions/deploy-pages@v4
-`;
-
-export const TAVERNSmith_CHANGELOG_MD = `# Changelog — TavernSmith IDE
-
-All notable changes to **TavernSmith** are documented in this file.
-
-## [v1.0.0] — Production Release
-
-### Added
-- **Unified SillyTavern V2 & V3 Character Card Engine**:
-  - Full schema support for \`chara_card_v2\` (2.0) and \`chara_card_v3\` (3.0) specifications.
-  - Pure-browser PNG steganography (\`tEXt\` chunk reader & writer with IEEE 802.3 CRC32 verification) embedding both \`chara\` (V2 Base64 UTF-8 JSON) and \`ccv3\` (V3 Base64 UTF-8 JSON) chunks for maximum cross-client compatibility.
-- **Synchronized \`<SmartEditor />\` with Macro & Ghost Text Support**:
-  - Zero-dependency pixel-aligned backdrop highlighter for \`{{char}}\`, \`{{user}}\`, \`{{random:...}}\`, \`{{roll:...}}\`, and \`{{time}}\` macros.
-  - Instant keyboard-navigable \`{{macro}}\` autocomplete popup without AI latency.
-  - Non-intrusive debounced AI Ghost Text (\`Tab\` to accept, \`Esc\` to dismiss) with strict \`AbortController\` lifecycle cleanup.
-- **DM / GM Stat Block & RPG HUD Builder**:
-  - Modular tracked stats (\`number\`, \`bar\`, \`text\`, \`list\`) with custom ASCII HUD templates (Modern Bracketed, Classic RPG Box, Minimalist Inline) and 1-Click Compilation into System Prompt, Post-History, or Author's Note.
-- **Multi-Provider AI Scanner & Reasoning Parser**:
-  - One-click presets for LM Studio, Ollama, KoboldCPP, Google Gemini, xAI Grok, Meta Llama 4 (OpenRouter, Groq, Meta Direct), and OpenAI-compatible APIs.
-  - Live endpoint model scanner (\`/v1/models\`, \`/api/tags\`, \`/v1beta/models\`) and automatic stripping of \`<think>\`, \`<thought>\`, and \`<reasoning>\` blocks into a collapsible Reasoning Inspector.
-- **Storage & Save Folder Manager**:
-  - Native Local PC Save Folder integration (\`window.showDirectoryPicker\`) paired with an interactive In-App Save Folder Manager, live save log, quota telemetry, and 1-click backup bundle export.
-- **Dual-Layer Theme Architecture**:
-  - True Dark Mode (\`#09090b\` obsidian canvas) and Light Mode (\`#f4f4f5\` daylight alabaster canvas) combined with customizable Context Themes that dynamically bind \`--theme-accent\` across all active borders and focus rings.
-`;
-
-export const TAVERNSmith_README_MD = `# TavernSmith — SillyTavern V2 & V3 Character & Lorebook IDE
-
-**TavernSmith** (\`v1.0.0\`) is a browser-native Character Card V2/V3 and World Info (Lorebook) IDE built with React, TypeScript, and Tailwind CSS.
-
-## Core Capabilities
-1. **Character Workbench & 5-Step Guided Wizard**:
-   - Edit Identity, Scenario, Greeting Carousel, Example Dialogue, System Prompts, and RPG Stat Blocks with real-time token telemetry.
-2. **Pure-Browser PNG & JSON Card I/O**:
-   - Drag and drop any SillyTavern \`.png\` or \`.json\` card to inspect and edit its embedded \`chara\` / \`ccv3\` chunks, or export directly to PNG/JSON with zero server dependencies.
-3. **World Info / Lorebook Workbench**:
-   - Manage constant and keyword-triggered lore entries, insertion orders, selective keys, and live keyword-activation simulation.
-4. **Storage & Save Folder Manager**:
-   - Connect a local directory via the File System Access API (\`showDirectoryPicker\`) or organize cards across virtual Save Folders with automatic interval snapshots.
-
-## Quick Start
-\`\`\`bash
-npm install
-npm run dev
-\`\`\`
-
-## Production Build & Type Check
-\`\`\`bash
-npm run lint
-npm run build
-\`\`\`
-`;
 
 export const JsonInspector: React.FC = () => {
   const {
@@ -182,7 +49,6 @@ export const JsonInspector: React.FC = () => {
   const [activeTab, setActiveTab] = useState<InspectorTab>(
     settings.cardSpecVersion === 'v2' ? 'v2' : 'v3'
   );
-  const [releaseDoc, setReleaseDoc] = useState<ReleaseKitDoc>('workflow');
   const [copied, setCopied] = useState(false);
   const [isRawEditMode, setIsRawEditMode] = useState(false);
   const [rawJsonDraft, setRawJsonDraft] = useState('');
@@ -219,11 +85,8 @@ export const JsonInspector: React.FC = () => {
   const displayedContent = useMemo(() => {
     if (activeTab === 'v2') return v2JsonString;
     if (activeTab === 'v3') return v3JsonString;
-    if (activeTab === 'lorebook') return lorebookJsonString;
-    if (releaseDoc === 'workflow') return GITHUB_RELEASE_WORKFLOW_YML;
-    if (releaseDoc === 'readme') return TAVERNSmith_README_MD;
-    return TAVERNSmith_CHANGELOG_MD;
-  }, [activeTab, releaseDoc, v2JsonString, v3JsonString, lorebookJsonString]);
+    return lorebookJsonString;
+  }, [activeTab, v2JsonString, v3JsonString, lorebookJsonString]);
 
   const tokenBreakdown = useMemo(
     () => calculateCardTokenBreakdown(character, lorebook, statBlock),
@@ -345,7 +208,6 @@ export const JsonInspector: React.FC = () => {
   };
 
   const handleToggleRawEdit = () => {
-    if (activeTab === 'github_kit') return;
     if (!isRawEditMode) {
       setRawJsonDraft(displayedContent);
       setRawEditError(null);
@@ -486,32 +348,9 @@ export const JsonInspector: React.FC = () => {
       window.setTimeout(() => setStatusNotice(null), 3000);
       return;
     }
-    if (activeTab === 'lorebook') {
-      exportLorebookAsJson(lorebook);
-      setStatusNotice(`Downloaded ${lorebook.name} Lorebook JSON.`);
-      window.setTimeout(() => setStatusNotice(null), 3000);
-      return;
-    }
-    // GitHub Release Kit file download
-    if (releaseDoc === 'workflow') {
-      triggerBrowserDownload(
-        GITHUB_RELEASE_WORKFLOW_YML,
-        'release.yml',
-        'text/yaml;charset=utf-8'
-      );
-    } else if (releaseDoc === 'readme') {
-      triggerBrowserDownload(
-        TAVERNSmith_README_MD,
-        'README.md',
-        'text/markdown;charset=utf-8'
-      );
-    } else {
-      triggerBrowserDownload(
-        TAVERNSmith_CHANGELOG_MD,
-        'CHANGELOG.md',
-        'text/markdown;charset=utf-8'
-      );
-    }
+    exportLorebookAsJson(lorebook);
+    setStatusNotice(`Downloaded ${lorebook.name} Lorebook JSON.`);
+    window.setTimeout(() => setStatusNotice(null), 3000);
   };
 
   const handleExportPng = async () => {
@@ -578,12 +417,12 @@ export const JsonInspector: React.FC = () => {
           <div>
             <div className="flex items-center gap-2">
               <h1 className="text-xl font-bold tracking-tight text-slate-900 dark:text-white">
-                SillyTavern V2/V3 Inspector & Release Kit
+                SillyTavern V2/V3 JSON &amp; Schema Inspector
               </h1>
-              <Tooltip content="Inspect live V2/V3 serialized JSON, verify schema & token budgets, edit raw JSON directly, or export your GitHub Actions CI/CD Release Kit." />
+              <Tooltip content="Inspect live V2/V3 serialized JSON, verify schema & token budgets, edit raw JSON directly, or export PNG/JSON cards." />
             </div>
             <p className="text-xs text-slate-500 dark:text-slate-400">
-              Live Schema Validator · Pure-Browser PNG Steganography (`chara` + `ccv3`) · GitHub Release Automation
+              Live Schema Validator · Pure-Browser PNG Steganography (`chara` + `ccv3`) · Zero-Credential Sanitized Export
             </p>
           </div>
         </div>
@@ -599,35 +438,33 @@ export const JsonInspector: React.FC = () => {
             <span>Import .PNG / .JSON</span>
           </button>
 
-          {activeTab !== 'github_kit' && (
-            <button
-              type="button"
-              onClick={handleToggleRawEdit}
-              style={
-                isRawEditMode ? { borderColor: 'var(--theme-accent)' } : undefined
-              }
-              className={`theme-hover-outline flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-medium cursor-pointer ${
-                isRawEditMode
-                  ? 'bg-slate-900 text-white dark:bg-white dark:text-slate-900'
-                  : 'border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 text-slate-700 dark:text-slate-200'
-              }`}
-            >
-              {isRawEditMode ? (
-                <>
-                  <Eye className="h-3.5 w-3.5" />
-                  <span>Exit Raw Edit</span>
-                </>
-              ) : (
-                <>
-                  <Edit3
-                    className="h-3.5 w-3.5"
-                    style={{ color: 'var(--theme-accent)' }}
-                  />
-                  <span>Raw JSON Edit</span>
-                </>
-              )}
-            </button>
-          )}
+          <button
+            type="button"
+            onClick={handleToggleRawEdit}
+            style={
+              isRawEditMode ? { borderColor: 'var(--theme-accent)' } : undefined
+            }
+            className={`theme-hover-outline flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-medium cursor-pointer ${
+              isRawEditMode
+                ? 'bg-slate-900 text-white dark:bg-white dark:text-slate-900'
+                : 'border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 text-slate-700 dark:text-slate-200'
+            }`}
+          >
+            {isRawEditMode ? (
+              <>
+                <Eye className="h-3.5 w-3.5" />
+                <span>Exit Raw Edit</span>
+              </>
+            ) : (
+              <>
+                <Edit3
+                  className="h-3.5 w-3.5"
+                  style={{ color: 'var(--theme-accent)' }}
+                />
+                <span>Raw JSON Edit</span>
+              </>
+            )}
+          </button>
 
           {(activeTab === 'v2' || activeTab === 'v3') && (
             <button
@@ -652,9 +489,7 @@ export const JsonInspector: React.FC = () => {
               className="h-3.5 w-3.5"
               style={{ color: 'var(--theme-accent)' }}
             />
-            <span>
-              {activeTab === 'github_kit' ? 'Download File' : 'Download .JSON'}
-            </span>
+            <span>Download .JSON</span>
           </button>
 
           <button
@@ -754,24 +589,6 @@ export const JsonInspector: React.FC = () => {
             <BookOpen className="h-3.5 w-3.5" />
             <span>Lorebook JSON ({lorebook.entries.length} entries)</span>
           </button>
-
-          <button
-            type="button"
-            onClick={() => handleSwitchTab('github_kit')}
-            style={
-              activeTab === 'github_kit'
-                ? { borderColor: 'var(--theme-accent)' }
-                : undefined
-            }
-            className={`flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-medium transition-colors cursor-pointer ${
-              activeTab === 'github_kit'
-                ? 'bg-white dark:bg-slate-800 text-slate-900 dark:text-white shadow-2xs'
-                : 'border-transparent text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
-            }`}
-          >
-            <GitBranch className="h-3.5 w-3.5" />
-            <span>GitHub CI/CD Release Kit</span>
-          </button>
         </div>
 
         <div className="flex items-center gap-3 font-mono text-xs text-slate-500 dark:text-slate-400 tabular-nums">
@@ -798,87 +615,39 @@ export const JsonInspector: React.FC = () => {
         </div>
       </div>
 
-      {/* Main 12-Col Grid: Left 8 Cols Code/Editor, Right 4 Cols Schema Validation & Token Breakdown */}
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
-        {/* Left 8 Columns: JSON / Release Kit Code Viewer or Raw Editor */}
+      {/* Main Fluid Responsive Grid: Code/Editor + Schema Validation & Token Breakdown */}
+      <div
+        style={{
+          gridTemplateColumns:
+            'repeat(auto-fit, minmax(min(100%, 360px), 1fr))',
+        }}
+        className="grid gap-6 items-start"
+      >
+        {/* Left Column: JSON Code Viewer or Raw Editor */}
         <div
           style={{
             borderColor:
               'color-mix(in srgb, var(--theme-accent) 40%, transparent)',
           }}
-          className="lg:col-span-8 rounded-xl border bg-white dark:bg-slate-900 overflow-hidden"
+          className="rounded-xl border bg-white dark:bg-slate-900 overflow-hidden min-w-0"
         >
           {/* Sub-header inside Code Panel */}
           <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 dark:border-slate-800 bg-slate-50/80 dark:bg-slate-950/60 px-4 py-2.5">
-            {activeTab === 'github_kit' ? (
-              <div className="flex flex-wrap items-center gap-1.5">
-                <button
-                  type="button"
-                  onClick={() => setReleaseDoc('workflow')}
-                  style={
-                    releaseDoc === 'workflow'
-                      ? { borderColor: 'var(--theme-accent)' }
-                      : undefined
-                  }
-                  className={`flex items-center gap-1.5 rounded-md border px-2.5 py-1 font-mono text-xs cursor-pointer ${
-                    releaseDoc === 'workflow'
-                      ? 'bg-white dark:bg-slate-800 text-slate-900 dark:text-white font-semibold'
-                      : 'border-transparent text-slate-500 hover:text-slate-900 dark:hover:text-white'
-                  }`}
-                >
-                  <FileCode2 className="h-3.5 w-3.5" />
-                  <span>.github/workflows/release.yml</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setReleaseDoc('readme')}
-                  style={
-                    releaseDoc === 'readme'
-                      ? { borderColor: 'var(--theme-accent)' }
-                      : undefined
-                  }
-                  className={`flex items-center gap-1.5 rounded-md border px-2.5 py-1 font-mono text-xs cursor-pointer ${
-                    releaseDoc === 'readme'
-                      ? 'bg-white dark:bg-slate-800 text-slate-900 dark:text-white font-semibold'
-                      : 'border-transparent text-slate-500 hover:text-slate-900 dark:hover:text-white'
-                  }`}
-                >
-                  <span>README.md</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setReleaseDoc('changelog')}
-                  style={
-                    releaseDoc === 'changelog'
-                      ? { borderColor: 'var(--theme-accent)' }
-                      : undefined
-                  }
-                  className={`flex items-center gap-1.5 rounded-md border px-2.5 py-1 font-mono text-xs cursor-pointer ${
-                    releaseDoc === 'changelog'
-                      ? 'bg-white dark:bg-slate-800 text-slate-900 dark:text-white font-semibold'
-                      : 'border-transparent text-slate-500 hover:text-slate-900 dark:hover:text-white'
-                  }`}
-                >
-                  <span>CHANGELOG.md</span>
-                </button>
-              </div>
-            ) : (
-              <div className="flex items-center gap-2 text-xs">
-                <span className="font-mono font-semibold text-slate-800 dark:text-slate-200">
-                  {activeTab === 'v2' &&
-                    `${character.name || 'character'}.v2.json`}
-                  {activeTab === 'v3' &&
-                    `${character.name || 'character'}.v3.json`}
-                  {activeTab === 'lorebook' &&
-                    `${lorebook.name || 'lorebook'}.worldinfo.json`}
-                </span>
-                <span className="rounded bg-slate-200/70 dark:bg-slate-800 px-1.5 py-0.5 font-mono text-[10px] text-slate-600 dark:text-slate-300">
-                  {isRawEditMode ? 'EDITABLE RAW JSON' : 'READ-ONLY SNAPSHOT'}
-                </span>
-              </div>
-            )}
+            <div className="flex items-center gap-2 text-xs">
+              <span className="font-mono font-semibold text-slate-800 dark:text-slate-200">
+                {activeTab === 'v2' &&
+                  `${character.name || 'character'}.v2.json`}
+                {activeTab === 'v3' &&
+                  `${character.name || 'character'}.v3.json`}
+                {activeTab === 'lorebook' &&
+                  `${lorebook.name || 'lorebook'}.worldinfo.json`}
+              </span>
+              <span className="rounded bg-slate-200/70 dark:bg-slate-800 px-1.5 py-0.5 font-mono text-[10px] text-slate-600 dark:text-slate-300">
+                {isRawEditMode ? 'EDITABLE RAW JSON' : 'READ-ONLY SNAPSHOT'}
+              </span>
+            </div>
 
-            {isRawEditMode && activeTab !== 'github_kit' && (
+            {isRawEditMode && (
               <button
                 type="button"
                 onClick={handleApplyRawJson}
@@ -897,7 +666,7 @@ export const JsonInspector: React.FC = () => {
             </div>
           )}
 
-          {isRawEditMode && activeTab !== 'github_kit' ? (
+          {isRawEditMode ? (
             <textarea
               value={rawJsonDraft}
               onChange={(e) => setRawJsonDraft(e.target.value)}
@@ -911,8 +680,8 @@ export const JsonInspector: React.FC = () => {
           )}
         </div>
 
-        {/* Right 4 Columns: Live Schema Validator & Per-Field Token Telemetry */}
-        <div className="lg:col-span-4 space-y-6">
+        {/* Right Column: Live Schema Validator & Per-Field Token Telemetry */}
+        <div className="space-y-6 min-w-0">
           {/* Schema & Security Validation Card */}
           <div
             style={{
@@ -928,7 +697,7 @@ export const JsonInspector: React.FC = () => {
                   style={{ color: 'var(--theme-accent)' }}
                 />
                 <h2 className="text-xs font-bold uppercase tracking-wider text-slate-800 dark:text-slate-200">
-                  Live Schema & Security Audit
+                  Live Schema &amp; Security Audit
                 </h2>
               </div>
               <span className="font-mono text-[11px] text-emerald-600 dark:text-emerald-400 font-semibold">

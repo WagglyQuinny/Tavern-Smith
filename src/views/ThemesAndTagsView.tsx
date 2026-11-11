@@ -317,12 +317,18 @@ export const ThemesAndTagsView: React.FC = () => {
         </div>
       </div>
 
-      {/* Section 1: Context Themes Split Grid */}
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
-        {/* Left 5 cols: Context Theme List */}
+      {/* Section 1: Context Themes Fluid Responsive Grid */}
+      <div
+        style={{
+          gridTemplateColumns:
+            'repeat(auto-fit, minmax(min(100%, 340px), 1fr))',
+        }}
+        className="grid gap-6 items-start"
+      >
+        {/* Left Column: Context Theme List */}
         <div
           style={{ borderColor: 'color-mix(in srgb, var(--theme-accent) 35%, transparent)' }}
-          className="lg:col-span-5 rounded-xl border bg-white dark:bg-slate-900 p-4 space-y-4"
+          className="rounded-xl border bg-white dark:bg-slate-900 p-4 space-y-4 min-w-0"
         >
           <div className="flex items-center justify-between gap-2">
             <div className="flex items-center gap-2">
@@ -454,8 +460,8 @@ export const ThemesAndTagsView: React.FC = () => {
           </div>
         </div>
 
-        {/* Right 7 cols: Context Theme Editor + Live Compiled AI Context Preview */}
-        <div className="lg:col-span-7 space-y-6">
+        {/* Right Column: Context Theme Editor + Live Compiled AI Context Preview */}
+        <div className="space-y-6 min-w-0">
           <form
             onSubmit={handleSaveTheme}
             style={{ borderColor: 'var(--theme-accent)' }}

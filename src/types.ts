@@ -204,6 +204,7 @@ export interface AppSettings {
   cardSpecVersion: 'v2' | 'v3';
   activeSaveFolder: string;
   availableSaveFolders: string[];
+  mainSidebarOpen?: boolean;
 }
 
 export interface TokenBreakdown {

@@ -23,8 +23,9 @@ import {
   FileJson,
   Clock,
   Archive,
+  Zap,
 } from 'lucide-react';
-import { useStore } from '../context/StoreContext';
+import { formatSafeTimestamp, useStore } from '../context/StoreContext';
 import {
   AI_BACKEND_PRESETS,
   COMPATIBILITY_FORMAT_LABELS,
@@ -196,19 +197,19 @@ export const OptionsView: React.FC = () => {
   );
 
   return (
-    <div className="space-y-8">
+    <div className="space-y-8 min-w-0 w-full">
       {/* Top Header */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-slate-200 dark:border-slate-800 pb-4">
-        <div>
+      <div className="flex flex-wrap items-center justify-between gap-4 border-b border-slate-200 dark:border-slate-800 pb-4">
+        <div className="min-w-0">
           <h1 className="text-xl font-bold tracking-tight text-slate-900 dark:text-white">
-            IDE Options, AI Connections & Save Folder Manager
+            IDE Options, AI Connections &amp; Save Folder Manager
           </h1>
           <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
             Configure local/cloud AI endpoints, live model scanning, Save Folder targets, and workspace appearance.
           </p>
         </div>
 
-        <div className="flex items-center gap-2.5 shrink-0">
+        <div className="flex flex-wrap items-center gap-2.5 shrink-0">
           <button
             type="button"
             onClick={() => saveNow('manual')}
@@ -229,7 +230,7 @@ export const OptionsView: React.FC = () => {
               className="h-3.5 w-3.5"
               style={{ color: 'var(--theme-accent)' }}
             />
-            <span>About & Changelog (v1.0.0)</span>
+            <span>About &amp; Changelog (v1.0.0)</span>
           </button>
         </div>
       </div>
@@ -239,7 +240,7 @@ export const OptionsView: React.FC = () => {
         style={{ borderColor: 'var(--theme-accent)' }}
         className="rounded-xl border bg-white dark:bg-slate-900 p-5 space-y-5"
       >
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-200 dark:border-slate-800 pb-3.5">
+        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 dark:border-slate-800 pb-3.5">
           <div className="flex items-center gap-2.5">
             <div
               style={{
@@ -257,7 +258,7 @@ export const OptionsView: React.FC = () => {
             <div>
               <div className="flex items-center gap-2">
                 <h2 className="text-sm font-bold text-slate-900 dark:text-white">
-                  Storage & Save Folder Manager
+                  Storage &amp; Save Folder Manager
                 </h2>
                 <Tooltip content="Both Manual Save and the Auto-Save Timer write your active Character ([name].json) and Lorebook ([name].json) directly to the selected Save Folder." />
               </div>
@@ -319,10 +320,16 @@ export const OptionsView: React.FC = () => {
           </div>
         )}
 
-        {/* Storage Telemetry + Folder Selector Grid */}
-        <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 items-start">
-          {/* Left 5 Cols: Folder Selector, Create Folder & Storage Quota */}
-          <div className="lg:col-span-5 space-y-4">
+        {/* Storage Telemetry + Folder Selector Fluid Grid */}
+        <div
+          style={{
+            gridTemplateColumns:
+              'repeat(auto-fit, minmax(min(100%, 340px), 1fr))',
+          }}
+          className="grid gap-5 items-start"
+        >
+          {/* Left Column: Folder Selector, Create Folder & Storage Quota */}
+          <div className="space-y-4 min-w-0">
             <div className="space-y-2">
               <label className="text-xs font-semibold text-slate-700 dark:text-slate-300">
                 In-App Save Folder Selector
@@ -375,7 +382,7 @@ export const OptionsView: React.FC = () => {
                 type="text"
                 value={newFolderInput}
                 onChange={(e) => setNewFolderInput(e.target.value)}
-                placeholder="/TavernSmith/Saves/MyCampaign"
+                placeholder="/TavernSmith/Saves/CustomFolder"
                 className="theme-focus-ring font-mono flex-1 rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 px-3 py-1.5 text-xs text-slate-900 dark:text-white"
               />
               <button
@@ -445,8 +452,8 @@ export const OptionsView: React.FC = () => {
             </div>
           </div>
 
-          {/* Right 7 Cols: Active Save Folder File Browser & Live Save Log */}
-          <div className="lg:col-span-7 space-y-4">
+          {/* Right Column: Active Save Folder File Browser & Live Save Log */}
+          <div className="space-y-4 min-w-0">
             <div className="rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-950/50 p-3.5 space-y-3">
               <div className="flex items-center justify-between border-b border-slate-200 dark:border-slate-800 pb-2">
                 <div className="flex items-center gap-2 text-xs font-semibold text-slate-800 dark:text-slate-200">
@@ -488,11 +495,7 @@ export const OptionsView: React.FC = () => {
                         </div>
                         <div className="font-mono text-[10px] text-slate-400">
                           {(file.sizeBytes / 1024).toFixed(2)} KB · Updated{' '}
-                          {new Date(file.updatedAt).toLocaleTimeString([], {
-                            hour: '2-digit',
-                            minute: '2-digit',
-                            second: '2-digit',
-                          })}
+                          {formatSafeTimestamp(file.updatedAt)}
                         </div>
                       </div>
 
@@ -528,7 +531,7 @@ export const OptionsView: React.FC = () => {
                     className="h-3.5 w-3.5"
                     style={{ color: 'var(--theme-accent)' }}
                   />
-                  <span>Live Save & Auto-Save Target Log</span>
+                  <span>Live Save &amp; Auto-Save Target Log</span>
                 </div>
                 <span className="font-mono text-[11px] text-slate-500">
                   {lastSavedAt ? `Last Saved: ${lastSavedAt}` : 'Ready'}
@@ -565,9 +568,15 @@ export const OptionsView: React.FC = () => {
       </div>
 
       {/* SECTION 2: APPEARANCE, WORKFLOW & AI BACKEND CONFIGURATION */}
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
-        {/* Left 5 Columns: Appearance, Workflow Mode & Auto-Save */}
-        <div className="lg:col-span-5 space-y-6">
+      <div
+        style={{
+          gridTemplateColumns:
+            'repeat(auto-fit, minmax(min(100%, 340px), 1fr))',
+        }}
+        className="grid gap-6 items-start"
+      >
+        {/* Left Column: Appearance, Workflow Mode & Auto-Save */}
+        <div className="space-y-6 min-w-0">
           {/* Appearance & Workflow Mode Card */}
           <div
             style={{
@@ -577,7 +586,7 @@ export const OptionsView: React.FC = () => {
             className="rounded-xl border bg-white dark:bg-slate-900 p-5 space-y-5"
           >
             <h2 className="text-sm font-semibold text-slate-900 dark:text-white border-b border-slate-200 dark:border-slate-800 pb-2.5">
-              Appearance & Workspace Mode
+              Appearance &amp; Workspace Mode
             </h2>
 
             {/* Appearance Mode: Dark vs Light */}
@@ -721,7 +730,7 @@ export const OptionsView: React.FC = () => {
           >
             <div className="flex items-center justify-between border-b border-slate-200 dark:border-slate-800 pb-2.5">
               <h2 className="text-sm font-semibold text-slate-900 dark:text-white">
-                Auto-Save Interval & Reset
+                Auto-Save Interval &amp; Reset
               </h2>
               <span className="font-mono text-[11px] text-slate-500 dark:text-slate-400 tabular-nums">
                 {lastSavedAt ? `Saved ${lastSavedAt}` : 'Not saved yet'}
@@ -780,7 +789,7 @@ export const OptionsView: React.FC = () => {
               </div>
             </div>
 
-            <div className="pt-2 flex items-center justify-between gap-2 border-t border-slate-200 dark:border-slate-800">
+            <div className="pt-2 flex flex-wrap items-center justify-between gap-2 border-t border-slate-200 dark:border-slate-800">
               <button
                 type="button"
                 onClick={() => saveNow('manual')}
@@ -828,10 +837,10 @@ export const OptionsView: React.FC = () => {
           </div>
         </div>
 
-        {/* Right 7 Columns: Expanded AI Backend Connection Manager & Model Scanner */}
+        {/* Right Column: Expanded AI Backend Connection Manager & Model Scanner */}
         <div
           style={{ borderColor: 'var(--theme-accent)' }}
-          className="lg:col-span-7 rounded-xl border bg-white dark:bg-slate-900 p-5 space-y-5"
+          className="rounded-xl border bg-white dark:bg-slate-900 p-5 space-y-5 min-w-0"
         >
           <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 dark:border-slate-800 pb-3">
             <div className="flex items-center gap-2">
@@ -840,7 +849,7 @@ export const OptionsView: React.FC = () => {
                 style={{ color: 'var(--theme-accent)' }}
               />
               <h2 className="text-sm font-semibold text-slate-900 dark:text-white">
-                AI Connections, Model Scanner & Thinking Parser
+                AI Connections, Model Scanner &amp; Thinking Parser
               </h2>
               <Tooltip
                 title="Multi-Provider AI Engine"
@@ -853,7 +862,7 @@ export const OptionsView: React.FC = () => {
               onClick={handleScanModels}
               disabled={testingConnection}
               style={{ borderColor: 'var(--theme-accent)' }}
-              className="theme-hover-outline flex items-center gap-1.5 rounded-lg border bg-slate-900 dark:bg-white px-3.5 py-1.5 text-xs font-semibold text-white dark:text-slate-900 disabled:opacity-50 cursor-pointer"
+              className="theme-hover-outline flex items-center gap-1.5 rounded-lg border bg-slate-50 dark:bg-slate-800 px-3 py-1.5 text-xs font-semibold text-slate-900 dark:text-white disabled:opacity-50 cursor-pointer"
             >
               <RefreshCw
                 className={`h-3.5 w-3.5 ${
@@ -862,8 +871,8 @@ export const OptionsView: React.FC = () => {
               />
               <span>
                 {testingConnection
-                  ? 'Scanning Endpoint...'
-                  : 'Scan Available Models'}
+                  ? 'Scanning...'
+                  : '🔄 Scan Available Models'}
               </span>
             </button>
           </div>
@@ -873,7 +882,13 @@ export const OptionsView: React.FC = () => {
             <label className="text-xs font-medium text-slate-700 dark:text-slate-300">
               One-Click Provider Presets
             </label>
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+            <div
+              style={{
+                gridTemplateColumns:
+                  'repeat(auto-fit, minmax(min(100%, 170px), 1fr))',
+              }}
+              className="grid gap-2"
+            >
               {AI_BACKEND_PRESETS.map((preset) => {
                 const isSelected = aiConfig.preset === preset.id;
                 return (
@@ -911,73 +926,106 @@ export const OptionsView: React.FC = () => {
             </p>
           </div>
 
-          {/* Connection Scan Result Banner */}
-          {testResult && (
+          {/* Endpoint URL, Bearer Credential Input & Prominent "⚡ Connect & Test" Button */}
+          <div className="space-y-3">
             <div
-              className={`flex items-start gap-2.5 rounded-lg border p-3 text-xs ${
-                testResult.ok
-                  ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-800 dark:text-emerald-200'
-                  : 'border-amber-500/40 bg-amber-500/10 text-amber-800 dark:text-amber-200'
-              }`}
+              style={{
+                gridTemplateColumns:
+                  'repeat(auto-fit, minmax(min(100%, 210px), 1fr))',
+              }}
+              className="grid gap-3 items-end"
             >
-              {testResult.ok ? (
-                <CheckCircle2 className="h-4 w-4 text-emerald-500 shrink-0 mt-0.5" />
-              ) : (
-                <AlertCircle className="h-4 w-4 text-amber-500 shrink-0 mt-0.5" />
-              )}
-              <div className="space-y-1">
-                <div className="font-medium">{testResult.message}</div>
-                {!testResult.ok && (
-                  <div className="text-[11px] opacity-85">
-                    {testResult.corsHint ||
-                      'Tip: For local servers (LM Studio / Ollama), ensure the local server is running and CORS is enabled (e.g., OLLAMA_ORIGINS=*).'}
-                  </div>
-                )}
+              <div className="space-y-1.5">
+                <label className="flex items-center gap-1.5 text-xs font-medium text-slate-700 dark:text-slate-300">
+                  <span>Base Endpoint URL</span>
+                  <Tooltip content="Endpoint base URL for /v1/chat/completions, Ollama /api/tags, or Gemini /v1beta/openai." />
+                </label>
+                <input
+                  type="url"
+                  value={aiConfig.url}
+                  onChange={(e) =>
+                    setAiConfig((prev) => ({ ...prev, url: e.target.value }))
+                  }
+                  placeholder="http://localhost:1234/v1"
+                  className="theme-focus-ring font-mono w-full rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 px-3 py-2 text-xs text-slate-900 dark:text-white"
+                />
+              </div>
+
+              <div className="space-y-1.5">
+                <label className="flex items-center gap-1.5 text-xs font-medium text-slate-700 dark:text-slate-300">
+                  <span>
+                    {currentPresetMeta.requiresKey
+                      ? 'Provider Bearer Token (Required)'
+                      : 'Bearer Token (Optional for Local)'}
+                  </span>
+                  <Tooltip content="Authorization token for cloud endpoints (Gemini, xAI Grok, OpenRouter, Groq, OpenAI). Stored locally in your browser workspace and never exported into Character Cards." />
+                </label>
+                <input
+                  type="password"
+                  value={aiConfig.apiKey}
+                  onChange={(e) =>
+                    setAiConfig((prev) => ({ ...prev, apiKey: e.target.value }))
+                  }
+                  placeholder={
+                    currentPresetMeta.requiresKey
+                      ? 'Enter endpoint authorization token...'
+                      : 'Not required for localhost'
+                  }
+                  className="theme-focus-ring font-mono w-full rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 px-3 py-2 text-xs text-slate-900 dark:text-white"
+                />
+              </div>
+
+              <div>
+                <button
+                  type="button"
+                  onClick={handleScanModels}
+                  disabled={testingConnection}
+                  style={{ borderColor: 'var(--theme-accent)' }}
+                  className="theme-hover-outline w-full flex items-center justify-center gap-1.5 rounded-lg border bg-slate-900 dark:bg-white px-4 py-2 text-xs font-semibold text-white dark:text-slate-900 disabled:opacity-50 cursor-pointer whitespace-nowrap"
+                >
+                  {testingConnection ? (
+                    <RefreshCw
+                      className="h-3.5 w-3.5 animate-spin"
+                      style={{ color: 'var(--theme-accent)' }}
+                    />
+                  ) : (
+                    <Zap
+                      className="h-3.5 w-3.5"
+                      style={{ color: 'var(--theme-accent)' }}
+                    />
+                  )}
+                  <span>
+                    {testingConnection ? 'Testing...' : '⚡ Connect & Test'}
+                  </span>
+                </button>
               </div>
             </div>
-          )}
 
-          {/* Endpoint URL & Bearer Credential Input */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            <div className="space-y-1.5">
-              <label className="flex items-center gap-1.5 text-xs font-medium text-slate-700 dark:text-slate-300">
-                <span>Base Endpoint URL</span>
-                <Tooltip content="Endpoint base URL for /v1/chat/completions, Ollama /api/tags, or Gemini /v1beta/openai." />
-              </label>
-              <input
-                type="url"
-                value={aiConfig.url}
-                onChange={(e) =>
-                  setAiConfig((prev) => ({ ...prev, url: e.target.value }))
-                }
-                placeholder="http://localhost:1234/v1"
-                className="theme-focus-ring font-mono w-full rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 px-3 py-2 text-xs text-slate-900 dark:text-white"
-              />
-            </div>
-
-            <div className="space-y-1.5">
-              <label className="flex items-center gap-1.5 text-xs font-medium text-slate-700 dark:text-slate-300">
-                <span>
-                  {currentPresetMeta.requiresKey
-                    ? 'Provider Bearer Token (Required)'
-                    : 'Bearer Token (Optional for Local)'}
-                </span>
-                <Tooltip content="Authorization token for cloud endpoints (Gemini, xAI Grok, OpenRouter, Groq, OpenAI). Stored locally in your browser workspace and never exported into Character Cards." />
-              </label>
-              <input
-                type="password"
-                value={aiConfig.apiKey}
-                onChange={(e) =>
-                  setAiConfig((prev) => ({ ...prev, apiKey: e.target.value }))
-                }
-                placeholder={
-                  currentPresetMeta.requiresKey
-                    ? 'Enter endpoint authorization token...'
-                    : 'Not required for localhost'
-                }
-                className="theme-focus-ring font-mono w-full rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 px-3 py-2 text-xs text-slate-900 dark:text-white"
-              />
-            </div>
+            {/* Live Connection Reliability Status Banner */}
+            {testResult && (
+              <div
+                className={`flex items-start gap-2.5 rounded-lg border p-3 text-xs ${
+                  testResult.ok
+                    ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-800 dark:text-emerald-200'
+                    : 'border-rose-500/40 bg-rose-500/10 text-rose-800 dark:text-rose-200'
+                }`}
+              >
+                {testResult.ok ? (
+                  <CheckCircle2 className="h-4 w-4 text-emerald-500 shrink-0 mt-0.5" />
+                ) : (
+                  <AlertCircle className="h-4 w-4 text-rose-500 shrink-0 mt-0.5" />
+                )}
+                <div className="space-y-1">
+                  <div className="font-semibold">{testResult.message}</div>
+                  {!testResult.ok && (
+                    <div className="text-[11px] opacity-90">
+                      {testResult.corsHint ||
+                        'Verify your API key, confirm the endpoint server is online, or enable CORS for localhost servers (LM Studio / Ollama).'}
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
           </div>
 
           {/* Searchable Model Selector & Custom Model Input */}
@@ -990,7 +1038,7 @@ export const OptionsView: React.FC = () => {
           >
             <div className="flex flex-wrap items-center justify-between gap-2">
               <label className="text-xs font-semibold text-slate-800 dark:text-slate-200">
-                Model Selection & Live Scanner ({allSelectableModels.length}{' '}
+                Model Selection &amp; Live Scanner ({allSelectableModels.length}{' '}
                 listed)
               </label>
               <div className="relative w-52">
@@ -1005,10 +1053,16 @@ export const OptionsView: React.FC = () => {
               </div>
             </div>
 
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div
+              style={{
+                gridTemplateColumns:
+                  'repeat(auto-fit, minmax(min(100%, 220px), 1fr))',
+              }}
+              className="grid gap-3"
+            >
               <div className="space-y-1">
                 <span className="text-[11px] text-slate-500 dark:text-slate-400">
-                  Scanned & Preset Models Dropdown
+                  Scanned &amp; Preset Models Dropdown
                 </span>
                 <select
                   value={
@@ -1059,7 +1113,7 @@ export const OptionsView: React.FC = () => {
             </div>
 
             {/* Automatic Model Compatibility & Thinking Format Selection */}
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pt-2 border-t border-slate-200/80 dark:border-slate-800/80">
+            <div className="flex flex-wrap items-center justify-between gap-3 pt-2 border-t border-slate-200/80 dark:border-slate-800/80">
               <div className="flex items-center gap-2 text-xs">
                 <Cpu
                   className="h-3.5 w-3.5 shrink-0"
@@ -1116,7 +1170,13 @@ export const OptionsView: React.FC = () => {
           </div>
 
           {/* Sampling Temperature & Inline Ghost Text Controls */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-6 pt-2 border-t border-slate-200 dark:border-slate-800">
+          <div
+            style={{
+              gridTemplateColumns:
+                'repeat(auto-fit, minmax(min(100%, 220px), 1fr))',
+            }}
+            className="grid gap-6 pt-2 border-t border-slate-200 dark:border-slate-800"
+          >
             <div className="space-y-1.5">
               <div className="flex items-center justify-between text-xs">
                 <label className="flex items-center gap-1.5 font-medium text-slate-700 dark:text-slate-300">
@@ -1231,7 +1291,7 @@ export const OptionsView: React.FC = () => {
                     TavernSmith IDE · Release v1.0.0
                   </h2>
                   <p className="text-xs text-slate-500 dark:text-slate-400">
-                    SillyTavern V2 & V3 Character Card & Lorebook Workbench
+                    SillyTavern V2 &amp; V3 Character Card &amp; Lorebook Workbench
                   </p>
                 </div>
               </div>
@@ -1251,17 +1311,22 @@ export const OptionsView: React.FC = () => {
                 </div>
                 <ul className="list-disc pl-4 space-y-1">
                   <li>
-                    <strong>Pure-Browser PNG Steganography & JSON I/O:</strong>{' '}
+                    <strong>Interactive SillyTavern 2:3 Portrait Cropper:</strong>{' '}
+                    Automatically verifies uploaded/dropped character portraits against SillyTavern&apos;s <code className="font-mono">2:3</code> aspect ratio (<code className="font-mono">512×768</code> / <code className="font-mono">400×600</code>) and opens an interactive HTML5 <code className="font-mono">&lt;canvas&gt;</code> pan &amp; zoom cropper modal.
+                  </li>
+                  <li>
+                    <strong>Full Drag-and-Drop Import &amp; Reordering:</strong>{' '}
+                    Drop <code className="font-mono">.png</code> cards, <code className="font-mono">.json</code> files, or portrait images directly onto the workbenches, and drag-and-drop to reorder Lorebook Entries, DM Stat-Block attributes, and Alternate Greetings.
+                  </li>
+                  <li>
+                    <strong>Pure-Browser PNG Steganography &amp; JSON I/O:</strong>{' '}
                     Reads and writes SillyTavern V2 (<code className="font-mono">chara</code>) and V3 (<code className="font-mono">ccv3</code>) PNG <code className="font-mono">tEXt</code> chunks with IEEE 802.3 CRC32 verification.
                   </li>
                   <li>
-                    <strong>Storage & Save Folder Manager:</strong> Local PC folder picker (<code className="font-mono">showDirectoryPicker</code>) + In-App Save Folder browser, unified manual/auto-save target, and 1-click folder backup export.
+                    <strong>Storage &amp; Save Folder Manager:</strong> Local PC folder picker (<code className="font-mono">showDirectoryPicker</code>) + In-App Save Folder browser, unified manual/auto-save target, and 1-click folder backup export.
                   </li>
                   <li>
-                    <strong>Multi-Character & Lorebook Roster:</strong> Create, search, sort, tag-filter, and permanently delete multiple characters and standalone lorebooks.
-                  </li>
-                  <li>
-                    <strong>Auto-Formatting & Thinking Stripper:</strong>{' '}
+                    <strong>Auto-Formatting &amp; Thinking Stripper:</strong>{' '}
                     Auto-detects Llama 3/4, DeepSeek/Qwen{' '}
                     <code className="font-mono">&lt;think&gt;</code>, Gemini
                     Thinking, and xAI Grok Reasoning models, stripping
@@ -1282,7 +1347,7 @@ export const OptionsView: React.FC = () => {
                     className="h-4 w-4"
                     style={{ color: 'var(--theme-accent)' }}
                   />
-                  <span>Sandbox Security & Memory Hygiene Status</span>
+                  <span>Sandbox Security &amp; Memory Hygiene Status</span>
                 </div>
                 <ul className="space-y-1 text-[11px] text-slate-600 dark:text-slate-400">
                   <li>
@@ -1295,7 +1360,7 @@ export const OptionsView: React.FC = () => {
                   </li>
                   <li>
                     · <strong>Zero Credential Leakage:</strong> Exported PNG and
-                    JSON files strictly serialize only V2/V3 Character & Lorebook
+                    JSON files strictly serialize only V2/V3 Character &amp; Lorebook
                     fields—never API keys.
                   </li>
                   <li>

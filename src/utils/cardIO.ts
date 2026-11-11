@@ -63,8 +63,9 @@ export function decodeUtf8Base64(b64: string): string {
 
 function readAsciiString(bytes: Uint8Array, start: number, length: number): string {
   let out = '';
-  for (let i = 0; i < length; i++) {
-    out += String.fromCharCode(bytes[start + i]);
+  const safeEnd = Math.min(bytes.length, start + length);
+  for (let i = start; i < safeEnd; i++) {
+    out += String.fromCharCode(bytes[i]);
   }
   return out;
 }
@@ -78,7 +79,60 @@ function writeAsciiBytes(str: string): Uint8Array {
 }
 
 /**
- * Extracts `tEXt` chunks (`chara` and `ccv3`) from a PNG ArrayBuffer.
+ * Reads any image File or DataURL and returns its natural dimensions (`width`, `height`),
+ * whether it matches SillyTavern's `2:3` vertical portrait aspect ratio (`Math.abs(w/h - 2/3) <= 0.02`),
+ * and a clean PNG DataURL.
+ */
+export async function readImageDimensions(
+  fileOrDataUrl: File | string
+): Promise<{
+  dataUrl: string;
+  width: number;
+  height: number;
+  isTwoThreeAspect: boolean;
+}> {
+  const rawUrl =
+    typeof fileOrDataUrl === 'string'
+      ? fileOrDataUrl
+      : await new Promise<string>((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => resolve(String(reader.result || ''));
+          reader.onerror = () =>
+            reject(new Error('Failed to read image file.'));
+          reader.readAsDataURL(fileOrDataUrl);
+        });
+
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => {
+      const width = img.naturalWidth || img.width || 512;
+      const height = img.naturalHeight || img.height || 768;
+      const isTwoThreeAspect = Math.abs(width / height - 2 / 3) <= 0.02;
+
+      // Normalize to PNG DataURL so PNG chunk steganography always has a valid PNG source
+      const canvas = document.createElement('canvas');
+      canvas.width = width;
+      canvas.height = height;
+      const ctx = canvas.getContext('2d');
+      const pngDataUrl = ctx
+        ? (ctx.drawImage(img, 0, 0), canvas.toDataURL('image/png'))
+        : rawUrl;
+
+      resolve({
+        dataUrl: pngDataUrl,
+        width,
+        height,
+        isTwoThreeAspect,
+      });
+    };
+    img.onerror = () =>
+      reject(new Error('Could not decode image dimensions.'));
+    img.src = rawUrl;
+  });
+}
+
+/**
+ * Extracts `tEXt` chunks (`chara` and `ccv3`) from a PNG ArrayBuffer with strict bounds validation.
  */
 export function extractPngTextChunks(
   buffer: ArrayBuffer
@@ -99,13 +153,18 @@ export function extractPngTextChunks(
   const textChunks: Record<string, string> = {};
   let offset = 8;
 
-  while (offset + 8 <= bytes.length) {
+  while (offset >= 8 && offset + 8 <= bytes.length) {
     const length = view.getUint32(offset, false);
+    // Guard against corrupted or maliciously huge Uint32 chunk lengths
+    if (length > bytes.length || length > 0x7fffffff) {
+      break;
+    }
+
     const type = readAsciiString(bytes, offset + 4, 4);
     const dataStart = offset + 8;
     const dataEnd = dataStart + length;
 
-    if (dataEnd + 4 > bytes.length) {
+    if (dataEnd < dataStart || dataEnd + 4 > bytes.length) {
       break;
     }
 
@@ -118,7 +177,7 @@ export function extractPngTextChunks(
           break;
         }
       }
-      if (nullIdx !== -1) {
+      if (nullIdx !== -1 && nullIdx > dataStart) {
         const keyword = readAsciiString(
           bytes,
           dataStart,
@@ -186,6 +245,9 @@ export function injectPngCharacterChunks(
   const bytes = new Uint8Array(pngBuffer);
   const view = new DataView(pngBuffer);
 
+  if (bytes.length < 8) {
+    throw new Error('Source PNG buffer is too small.');
+  }
   for (let i = 0; i < 8; i++) {
     if (bytes[i] !== PNG_SIGNATURE[i]) {
       throw new Error('Invalid source PNG signature.');
@@ -196,12 +258,16 @@ export function injectPngCharacterChunks(
   let iendChunk: Uint8Array | null = null;
   let offset = 8;
 
-  while (offset + 8 <= bytes.length) {
+  while (offset >= 8 && offset + 8 <= bytes.length) {
     const length = view.getUint32(offset, false);
+    if (length > bytes.length || length > 0x7fffffff) {
+      break;
+    }
+
     const type = readAsciiString(bytes, offset + 4, 4);
     const totalChunkLen = 4 + 4 + length + 4;
 
-    if (offset + totalChunkLen > bytes.length) {
+    if (totalChunkLen < 12 || offset + totalChunkLen > bytes.length) {
       break;
     }
 
