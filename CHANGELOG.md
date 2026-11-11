@@ -2,6 +2,14 @@
 
 All notable changes to **TavernSmith** are documented in this file. This file is synced with the in-app **About & Changelog** modal and the automated GitHub Release workflow (`.github/workflows/release.yml`).
 
+## [v1.0.3] - 2026-11-11
+
+### Highlights
+fixed storage
+
+### Commits & Changes
+- feat: unify save directory structure (f1467d9)
+
 ## [v1.0.2] - 2026-11-11
 
 ### Highlights
