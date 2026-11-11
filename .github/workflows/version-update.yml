@@ -1,0 +1,126 @@
+name: Version & Changelog Updater
+
+on:
+  workflow_dispatch:
+    inputs:
+      bump_type:
+        description: 'Semantic version bump type (patch, minor, or major)'
+        required: true
+        default: 'patch'
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+      release_notes:
+        description: 'Optional custom summary or highlight notes for this release'
+        required: false
+        default: ''
+        type: string
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+jobs:
+  bump-version-and-changelog:
+    name: Bump Version, Update CHANGELOG.md & Push Tag
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository (Full History)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Setup Node.js 22 (No Lockfile Cache)
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Calculate Next Semantic Version & Update CHANGELOG.md
+        id: version_step
+        env:
+          BUMP_TYPE: ${{ inputs.bump_type }}
+          CUSTOM_NOTES: ${{ inputs.release_notes }}
+        run: |
+          set -e
+
+          # Find the most recent version tag if one exists
+          LAST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
+          echo "Last git tag: ${LAST_TAG:-none}"
+
+          # Bump version in package.json without creating a git tag yet
+          RAW_VERSION=$(npm version "${BUMP_TYPE:-patch}" --no-git-tag-version)
+          export NEW_VERSION="${RAW_VERSION#v}"
+          export TAG_NAME="v${NEW_VERSION}"
+          export RELEASE_DATE=$(date -u +"%Y-%m-%d")
+
+          echo "new_version=${NEW_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "tag_name=${TAG_NAME}" >> "$GITHUB_OUTPUT"
+
+          # Collect git commit messages since the last tag
+          if [ -n "$LAST_TAG" ]; then
+            COMMIT_LOG=$(git log "${LAST_TAG}..HEAD" --pretty=format:"- %s (%h)" --no-merges || true)
+          else
+            COMMIT_LOG=$(git log -n 30 --pretty=format:"- %s (%h)" --no-merges || true)
+          fi
+
+          if [ -z "$COMMIT_LOG" ]; then
+            COMMIT_LOG="- Maintenance and stability improvements."
+          fi
+          export COMMIT_LOG
+
+          # Prepend the new dated version section into CHANGELOG.md
+          node - << 'EOF'
+          const fs = require('fs');
+          const path = 'CHANGELOG.md';
+          const tagName = process.env.TAG_NAME || ('v' + require('./package.json').version);
+          const releaseDate = process.env.RELEASE_DATE || new Date().toISOString().slice(0, 10);
+          const customNotes = (process.env.CUSTOM_NOTES || '').trim();
+          const commitLog = (process.env.COMMIT_LOG || '').trim();
+
+          let existing = '';
+          if (fs.existsSync(path)) {
+            existing = fs.readFileSync(path, 'utf8');
+          } else {
+            existing = '# Changelog\n\nAll notable changes to **TavernSmith** are documented in this file.\n';
+          }
+
+          let newEntry = `## [${tagName}] - ${releaseDate}\n\n`;
+          if (customNotes) {
+            newEntry += `### Highlights\n${customNotes}\n\n`;
+          }
+          newEntry += `### Commits & Changes\n${commitLog}\n\n`;
+
+          const firstVersionHeadingIdx = existing.indexOf('\n## [');
+          let updatedContent;
+          if (firstVersionHeadingIdx !== -1) {
+            updatedContent =
+              existing.slice(0, firstVersionHeadingIdx + 1) +
+              newEntry +
+              existing.slice(firstVersionHeadingIdx + 1);
+          } else {
+            updatedContent = existing.trimEnd() + '\n\n' + newEntry;
+          }
+
+          fs.writeFileSync(path, updatedContent, 'utf8');
+          console.log(`Prepended ${tagName} (${releaseDate}) to CHANGELOG.md`);
+          EOF
+
+      - name: Commit Updated package.json & CHANGELOG.md and Push Tag
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          TAG_NAME="${{ steps.version_step.outputs.tag_name }}"
+
+          git add package.json CHANGELOG.md
+          git commit -m "chore(release): ${TAG_NAME}"
+          git tag -a "${TAG_NAME}" -m "Release ${TAG_NAME}"
+
+          # Push commit to main and push the new version tag
+          git push origin HEAD:main
+          git push origin "${TAG_NAME}"

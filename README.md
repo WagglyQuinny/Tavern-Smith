@@ -1,6 +1,6 @@
 # TavernSmith — SillyTavern V2 & V3 Character & Lorebook IDE
 
-**TavernSmith** (`v1.0.0`) is a modular, browser-native Character Card (`chara_card_v2` & `chara_card_v3`) and World Info (Lorebook) IDE with local and cloud AI integration. Built with React, TypeScript, Tailwind CSS, and pure browser binary APIs.
+**TavernSmith** (`v1.0.0`) is a modular, browser-native Character Card (`chara_card_v2` & `chara_card_v3`) and World Info (Lorebook) IDE with local and cloud AI integration. Built with React, TypeScript, Tailwind CSS, and pure browser binary APIs—running natively across **Windows, macOS (Intel x64 & Apple Silicon ARM), Linux, iOS/iPadOS, and Android** with zero CPU architecture lock-in.
 
 ---
 
@@ -19,7 +19,7 @@
 - **Zero-Dependency Backdrop Overlay**: Highlights SillyTavern macros (`{{char}}`, `{{user}}`, `{{random:...}}`, `{{roll:...}}`, `{{time}}`, `{{date}}`, `{{weekday}}`, `{{idle_duration}}`) in real time.
 - **Instant Macro Autocomplete**: Typing `{{` opens a keyboard-navigable macro picker (`Up`/`Down`, `Enter`/`Tab`, `Esc`) with zero network latency.
 - **Inline AI Ghost Text**: Debounced, context-aware inline completion (`Tab` to accept, `Esc` to dismiss) backed by automatic `AbortController` cleanup.
-- **Per-Field AI Toolbar**: 1-click **Generate**, **Expand**, **Rewrite**, and ** Polish Prose** actions with an inspectable Reasoning Drawer for `<think>` models.
+- **Per-Field AI Toolbar**: 1-click **Generate**, **Expand**, **Rewrite**, and **Polish Prose** actions with an inspectable Reasoning Drawer for `<think>` models.
 
 ### 4. Full-Width Modular DM / GM Stat-Block Builder
 - **Custom RPG & Relationship Telemetry**: Configure `bar` (`[████░░]`), `number`, `text`, and `list` attributes with drag-and-drop reordering.
@@ -41,7 +41,28 @@
 
 ---
 
-## Quick Start
+## Standalone Cross-Platform Execution & PWA Support
+
+TavernSmith builds with relative asset paths (`base: './'` in `vite.config.ts`) and ships with a full Web App Manifest (`public/manifest.json`), Service Worker (`public/sw.js`), and desktop launchers:
+
+1. **Windows (x64 / ARM64)**: Run `Launch-TavernSmith-Windows.bat` inside `TavernSmith-Standalone-Universal.zip` or click **Install App** in Edge/Chrome.
+2. **macOS (Intel x64 & Apple Silicon M1/M2/M3/M4) & Linux**: Run `./Launch-TavernSmith-Mac-Linux.command` or click **Install App** / **Add to Dock**.
+3. **iOS / iPadOS & Android**: Open in Safari or Chrome and use **Add to Home Screen** / **Install App** for a full-screen standalone experience.
+
+---
+
+## Automated GitHub Actions Workflows
+
+1. **Version & Changelog Updater (`.github/workflows/version-update.yml`)**:
+   - Trigger manually from the **Actions** tab (`workflow_dispatch`) by choosing `patch`, `minor`, or `major` and optional `release_notes`.
+   - Bumps `package.json`, collects all commits since the previous tag, prepends a dated `## [vX.Y.Z] - YYYY-MM-DD` entry to `CHANGELOG.md`, commits back to `main`, and pushes the new `vX.Y.Z` tag.
+2. **Standalone Release Push & PWA Deploy (`.github/workflows/release.yml`)**:
+   - Triggered automatically on `v*.*.*` tags, pushes to `main`, or `workflow_dispatch`.
+   - Runs `npm install` (no `package-lock.json` required) and `npm run build`, generates `Launch-TavernSmith-Windows.bat` and `Launch-TavernSmith-Mac-Linux.command` inside `dist/`, packages `TavernSmith-Standalone-Universal.zip`, and publishes a GitHub Release with the latest notes extracted from `CHANGELOG.md`.
+
+---
+
+## Local Development Quick Start
 
 ```bash
 # Install dependencies
@@ -53,6 +74,6 @@ npm run dev
 # Type-check & lint
 npm run lint
 
-# Build production bundle to ./dist
+# Build standalone bundle to ./dist
 npm run build
 ```

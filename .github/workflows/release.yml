@@ -1,4 +1,4 @@
-name: TavernSmith CI/CD & Release
+name: Standalone Release Push & PWA Deploy
 
 on:
   push:
@@ -6,53 +6,179 @@ on:
       - main
     tags:
       - 'v*.*.*'
-  pull_request:
-    branches:
-      - main
   workflow_dispatch:
 
 permissions:
   contents: write
+  pages: write
+  id-token: write
 
 jobs:
   build-and-release:
-    name: Build, Verify & Package TavernSmith
+    name: Build Standalone Universal Bundle & Publish Release
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-      - name: Setup Node.js 22
+      - name: Setup Node.js 22 (No Lockfile Cache)
         uses: actions/setup-node@v4
         with:
           node-version: '22'
-          cache: 'npm'
 
       - name: Install Dependencies
-        run: npm ci
+        run: npm install
 
-      - name: Run TypeScript & Lint Verification
+      - name: Run TypeScript Verification
         run: npm run lint
 
-      - name: Build Production Bundle
+      - name: Build Production Standalone Bundle
         run: npm run build
 
-      - name: Package dist into TavernSmith-Release.zip
+      - name: Generate Standalone Desktop Launchers (Windows, macOS x64/ARM, Linux)
+        run: |
+          cat << 'EOF' > dist/Launch-TavernSmith-Windows.bat
+          @echo off
+          setlocal
+          title TavernSmith Standalone Launcher
+          cd /d "%~dp0"
+          set PORT=4173
+
+          echo ===================================================
+          echo   TavernSmith - SillyTavern V2/V3 Character IDE
+          echo ===================================================
+          echo.
+
+          where python >nul 2>nul
+          if %ERRORLEVEL% EQU 0 (
+            echo Starting local TavernSmith server via Python on http://127.0.0.1:%PORT% ...
+            start "" msedge --app="http://127.0.0.1:%PORT%" 2>nul || start "" chrome --app="http://127.0.0.1:%PORT%" 2>nul || start "" "http://127.0.0.1:%PORT%"
+            python -m http.server %PORT% --bind 127.0.0.1
+            goto :eof
+          )
+
+          where npx >nul 2>nul
+          if %ERRORLEVEL% EQU 0 (
+            echo Starting local TavernSmith server via Node.js on http://127.0.0.1:%PORT% ...
+            start "" msedge --app="http://127.0.0.1:%PORT%" 2>nul || start "" chrome --app="http://127.0.0.1:%PORT%" 2>nul || start "" "http://127.0.0.1:%PORT%"
+            npx --yes serve -s . -l tcp://127.0.0.1:%PORT%
+            goto :eof
+          )
+
+          echo Opening TavernSmith directly in standalone app window...
+          start "" msedge --app="file:///%~dp0index.html" 2>nul || start "" chrome --app="file:///%~dp0index.html" 2>nul || start "" "%~dp0index.html"
+          EOF
+
+          cat << 'EOF' > dist/Launch-TavernSmith-Mac-Linux.command
+          #!/usr/bin/env bash
+          cd "$(dirname "$0")" || exit 1
+          PORT=4173
+          URL="http://127.0.0.1:${PORT}"
+
+          echo "==================================================="
+          echo "  TavernSmith — SillyTavern V2/V3 Character IDE"
+          echo "  Universal Launcher (macOS Intel/ARM & Linux)"
+          echo "==================================================="
+
+          open_url() {
+            if [[ "$OSTYPE" == "darwin"* ]]; then
+              open "$1"
+            elif command -v xdg-open >/dev/null 2>&1; then
+              xdg-open "$1" >/dev/null 2>&1 &
+            fi
+          }
+
+          if command -v python3 >/dev/null 2>&1; then
+            echo "Starting local TavernSmith server on ${URL} (Press Ctrl+C to stop)..."
+            (sleep 1 && open_url "${URL}") &
+            python3 -m http.server "${PORT}" --bind 127.0.0.1
+          elif command -v python >/dev/null 2>&1; then
+            echo "Starting local TavernSmith server on ${URL} (Press Ctrl+C to stop)..."
+            (sleep 1 && open_url "${URL}") &
+            python -m SimpleHTTPServer "${PORT}"
+          elif command -v npx >/dev/null 2>&1; then
+            echo "Starting local TavernSmith server via Node on ${URL} (Press Ctrl+C to stop)..."
+            (sleep 2 && open_url "${URL}") &
+            npx --yes serve -s . -l "tcp://127.0.0.1:${PORT}"
+          else
+            echo "Opening index.html directly in your default browser..."
+            open_url "./index.html"
+          fi
+          EOF
+
+          chmod +x dist/Launch-TavernSmith-Mac-Linux.command
+
+          cat << 'EOF' > dist/README-STANDALONE.txt
+          TavernSmith — Universal Standalone Distribution
+          ===============================================
+          Compatible with Windows (x64/ARM64), macOS (Intel x64 & Apple Silicon M1/M2/M3/M4),
+          Linux, iOS/iPadOS, and Android.
+
+          1. WINDOWS:
+             Double-click "Launch-TavernSmith-Windows.bat".
+
+          2. macOS (Intel & Apple Silicon ARM) / LINUX:
+             Double-click "Launch-TavernSmith-Mac-Linux.command"
+             (or run `./Launch-TavernSmith-Mac-Linux.command` in Terminal).
+
+          3. INSTALL AS NATIVE-LIKE PWA (Desktop, Android, iOS/iPadOS):
+             When opened in Chrome, Edge, Brave, or Safari, click "Install App" in the top bar
+             (or Share -> "Add to Home Screen" on iOS/iPadOS) to run TavernSmith in its own
+             dedicated standalone application window with full offline support.
+          EOF
+
+      - name: Zip dist/ into TavernSmith-Standalone-Universal.zip
         run: |
           cd dist
-          zip -r ../TavernSmith-Release.zip .
+          zip -r ../TavernSmith-Standalone-Universal.zip .
 
-      - name: Upload Build Artifact
+      - name: Upload Universal Build Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: TavernSmith-Release
-          path: TavernSmith-Release.zip
+          name: TavernSmith-Standalone-Universal
+          path: TavernSmith-Standalone-Universal.zip
 
-      - name: Publish GitHub Release on Tag
-        if: startsWith(github.ref, 'refs/tags/v')
+      - name: Extract Latest Release Notes from CHANGELOG.md
+        id: extract_notes
+        run: |
+          node - << 'EOF'
+          const fs = require('fs');
+          const pkg = require('./package.json');
+          const changelog = fs.existsSync('CHANGELOG.md')
+            ? fs.readFileSync('CHANGELOG.md', 'utf8')
+            : '';
+
+          let notes = '';
+          const sections = changelog.split(/\n(?=## \[)/);
+          const firstReleaseSection = sections.find((s) => s.trim().startsWith('## ['));
+          if (firstReleaseSection) {
+            notes = firstReleaseSection.trim();
+          } else {
+            notes = `## TavernSmith v${pkg.version}\n\nUniversal Standalone Release for Windows, macOS (x64 & Apple Silicon ARM), Linux, iOS, and Android.`;
+          }
+
+          fs.writeFileSync('RELEASE_NOTES.md', notes + '\n', 'utf8');
+          EOF
+
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            RESOLVED_TAG="${GITHUB_REF#refs/tags/}"
+          else
+            PKG_VER=$(node -p "require('./package.json').version")
+            RESOLVED_TAG="v${PKG_VER}"
+          fi
+          echo "tag_name=${RESOLVED_TAG}" >> "$GITHUB_OUTPUT"
+
+      - name: Publish GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
         uses: softprops/action-gh-release@v2
         with:
-          files: TavernSmith-Release.zip
-          body_path: CHANGELOG.md
+          tag_name: ${{ steps.extract_notes.outputs.tag_name }}
+          name: TavernSmith ${{ steps.extract_notes.outputs.tag_name }} (Universal Standalone)
+          files: TavernSmith-Standalone-Universal.zip
+          body_path: RELEASE_NOTES.md
           generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
