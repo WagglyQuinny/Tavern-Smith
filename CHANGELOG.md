@@ -2,6 +2,17 @@
 
 All notable changes to **TavernSmith** are documented in this file. This file is synced with the in-app **About & Changelog** modal and the automated GitHub Release workflow (`.github/workflows/release.yml`).
 
+## [v1.0.1] - 2026-11-11
+
+### Highlights
+fixed release issues
+
+### Commits & Changes
+- feat: implement PWA support and standalone launchers (bf364b2)
+- feat: add toggleable main sidebar (e60633b)
+- feat: initialize TavernSmith project structure (4a18f04)
+- Initial commit (c1eb2ae)
+
 ## [v1.0.0] — Production Release
 
 ### Added
