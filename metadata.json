@@ -1,0 +1,6 @@
+{
+  "name": "TavernSmith",
+  "description": "Minimalist, high-craft SillyTavern V2 & V3 Character and Lorebook IDE with Context Themes and local/cloud AI integration.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

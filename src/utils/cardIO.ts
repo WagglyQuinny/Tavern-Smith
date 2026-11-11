@@ -1,0 +1,720 @@
+import {
+  CharacterCardData,
+  Lorebook,
+  LorebookEntry,
+  SillyTavernV2Wrapper,
+  SillyTavernV3Wrapper,
+} from '../types';
+import {
+  createBlankCharacter,
+  createBlankLorebook,
+  DEFAULT_STAT_BLOCK,
+} from '../context/StoreContext';
+
+const PNG_SIGNATURE = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]);
+
+/**
+ * Precomputed IEEE 802.3 CRC32 lookup table for PNG chunk checksum calculation.
+ */
+const CRC32_TABLE = (() => {
+  const table = new Uint32Array(256);
+  for (let n = 0; n < 256; n++) {
+    let c = n;
+    for (let k = 0; k < 8; k++) {
+      c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+    }
+    table[n] = c >>> 0;
+  }
+  return table;
+})();
+
+export function computeCrc32(bytes: Uint8Array): number {
+  let crc = 0xffffffff;
+  for (let i = 0; i < bytes.length; i++) {
+    const index = (crc ^ bytes[i]) & 0xff;
+    crc = (crc >>> 8) ^ CRC32_TABLE[index];
+  }
+  return (crc ^ 0xffffffff) >>> 0;
+}
+
+/**
+ * UTF-8 safe Base64 encoding & decoding using pure browser TextEncoder / TextDecoder.
+ */
+export function encodeUtf8Base64(str: string): string {
+  const bytes = new TextEncoder().encode(str);
+  let binary = '';
+  const chunkSize = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunkSize) {
+    const slice = bytes.subarray(i, i + chunkSize);
+    binary += String.fromCharCode(...slice);
+  }
+  return window.btoa(binary);
+}
+
+export function decodeUtf8Base64(b64: string): string {
+  const cleanB64 = b64.trim().replace(/\s+/g, '');
+  const binary = window.atob(cleanB64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+  return new TextDecoder('utf-8').decode(bytes);
+}
+
+function readAsciiString(bytes: Uint8Array, start: number, length: number): string {
+  let out = '';
+  for (let i = 0; i < length; i++) {
+    out += String.fromCharCode(bytes[start + i]);
+  }
+  return out;
+}
+
+function writeAsciiBytes(str: string): Uint8Array {
+  const arr = new Uint8Array(str.length);
+  for (let i = 0; i < str.length; i++) {
+    arr[i] = str.charCodeAt(i) & 0xff;
+  }
+  return arr;
+}
+
+/**
+ * Extracts `tEXt` chunks (`chara` and `ccv3`) from a PNG ArrayBuffer.
+ */
+export function extractPngTextChunks(
+  buffer: ArrayBuffer
+): Record<string, string> {
+  const bytes = new Uint8Array(buffer);
+  const view = new DataView(buffer);
+
+  // Verify 8-byte PNG signature
+  if (bytes.length < 8) {
+    throw new Error('File is too small to be a valid PNG image.');
+  }
+  for (let i = 0; i < 8; i++) {
+    if (bytes[i] !== PNG_SIGNATURE[i]) {
+      throw new Error('Invalid PNG file signature.');
+    }
+  }
+
+  const textChunks: Record<string, string> = {};
+  let offset = 8;
+
+  while (offset + 8 <= bytes.length) {
+    const length = view.getUint32(offset, false);
+    const type = readAsciiString(bytes, offset + 4, 4);
+    const dataStart = offset + 8;
+    const dataEnd = dataStart + length;
+
+    if (dataEnd + 4 > bytes.length) {
+      break;
+    }
+
+    if (type === 'tEXt') {
+      // Find null separator byte (0x00) between keyword and text value
+      let nullIdx = -1;
+      for (let i = dataStart; i < dataEnd; i++) {
+        if (bytes[i] === 0) {
+          nullIdx = i;
+          break;
+        }
+      }
+      if (nullIdx !== -1) {
+        const keyword = readAsciiString(
+          bytes,
+          dataStart,
+          nullIdx - dataStart
+        ).toLowerCase();
+        const valueStr = readAsciiString(
+          bytes,
+          nullIdx + 1,
+          dataEnd - (nullIdx + 1)
+        );
+        textChunks[keyword] = valueStr;
+      }
+    }
+
+    if (type === 'IEND') {
+      break;
+    }
+
+    offset = dataEnd + 4; // Skip 4-byte CRC
+  }
+
+  return textChunks;
+}
+
+/**
+ * Builds a valid PNG `tEXt` chunk (`[4-byte length][tEXt][keyword\0value][4-byte CRC32]`).
+ */
+function createPngTextChunk(keyword: string, base64Content: string): Uint8Array {
+  const typeBytes = writeAsciiBytes('tEXt');
+  const keyBytes = writeAsciiBytes(keyword);
+  const valBytes = writeAsciiBytes(base64Content);
+
+  const dataLength = keyBytes.length + 1 + valBytes.length;
+  const chunk = new Uint8Array(4 + 4 + dataLength + 4);
+  const view = new DataView(chunk.buffer);
+
+  // 1. Data Length
+  view.setUint32(0, dataLength, false);
+
+  // 2. Chunk Type ('tEXt')
+  chunk.set(typeBytes, 4);
+
+  // 3. Keyword + Null separator + Base64 text
+  chunk.set(keyBytes, 8);
+  chunk[8 + keyBytes.length] = 0;
+  chunk.set(valBytes, 8 + keyBytes.length + 1);
+
+  // 4. CRC32 over [Chunk Type + Chunk Data]
+  const crcSlice = chunk.subarray(4, 8 + dataLength);
+  const crc = computeCrc32(crcSlice);
+  view.setUint32(8 + dataLength, crc, false);
+
+  return chunk;
+}
+
+/**
+ * Strips any existing `chara` or `ccv3` `tEXt` chunks from a PNG ArrayBuffer and injects
+ * fresh `chara` (V2) and `ccv3` (V3) `tEXt` chunks right before the final `IEND` chunk.
+ */
+export function injectPngCharacterChunks(
+  pngBuffer: ArrayBuffer,
+  v2JsonString: string,
+  v3JsonString: string
+): Uint8Array {
+  const bytes = new Uint8Array(pngBuffer);
+  const view = new DataView(pngBuffer);
+
+  for (let i = 0; i < 8; i++) {
+    if (bytes[i] !== PNG_SIGNATURE[i]) {
+      throw new Error('Invalid source PNG signature.');
+    }
+  }
+
+  const keptChunks: Uint8Array[] = [bytes.subarray(0, 8)];
+  let iendChunk: Uint8Array | null = null;
+  let offset = 8;
+
+  while (offset + 8 <= bytes.length) {
+    const length = view.getUint32(offset, false);
+    const type = readAsciiString(bytes, offset + 4, 4);
+    const totalChunkLen = 4 + 4 + length + 4;
+
+    if (offset + totalChunkLen > bytes.length) {
+      break;
+    }
+
+    const fullChunk = bytes.subarray(offset, offset + totalChunkLen);
+
+    if (type === 'tEXt') {
+      const dataStart = offset + 8;
+      const dataEnd = dataStart + length;
+      let nullIdx = -1;
+      for (let i = dataStart; i < dataEnd; i++) {
+        if (bytes[i] === 0) {
+          nullIdx = i;
+          break;
+        }
+      }
+      const keyword =
+        nullIdx !== -1
+          ? readAsciiString(bytes, dataStart, nullIdx - dataStart).toLowerCase()
+          : '';
+      // Skip old chara / ccv3 chunks so we replace them cleanly
+      if (keyword !== 'chara' && keyword !== 'ccv3') {
+        keptChunks.push(fullChunk);
+      }
+    } else if (type === 'IEND') {
+      iendChunk = fullChunk;
+      break;
+    } else {
+      keptChunks.push(fullChunk);
+    }
+
+    offset += totalChunkLen;
+  }
+
+  const charaChunk = createPngTextChunk('chara', encodeUtf8Base64(v2JsonString));
+  const ccv3Chunk = createPngTextChunk('ccv3', encodeUtf8Base64(v3JsonString));
+
+  keptChunks.push(charaChunk);
+  keptChunks.push(ccv3Chunk);
+
+  if (iendChunk) {
+    keptChunks.push(iendChunk);
+  } else {
+    // Construct standard 12-byte IEND chunk
+    const fallbackIend = new Uint8Array([
+      0, 0, 0, 0, 73, 69, 78, 68, 174, 66, 96, 130,
+    ]);
+    keptChunks.push(fallbackIend);
+  }
+
+  const totalSize = keptChunks.reduce((acc, c) => acc + c.length, 0);
+  const output = new Uint8Array(totalSize);
+  let writePos = 0;
+  for (const chunk of keptChunks) {
+    output.set(chunk, writePos);
+    writePos += chunk.length;
+  }
+
+  return output;
+}
+
+/**
+ * Generates a high-craft procedural PNG portrait buffer using `<canvas>` when exporting
+ * a character card that does not yet have a custom uploaded PNG avatar.
+ */
+export async function generateDefaultAvatarPngBuffer(
+  character: CharacterCardData,
+  accentColor = '#d97706'
+): Promise<ArrayBuffer> {
+  if (
+    character.avatar &&
+    character.avatar.startsWith('data:image/png;base64,')
+  ) {
+    const b64 = character.avatar.replace(/^data:image\/png;base64,/, '');
+    const bin = window.atob(b64);
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) {
+      bytes[i] = bin.charCodeAt(i);
+    }
+    return bytes.buffer;
+  }
+
+  const canvas = document.createElement('canvas');
+  canvas.width = 512;
+  canvas.height = 768;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) {
+    throw new Error('Canvas 2D context unavailable');
+  }
+
+  // Deep slate gradient background
+  const grad = ctx.createLinearGradient(0, 0, 512, 768);
+  grad.addColorStop(0, '#09090b');
+  grad.addColorStop(0.6, '#18181b');
+  grad.addColorStop(1, '#09090b');
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, 512, 768);
+
+  // Subtle accent border frame
+  ctx.strokeStyle = accentColor;
+  ctx.lineWidth = 4;
+  ctx.strokeRect(20, 20, 472, 728);
+
+  ctx.strokeStyle = 'rgba(255,255,255,0.12)';
+  ctx.lineWidth = 1;
+  ctx.strokeRect(30, 30, 452, 708);
+
+  // Initials emblem
+  const initials = (character.name || 'TS')
+    .split(/\s+/)
+    .map((w) => w[0])
+    .join('')
+    .slice(0, 2)
+    .toUpperCase();
+
+  ctx.fillStyle = accentColor;
+  ctx.font = 'bold 120px "Plus Jakarta Sans", sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillText(initials, 256, 330);
+
+  // Character Name & Moniker
+  ctx.fillStyle = '#f4f4f5';
+  ctx.font = 'bold 34px "Plus Jakarta Sans", sans-serif';
+  ctx.fillText((character.name || 'Untitled').slice(0, 24), 256, 540);
+
+  if (character.nickname) {
+    ctx.fillStyle = accentColor;
+    ctx.font = '500 20px "JetBrains Mono", monospace';
+    ctx.fillText(character.nickname.slice(0, 32), 256, 580);
+  }
+
+  ctx.fillStyle = '#71717a';
+  ctx.font = '400 15px "JetBrains Mono", monospace';
+  ctx.fillText('TAVERNSMITH · SILLYTAVERN V2/V3 CARD', 256, 700);
+
+  return new Promise<ArrayBuffer>((resolve, reject) => {
+    canvas.toBlob((blob) => {
+      if (!blob) {
+        reject(new Error('Failed to encode PNG blob'));
+        return;
+      }
+      blob.arrayBuffer().then(resolve).catch(reject);
+    }, 'image/png');
+  });
+}
+
+/**
+ * Sanitizes and serializes a CharacterCardData into a clean V2 or V3 Wrapper,
+ * guaranteeing NO API keys or sensitive credentials ever enter the exported JSON.
+ */
+export function serializeCharacterCard(
+  character: CharacterCardData,
+  spec: 'v2' | 'v3',
+  fallbackLorebook?: Lorebook
+): SillyTavernV2Wrapper | SillyTavernV3Wrapper {
+  const cleanBook = character.character_book || fallbackLorebook;
+
+  const cleanData: CharacterCardData = {
+    name: character.name || 'Untitled Character',
+    description: character.description || '',
+    personality: character.personality || '',
+    scenario: character.scenario || '',
+    first_mes: character.first_mes || '',
+    mes_example: character.mes_example || '',
+    creator_notes: character.creator_notes || '',
+    system_prompt: character.system_prompt || '',
+    post_history_instructions: character.post_history_instructions || '',
+    alternate_greetings: Array.isArray(character.alternate_greetings)
+      ? character.alternate_greetings
+      : [],
+    tags: Array.isArray(character.tags) ? character.tags : [],
+    creator: character.creator || 'TavernSmith Creator',
+    character_version: character.character_version || '1.0.0',
+    character_book: cleanBook,
+    nickname: character.nickname || '',
+    creation_date: character.creation_date || Math.floor(Date.now() / 1000),
+    modification_date: Math.floor(Date.now() / 1000),
+    extensions: {
+      talkativeness: character.extensions?.talkativeness || '0.5',
+      fav: Boolean(character.extensions?.fav),
+      world: cleanBook?.name || character.extensions?.world || '',
+      statBlock: character.extensions?.statBlock || DEFAULT_STAT_BLOCK,
+    },
+  };
+
+  if (spec === 'v2') {
+    return {
+      spec: 'chara_card_v2',
+      spec_version: '2.0',
+      data: cleanData,
+    };
+  }
+
+  return {
+    spec: 'chara_card_v3',
+    spec_version: '3.0',
+    data: cleanData,
+  };
+}
+
+/**
+ * Normalizes any imported SillyTavern V1, V2, or V3 character JSON object or standalone Lorebook JSON.
+ */
+export type ImportedAssetResult =
+  | {
+      kind: 'character';
+      character: CharacterCardData;
+      embeddedLorebook?: Lorebook;
+      detectedSpec: string;
+    }
+  | {
+      kind: 'lorebook';
+      lorebook: Lorebook;
+    };
+
+function normalizeLorebookObject(
+  rawBook: Record<string, unknown>,
+  fallbackName = 'Imported World Book'
+): Lorebook {
+  const rawEntries = rawBook.entries;
+  const entriesList: LorebookEntry[] = [];
+
+  if (Array.isArray(rawEntries)) {
+    rawEntries.forEach((item, idx) => {
+      if (item && typeof item === 'object') {
+        const e = item as Record<string, unknown>;
+        entriesList.push({
+          id: (e.id as string | number) ?? `entry-${Date.now()}-${idx}`,
+          comment: String(e.comment || e.name || `Entry #${idx + 1}`),
+          keys: Array.isArray(e.keys)
+            ? e.keys.map(String)
+            : Array.isArray(e.key)
+              ? e.key.map(String)
+              : [],
+          secondary_keys: Array.isArray(e.secondary_keys)
+            ? e.secondary_keys.map(String)
+            : Array.isArray(e.keysecondary)
+              ? e.keysecondary.map(String)
+              : [],
+          content: String(e.content || ''),
+          enabled: e.enabled !== undefined ? Boolean(e.enabled) : !e.disable,
+          insertion_order: Number(e.insertion_order ?? e.order ?? 100),
+          case_sensitive: Boolean(e.case_sensitive ?? e.caseSensitive),
+          constant: Boolean(e.constant),
+          selective: Boolean(e.selective),
+          position:
+            typeof e.position === 'string'
+              ? (e.position as LorebookEntry['position'])
+              : 'before_char',
+          priority: Number(e.priority ?? 10),
+          depth: Number(e.depth ?? 4),
+          probability: Number(e.probability ?? 100),
+          tags: Array.isArray(e.tags) ? e.tags.map(String) : [],
+        });
+      }
+    });
+  } else if (rawEntries && typeof rawEntries === 'object') {
+    // SillyTavern World Info dictionary format: `{ entries: { "0": { key: [...], content: "..." } } }`
+    Object.values(rawEntries as Record<string, unknown>).forEach(
+      (item, idx) => {
+        if (item && typeof item === 'object') {
+          const e = item as Record<string, unknown>;
+          entriesList.push({
+            id: (e.uid as number | string) ?? `entry-${Date.now()}-${idx}`,
+            comment: String(e.comment || `Entry #${idx + 1}`),
+            keys: Array.isArray(e.key)
+              ? e.key.map(String)
+              : Array.isArray(e.keys)
+                ? e.keys.map(String)
+                : [],
+            secondary_keys: Array.isArray(e.keysecondary)
+              ? e.keysecondary.map(String)
+              : Array.isArray(e.secondary_keys)
+                ? e.secondary_keys.map(String)
+                : [],
+            content: String(e.content || ''),
+            enabled: e.disable !== undefined ? !e.disable : Boolean(e.enabled ?? true),
+            insertion_order: Number(e.order ?? e.insertion_order ?? 100),
+            case_sensitive: Boolean(e.caseSensitive ?? e.case_sensitive),
+            constant: Boolean(e.constant),
+            selective: Boolean(e.selective),
+            position: 'before_char',
+            priority: 10,
+            depth: Number(e.depth ?? 4),
+            probability: Number(e.probability ?? 100),
+            tags: Array.isArray(e.tags) ? e.tags.map(String) : [],
+          });
+        }
+      }
+    );
+  }
+
+  return createBlankLorebook({
+    name: String(rawBook.name || fallbackName),
+    description: String(rawBook.description || 'Imported SillyTavern Lorebook'),
+    scan_depth: Number(rawBook.scan_depth ?? rawBook.scanDepth ?? 4),
+    token_budget: Number(rawBook.token_budget ?? rawBook.tokenBudget ?? 1024),
+    recursive_scanning: Boolean(
+      rawBook.recursive_scanning ?? rawBook.recursiveScanning ?? true
+    ),
+    entries: entriesList,
+  });
+}
+
+export function parseImportedJsonString(
+  jsonStr: string,
+  avatarDataUrl?: string,
+  fallbackFileName = 'Imported'
+): ImportedAssetResult {
+  const parsed = JSON.parse(jsonStr) as Record<string, unknown>;
+
+  // Check if this is a standalone SillyTavern Lorebook / World Info JSON
+  if (
+    parsed.entries &&
+    !parsed.spec &&
+    !parsed.name?.toString().includes('chara') &&
+    parsed.first_mes === undefined &&
+    parsed.description === undefined
+  ) {
+    return {
+      kind: 'lorebook',
+      lorebook: normalizeLorebookObject(
+        parsed,
+        fallbackFileName.replace(/\.(json|png)$/i, '')
+      ),
+    };
+  }
+
+  const detectedSpec = String(parsed.spec || 'chara_card_v2');
+  const inner =
+    parsed.data && typeof parsed.data === 'object'
+      ? (parsed.data as Record<string, unknown>)
+      : parsed;
+
+  let embeddedLorebook: Lorebook | undefined;
+  if (inner.character_book && typeof inner.character_book === 'object') {
+    embeddedLorebook = normalizeLorebookObject(
+      inner.character_book as Record<string, unknown>,
+      `${String(inner.name || 'Character')} Lorebook`
+    );
+  }
+
+  const character = createBlankCharacter({
+    name: String(inner.name || parsed.name || 'Imported Character'),
+    nickname: String(inner.nickname || ''),
+    description: String(inner.description || parsed.description || ''),
+    personality: String(inner.personality || parsed.personality || ''),
+    scenario: String(inner.scenario || parsed.scenario || ''),
+    first_mes: String(inner.first_mes || parsed.first_mes || ''),
+    mes_example: String(inner.mes_example || parsed.mes_example || ''),
+    creator_notes: String(
+      inner.creator_notes || inner.creatorcomment || ''
+    ),
+    system_prompt: String(inner.system_prompt || ''),
+    post_history_instructions: String(
+      inner.post_history_instructions || ''
+    ),
+    alternate_greetings: Array.isArray(inner.alternate_greetings)
+      ? inner.alternate_greetings.map(String)
+      : [],
+    tags: Array.isArray(inner.tags) ? inner.tags.map(String) : [],
+    creator: String(inner.creator || 'Imported Creator'),
+    character_version: String(inner.character_version || '1.0.0'),
+    avatar: avatarDataUrl || (typeof inner.avatar === 'string' ? inner.avatar : undefined),
+    character_book: embeddedLorebook,
+    extensions:
+      inner.extensions && typeof inner.extensions === 'object'
+        ? {
+            ...(inner.extensions as Record<string, unknown>),
+            statBlock:
+              (inner.extensions as { statBlock?: typeof DEFAULT_STAT_BLOCK })
+                .statBlock || DEFAULT_STAT_BLOCK,
+          }
+        : {
+            talkativeness: '0.5',
+            fav: false,
+            statBlock: DEFAULT_STAT_BLOCK,
+          },
+  });
+
+  return {
+    kind: 'character',
+    character,
+    embeddedLorebook,
+    detectedSpec,
+  };
+}
+
+/**
+ * Reads an uploaded `.png` or `.json` File and returns the parsed Character + embedded Lorebook or Standalone Lorebook.
+ */
+export async function importCardFromFile(
+  file: File
+): Promise<ImportedAssetResult> {
+  const lowerName = file.name.toLowerCase();
+
+  if (lowerName.endsWith('.png') || file.type === 'image/png') {
+    const buffer = await file.arrayBuffer();
+    const chunks = extractPngTextChunks(buffer);
+    const rawBase64 = chunks['ccv3'] || chunks['chara'];
+
+    if (!rawBase64) {
+      throw new Error(
+        `No SillyTavern character metadata ('chara' or 'ccv3' tEXt chunk) found inside "${file.name}".`
+      );
+    }
+
+    const decodedJson = decodeUtf8Base64(rawBase64);
+
+    // Convert PNG bytes to data URL for character avatar preview and re-export
+    const bytes = new Uint8Array(buffer);
+    let binary = '';
+    const chunkSize = 0x8000;
+    for (let i = 0; i < bytes.length; i += chunkSize) {
+      binary += String.fromCharCode(...bytes.subarray(i, i + chunkSize));
+    }
+    const avatarDataUrl = `data:image/png;base64,${window.btoa(binary)}`;
+
+    return parseImportedJsonString(decodedJson, avatarDataUrl, file.name);
+  }
+
+  // Otherwise parse as JSON file
+  const text = await file.text();
+  return parseImportedJsonString(text, undefined, file.name);
+}
+
+/**
+ * Triggers a clean browser file download for a JSON or PNG asset.
+ */
+export function triggerBrowserDownload(
+  content: Blob | string,
+  filename: string,
+  mimeType = 'application/json;charset=utf-8'
+): void {
+  const blob =
+    typeof content === 'string'
+      ? new Blob([content], { type: mimeType })
+      : content;
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement('a');
+  anchor.href = url;
+  anchor.download = filename;
+  document.body.appendChild(anchor);
+  anchor.click();
+  document.body.removeChild(anchor);
+  window.setTimeout(() => URL.revokeObjectURL(url), 3000);
+}
+
+export function sanitizeFilename(name: string): string {
+  return (
+    (name || 'untitled')
+      .trim()
+      .replace(/[^a-zA-Z0-9_-]+/g, '_')
+      .replace(/^_+|_+$/g, '') || 'untitled'
+  );
+}
+
+/**
+ * Exports a Character Card as a SillyTavern `.png` card with embedded `chara` (V2) and `ccv3` (V3) `tEXt` chunks.
+ */
+export async function exportCharacterAsPng(
+  character: CharacterCardData,
+  fallbackLorebook?: Lorebook,
+  accentColor = '#d97706'
+): Promise<void> {
+  const v2Payload = serializeCharacterCard(character, 'v2', fallbackLorebook);
+  const v3Payload = serializeCharacterCard(character, 'v3', fallbackLorebook);
+
+  const basePngBuffer = await generateDefaultAvatarPngBuffer(
+    character,
+    accentColor
+  );
+  const stegoPngBytes = injectPngCharacterChunks(
+    basePngBuffer,
+    JSON.stringify(v2Payload),
+    JSON.stringify(v3Payload)
+  );
+
+  const arrayBufferCopy = new ArrayBuffer(stegoPngBytes.byteLength);
+  new Uint8Array(arrayBufferCopy).set(stegoPngBytes);
+  const blob = new Blob([arrayBufferCopy], { type: 'image/png' });
+  const filename = `${sanitizeFilename(character.name)}.png`;
+  triggerBrowserDownload(blob, filename);
+}
+
+/**
+ * Exports a Character Card as a `.json` file (`chara_card_v2` or `chara_card_v3`).
+ */
+export function exportCharacterAsJson(
+  character: CharacterCardData,
+  spec: 'v2' | 'v3',
+  fallbackLorebook?: Lorebook
+): void {
+  const payload = serializeCharacterCard(character, spec, fallbackLorebook);
+  const jsonString = JSON.stringify(payload, null, 2);
+  const blob = new Blob([jsonString], { type: 'application/json' });
+  const filename = `${sanitizeFilename(character.name)}_${spec}.json`;
+  triggerBrowserDownload(blob, filename);
+}
+
+/**
+ * Exports a Lorebook as a standalone SillyTavern World Info `.json` file.
+ */
+export function exportLorebookAsJson(lorebook: Lorebook): void {
+  const cleanBook = {
+    name: lorebook.name,
+    description: lorebook.description,
+    scan_depth: lorebook.scan_depth,
+    token_budget: lorebook.token_budget,
+    recursive_scanning: lorebook.recursive_scanning,
+    entries: lorebook.entries,
+  };
+  const jsonString = JSON.stringify(cleanBook, null, 2);
+  const blob = new Blob([jsonString], { type: 'application/json' });
+  const filename = `${sanitizeFilename(lorebook.name)}_lorebook.json`;
+  triggerBrowserDownload(blob, filename);
+}
