@@ -16,7 +16,6 @@ import {
   Search,
   Cpu,
   FolderOpen,
-  FolderPlus,
   HardDrive,
   Trash2,
   Download,
@@ -24,8 +23,19 @@ import {
   Clock,
   Archive,
   Zap,
+  ChevronDown,
+  ChevronRight,
+  ExternalLink,
+  User,
+  BookOpen,
+  Database,
 } from 'lucide-react';
-import { formatSafeTimestamp, useStore } from '../context/StoreContext';
+import {
+  formatSafeTimestamp,
+  META_FILENAME,
+  UNIFIED_INTERNAL_ROOT,
+  useStore,
+} from '../context/StoreContext';
 import {
   AI_BACKEND_PRESETS,
   COMPATIBILITY_FORMAT_LABELS,
@@ -59,8 +69,7 @@ export const OptionsView: React.FC = () => {
     selectNativeSaveFolder,
     reconnectNativeSaveFolder,
     scanAndLoadSaveFolder,
-    createSaveFolder,
-    setActiveSaveFolder,
+    loadSavedFileIntoWorkspace,
     deleteSavedFile,
     exportSaveFolderBundle,
     storageBytesUsed,
@@ -73,10 +82,14 @@ export const OptionsView: React.FC = () => {
   const [modelSearchQuery, setModelSearchQuery] = useState('');
   const [showAboutModal, setShowAboutModal] = useState(false);
   const [confirmReset, setConfirmReset] = useState(false);
-  const [newFolderInput, setNewFolderInput] = useState('');
   const [folderStatusMessage, setFolderStatusMessage] = useState<string | null>(
     null
   );
+
+  // Collapsible Subfolder Tree States inside Unified Save Folder
+  const [charactersFolderOpen, setCharactersFolderOpen] = useState(true);
+  const [lorebooksFolderOpen, setLorebooksFolderOpen] = useState(true);
+  const [metaSectionOpen, setMetaSectionOpen] = useState(true);
 
   const abortControllerRef = useRef<AbortController | null>(null);
 
@@ -122,12 +135,23 @@ export const OptionsView: React.FC = () => {
     modelSearchQuery,
   ]);
 
-  const filesInActiveFolder = useMemo(
+  // Group Unified Save Folder files into `Characters/`, `Lorebooks/`, and `_tavernsmith_meta.json`
+  const characterSavedFiles = useMemo(
+    () => savedFiles.filter((f) => f.kind === 'character'),
+    [savedFiles]
+  );
+
+  const lorebookSavedFiles = useMemo(
+    () => savedFiles.filter((f) => f.kind === 'lorebook'),
+    [savedFiles]
+  );
+
+  const metaSavedFiles = useMemo(
     () =>
       savedFiles.filter(
-        (file) => file.folderPath === settings.activeSaveFolder
+        (f) => f.kind === 'meta' || f.fileName === META_FILENAME
       ),
-    [savedFiles, settings.activeSaveFolder]
+    [savedFiles]
   );
 
   const handleSelectPreset = (presetId: AIPresetId) => {
@@ -176,7 +200,7 @@ export const OptionsView: React.FC = () => {
   const handlePickNativeDirectory = async () => {
     const res = await selectNativeSaveFolder();
     setFolderStatusMessage(res.message);
-    window.setTimeout(() => setFolderStatusMessage(null), 5000);
+    window.setTimeout(() => setFolderStatusMessage(null), 6000);
   };
 
   const handleRescanSaveFolder = async () => {
@@ -191,15 +215,21 @@ export const OptionsView: React.FC = () => {
     window.setTimeout(() => setFolderStatusMessage(null), 5000);
   };
 
-  const handleCreateCustomFolder = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!newFolderInput.trim()) return;
-    createSaveFolder(newFolderInput);
-    setNewFolderInput('');
+  const handleSaveAllToFolderNow = () => {
+    saveNow('manual');
+    const rootDisplay = nativeDirectoryName
+      ? `Local PC Hard Drive Folder: ${nativeDirectoryName}/`
+      : `Browser Internal Storage (${UNIFIED_INTERNAL_ROOT})`;
     setFolderStatusMessage(
-      `Created and switched active Save Folder to ${newFolderInput.trim()}`
+      `Saved ${characterSavedFiles.length} character(s) to Characters/, ${lorebookSavedFiles.length} lorebook(s) to Lorebooks/, and ${META_FILENAME} in ${rootDisplay}.`
     );
-    window.setTimeout(() => setFolderStatusMessage(null), 3500);
+    window.setTimeout(() => setFolderStatusMessage(null), 5000);
+  };
+
+  const handleLoadFile = (file: SavedFileEntry) => {
+    const res = loadSavedFileIntoWorkspace(file);
+    setFolderStatusMessage(res.message);
+    window.setTimeout(() => setFolderStatusMessage(null), 4000);
   };
 
   const handleDownloadSavedFile = (file: SavedFileEntry) => {
@@ -218,22 +248,22 @@ export const OptionsView: React.FC = () => {
       <div className="flex flex-wrap items-center justify-between gap-4 border-b border-slate-200 dark:border-slate-800 pb-4">
         <div className="min-w-0">
           <h1 className="text-xl font-bold tracking-tight text-slate-900 dark:text-white">
-            IDE Options, AI Connections &amp; Save Folder Manager
+            IDE Options, AI Connections &amp; Unified Save Folder Manager
           </h1>
           <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
-            Configure local/cloud AI endpoints, live model scanning, Save Folder targets, and workspace appearance.
+            Configure local/cloud AI endpoints, live model scanning, unified Root Save Folder (`Characters/` &amp; `Lorebooks/`), and workspace appearance.
           </p>
         </div>
 
         <div className="flex flex-wrap items-center gap-2.5 shrink-0">
           <button
             type="button"
-            onClick={() => saveNow('manual')}
+            onClick={handleSaveAllToFolderNow}
             style={{ borderColor: 'var(--theme-accent)' }}
             className="theme-hover-outline flex items-center gap-1.5 rounded-lg border bg-slate-900 dark:bg-white px-3.5 py-2 text-xs font-semibold text-white dark:text-slate-900 cursor-pointer"
           >
             <Save className="h-3.5 w-3.5" />
-            <span>Save to Folder Now</span>
+            <span>Save All to Folder Now</span>
           </button>
 
           <button
@@ -246,53 +276,111 @@ export const OptionsView: React.FC = () => {
               className="h-3.5 w-3.5"
               style={{ color: 'var(--theme-accent)' }}
             />
-            <span>About &amp; Changelog (v1.0.0)</span>
+            <span>About &amp; Changelog (v1.0.1)</span>
           </button>
         </div>
       </div>
 
-      {/* SECTION 1: STORAGE & SAVE FOLDER MANAGER */}
+      {/* SECTION 1: UNIFIED STORAGE & SAVE FOLDER MANAGER */}
       <div
         style={{ borderColor: 'var(--theme-accent)' }}
         className="rounded-xl border bg-white dark:bg-slate-900 p-5 space-y-5"
       >
-        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 dark:border-slate-800 pb-3.5">
-          <div className="flex items-center gap-2.5">
+        <div className="flex flex-wrap items-start justify-between gap-4 border-b border-slate-200 dark:border-slate-800 pb-4">
+          <div className="flex items-start gap-3 min-w-0">
             <div
               style={{
                 borderColor: 'var(--theme-accent)',
                 backgroundColor:
                   'color-mix(in srgb, var(--theme-accent) 12%, transparent)',
               }}
-              className="flex h-9 w-9 items-center justify-center rounded-lg border shrink-0"
+              className="flex h-10 w-10 items-center justify-center rounded-lg border shrink-0 mt-0.5"
             >
               <FolderOpen
                 className="h-4 w-4"
                 style={{ color: 'var(--theme-accent)' }}
               />
             </div>
-            <div>
-              <div className="flex items-center gap-2">
+            <div className="space-y-1.5 min-w-0">
+              <div className="flex flex-wrap items-center gap-2">
                 <h2 className="text-sm font-bold text-slate-900 dark:text-white">
-                  Storage &amp; Save Folder Manager
+                  Storage &amp; Unified Save Folder Manager
                 </h2>
-                <Tooltip content="Both Manual Save and the Auto-Save Timer write your active Character ([name].json) and Lorebook ([name].json) directly to the selected Save Folder." />
+                <Tooltip content="TavernSmith uses ONE unified Root Save Folder with automatic Characters/ and Lorebooks/ subfolders plus _tavernsmith_meta.json. Browsers store files internally in IndexedDB / localStorage until you link a Local PC folder via Select Save Folder (Local PC). Note: If running inside AI Studio's preview iframe, open the app in a new browser tab to enable the native OS folder picker." />
               </div>
-              <p className="text-xs text-slate-500 dark:text-slate-400">
-                Active Target:{' '}
-                <code className="font-mono font-semibold text-slate-900 dark:text-white">
-                  {settings.activeSaveFolder}
-                </code>
-                {nativeDirectoryName && (
-                  <span className="ml-2 inline-flex items-center gap-1 rounded bg-emerald-500/15 px-1.5 py-0.5 font-mono text-[10px] font-semibold text-emerald-600 dark:text-emerald-400">
-                    OS Linked: {nativeDirectoryName}
+
+              {/* Clear Storage Mode Badge */}
+              <div className="flex flex-wrap items-center gap-2">
+                {nativeDirectoryName ? (
+                  <span className="inline-flex items-center gap-1.5 rounded-md border border-emerald-500/40 bg-emerald-500/15 px-2.5 py-1 font-mono text-xs font-semibold text-emerald-700 dark:text-emerald-300">
+                    <HardDrive className="h-3.5 w-3.5 shrink-0" />
+                    <span>
+                      Local PC Hard Drive Folder: {nativeDirectoryName}/
+                    </span>
                   </span>
+                ) : (
+                  <span className="inline-flex items-center gap-1.5 rounded-md border border-slate-300 dark:border-slate-700 bg-slate-100 dark:bg-slate-800 px-2.5 py-1 font-mono text-xs font-semibold text-slate-800 dark:text-slate-200">
+                    <Database
+                      className="h-3.5 w-3.5 shrink-0"
+                      style={{ color: 'var(--theme-accent)' }}
+                    />
+                    <span>
+                      Browser Internal Storage (IndexedDB / localStorage) — Root: {UNIFIED_INTERNAL_ROOT}
+                    </span>
+                  </span>
+                )}
+              </div>
+
+              <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                {nativeDirectoryName ? (
+                  <>
+                    Directly reading and writing real{' '}
+                    <code className="font-mono font-semibold text-slate-800 dark:text-slate-200">
+                      {nativeDirectoryName}/Characters/
+                    </code>
+                    ,{' '}
+                    <code className="font-mono font-semibold text-slate-800 dark:text-slate-200">
+                      {nativeDirectoryName}/Lorebooks/
+                    </code>
+                    , and{' '}
+                    <code className="font-mono font-semibold text-slate-800 dark:text-slate-200">
+                      {nativeDirectoryName}/{META_FILENAME}
+                    </code>{' '}
+                    on your hard drive.
+                  </>
+                ) : (
+                  <>
+                    Files are persisted automatically inside your browser&apos;s internal storage under{' '}
+                    <code className="font-mono font-semibold text-slate-800 dark:text-slate-200">
+                      Characters/
+                    </code>
+                    ,{' '}
+                    <code className="font-mono font-semibold text-slate-800 dark:text-slate-200">
+                      Lorebooks/
+                    </code>
+                    , and{' '}
+                    <code className="font-mono font-semibold text-slate-800 dark:text-slate-200">
+                      {META_FILENAME}
+                    </code>
+                    . Click <strong>Select Save Folder (Local PC)</strong> to sync with a real folder on your computer (if inside an iframe preview, open in a new tab first).
+                  </>
                 )}
               </p>
             </div>
           </div>
 
-          <div className="flex flex-wrap items-center gap-2">
+          {/* Action Toolbar: Save All to Folder Now + Rescan Folder + Select Save Folder (Local PC) + Export Bundle */}
+          <div className="flex flex-wrap items-center gap-2 shrink-0">
+            <button
+              type="button"
+              onClick={handleSaveAllToFolderNow}
+              style={{ borderColor: 'var(--theme-accent)' }}
+              className="theme-hover-outline flex items-center gap-1.5 rounded-lg border bg-slate-900 dark:bg-white px-3 py-1.5 text-xs font-semibold text-white dark:text-slate-900 cursor-pointer"
+            >
+              <Save className="h-3.5 w-3.5" />
+              <span>Save All to Folder Now</span>
+            </button>
+
             <button
               type="button"
               onClick={() => void handleRescanSaveFolder()}
@@ -342,9 +430,11 @@ export const OptionsView: React.FC = () => {
             <div className="flex items-center gap-2 text-amber-800 dark:text-amber-200">
               <FolderOpen className="h-4 w-4 shrink-0" />
               <span>
-                Saved local PC folder{' '}
-                <strong className="font-mono">{pendingReconnectFolderName}</strong>{' '}
-                found in IndexedDB. Click to grant read/write access and sync files:
+                Saved Local PC Hard Drive folder{' '}
+                <strong className="font-mono">{pendingReconnectFolderName}/</strong>{' '}
+                found in IndexedDB. Click to grant read/write access and sync{' '}
+                <code className="font-mono">Characters/</code> &amp;{' '}
+                <code className="font-mono">Lorebooks/</code>:
               </span>
             </div>
             <button
@@ -367,14 +457,14 @@ export const OptionsView: React.FC = () => {
             <button
               type="button"
               onClick={() => setFolderStatusMessage(null)}
-              className="text-[11px] text-slate-400 hover:text-slate-700 dark:hover:text-white cursor-pointer"
+              className="text-[11px] text-slate-400 hover:text-slate-700 dark:hover:text-white cursor-pointer ml-3 shrink-0"
             >
               Dismiss
             </button>
           </div>
         )}
 
-        {/* Storage Telemetry + Folder Selector Fluid Grid */}
+        {/* Unified Save Folder Tree + Storage Telemetry Grid */}
         <div
           style={{
             gridTemplateColumns:
@@ -382,76 +472,262 @@ export const OptionsView: React.FC = () => {
           }}
           className="grid gap-5 items-start"
         >
-          {/* Left Column: Folder Selector, Create Folder & Storage Quota */}
-          <div className="space-y-4 min-w-0">
-            <div className="space-y-2">
-              <label className="text-xs font-semibold text-slate-700 dark:text-slate-300">
-                In-App Save Folder Selector
-              </label>
-              <div className="space-y-1.5">
-                {settings.availableSaveFolders.map((folderPath) => {
-                  const isSelected = settings.activeSaveFolder === folderPath;
-                  const countInFolder = savedFiles.filter(
-                    (f) => f.folderPath === folderPath
-                  ).length;
-                  return (
-                    <button
-                      key={folderPath}
-                      type="button"
-                      onClick={() => setActiveSaveFolder(folderPath)}
-                      style={
-                        isSelected
-                          ? { borderColor: 'var(--theme-accent)' }
-                          : undefined
-                      }
-                      className={`theme-hover-outline flex w-full items-center justify-between rounded-lg border px-3 py-2 text-left text-xs transition-colors cursor-pointer ${
-                        isSelected
-                          ? 'bg-slate-50 dark:bg-slate-800/90 font-semibold text-slate-900 dark:text-white'
-                          : 'border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-950/50 text-slate-600 dark:text-slate-400'
-                      }`}
-                    >
-                      <div className="flex items-center gap-2 min-w-0">
-                        <FolderOpen
-                          className="h-3.5 w-3.5 shrink-0"
-                          style={
-                            isSelected
-                              ? { color: 'var(--theme-accent)' }
-                              : undefined
-                          }
-                        />
-                        <span className="font-mono truncate">{folderPath}</span>
-                      </div>
-                      <span className="font-mono text-[10px] text-slate-500 dark:text-slate-400 shrink-0 ml-2">
-                        {countInFolder} file{countInFolder === 1 ? '' : 's'}
-                      </span>
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-
-            {/* Create New Save Folder */}
-            <form onSubmit={handleCreateCustomFolder} className="flex gap-2">
-              <input
-                type="text"
-                value={newFolderInput}
-                onChange={(e) => setNewFolderInput(e.target.value)}
-                placeholder="/TavernSmith/Saves/CustomFolder"
-                className="theme-focus-ring font-mono flex-1 rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 px-3 py-1.5 text-xs text-slate-900 dark:text-white"
-              />
-              <button
-                type="submit"
-                style={{ borderColor: 'var(--theme-accent)' }}
-                className="theme-hover-outline flex items-center gap-1.5 rounded-lg border bg-white dark:bg-slate-900 px-3 py-1.5 text-xs font-semibold text-slate-900 dark:text-white shrink-0 cursor-pointer"
-              >
-                <FolderPlus
-                  className="h-3.5 w-3.5"
+          {/* Left Column: Unified Root Save Folder Subfolder Tree (`Characters/`, `Lorebooks/`, `_tavernsmith_meta.json`) */}
+          <div className="rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-950/50 p-3.5 space-y-3 min-w-0">
+            <div className="flex items-center justify-between border-b border-slate-200 dark:border-slate-800 pb-2.5">
+              <div className="flex items-center gap-2 text-xs font-semibold text-slate-900 dark:text-white">
+                <FileJson
+                  className="h-3.5 w-3.5 shrink-0"
                   style={{ color: 'var(--theme-accent)' }}
                 />
-                <span>New Folder</span>
-              </button>
-            </form>
+                <span>
+                  Root Save Folder Tree:{' '}
+                  <code className="font-mono">
+                    {nativeDirectoryName
+                      ? `/${nativeDirectoryName}/`
+                      : UNIFIED_INTERNAL_ROOT}
+                  </code>
+                </span>
+              </div>
+              <span className="font-mono text-[11px] font-semibold text-slate-600 dark:text-slate-300">
+                {savedFiles.length} saved file{savedFiles.length === 1 ? '' : 's'}
+              </span>
+            </div>
 
+            <div className="space-y-2.5 max-h-[380px] overflow-y-auto pr-1">
+              {/* SUBFOLDER 1: Characters/ */}
+              <div className="rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 overflow-hidden">
+                <button
+                  type="button"
+                  onClick={() => setCharactersFolderOpen((prev) => !prev)}
+                  className="flex w-full items-center justify-between px-3 py-2 text-left text-xs font-semibold text-slate-900 dark:text-white hover:bg-slate-50 dark:hover:bg-slate-800/60 cursor-pointer"
+                >
+                  <div className="flex items-center gap-2">
+                    {charactersFolderOpen ? (
+                      <ChevronDown className="h-3.5 w-3.5 text-slate-400" />
+                    ) : (
+                      <ChevronRight className="h-3.5 w-3.5 text-slate-400" />
+                    )}
+                    <User
+                      className="h-3.5 w-3.5"
+                      style={{ color: 'var(--theme-accent)' }}
+                    />
+                    <span className="font-mono">
+                      Characters/ ({characterSavedFiles.length} file
+                      {characterSavedFiles.length === 1 ? '' : 's'})
+                    </span>
+                  </div>
+                  <span className="font-mono text-[10px] text-slate-500">
+                    SillyTavern V2/V3 Cards
+                  </span>
+                </button>
+
+                {charactersFolderOpen && (
+                  <div className="border-t border-slate-100 dark:border-slate-800/80 divide-y divide-slate-100 dark:divide-slate-800/60">
+                    {characterSavedFiles.map((file) => (
+                      <div
+                        key={file.id}
+                        className="flex items-center justify-between gap-2 px-3 py-2 text-xs hover:bg-slate-50/70 dark:hover:bg-slate-950/40"
+                      >
+                        <div className="min-w-0 flex-1">
+                          <div className="flex items-center gap-1.5">
+                            <span className="font-mono font-semibold text-slate-900 dark:text-white truncate">
+                              Characters/{file.fileName}
+                            </span>
+                          </div>
+                          <div className="font-mono text-[10px] text-slate-400">
+                            {(file.sizeBytes / 1024).toFixed(2)} KB · Updated{' '}
+                            {formatSafeTimestamp(file.updatedAt)}
+                          </div>
+                        </div>
+
+                        <div className="flex items-center gap-1.5 shrink-0">
+                          <button
+                            type="button"
+                            onClick={() => handleLoadFile(file)}
+                            title="Load Character into Workbench"
+                            className="theme-hover-outline flex items-center gap-1 rounded-md border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800 px-2 py-1 text-[11px] font-semibold text-slate-700 dark:text-slate-200 cursor-pointer"
+                          >
+                            <ExternalLink className="h-3 w-3" />
+                            <span>Load</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleDownloadSavedFile(file)}
+                            title="Download Character JSON file"
+                            className="rounded-md border border-slate-200 dark:border-slate-800 p-1.5 text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 cursor-pointer"
+                          >
+                            <Download className="h-3.5 w-3.5" />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => deleteSavedFile(file.id)}
+                            title="Delete Character file from Save Folder"
+                            className="rounded-md border border-rose-200 dark:border-rose-900/40 p-1.5 text-rose-600 dark:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/40 cursor-pointer"
+                          >
+                            <Trash2 className="h-3.5 w-3.5" />
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              {/* SUBFOLDER 2: Lorebooks/ */}
+              <div className="rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 overflow-hidden">
+                <button
+                  type="button"
+                  onClick={() => setLorebooksFolderOpen((prev) => !prev)}
+                  className="flex w-full items-center justify-between px-3 py-2 text-left text-xs font-semibold text-slate-900 dark:text-white hover:bg-slate-50 dark:hover:bg-slate-800/60 cursor-pointer"
+                >
+                  <div className="flex items-center gap-2">
+                    {lorebooksFolderOpen ? (
+                      <ChevronDown className="h-3.5 w-3.5 text-slate-400" />
+                    ) : (
+                      <ChevronRight className="h-3.5 w-3.5 text-slate-400" />
+                    )}
+                    <BookOpen
+                      className="h-3.5 w-3.5"
+                      style={{ color: 'var(--theme-accent)' }}
+                    />
+                    <span className="font-mono">
+                      Lorebooks/ ({lorebookSavedFiles.length} file
+                      {lorebookSavedFiles.length === 1 ? '' : 's'})
+                    </span>
+                  </div>
+                  <span className="font-mono text-[10px] text-slate-500">
+                    World Info Books
+                  </span>
+                </button>
+
+                {lorebooksFolderOpen && (
+                  <div className="border-t border-slate-100 dark:border-slate-800/80 divide-y divide-slate-100 dark:divide-slate-800/60">
+                    {lorebookSavedFiles.map((file) => (
+                      <div
+                        key={file.id}
+                        className="flex items-center justify-between gap-2 px-3 py-2 text-xs hover:bg-slate-50/70 dark:hover:bg-slate-950/40"
+                      >
+                        <div className="min-w-0 flex-1">
+                          <div className="flex items-center gap-1.5">
+                            <span className="font-mono font-semibold text-slate-900 dark:text-white truncate">
+                              Lorebooks/{file.fileName}
+                            </span>
+                          </div>
+                          <div className="font-mono text-[10px] text-slate-400">
+                            {(file.sizeBytes / 1024).toFixed(2)} KB · Updated{' '}
+                            {formatSafeTimestamp(file.updatedAt)}
+                          </div>
+                        </div>
+
+                        <div className="flex items-center gap-1.5 shrink-0">
+                          <button
+                            type="button"
+                            onClick={() => handleLoadFile(file)}
+                            title="Load Lorebook into Workbench"
+                            className="theme-hover-outline flex items-center gap-1 rounded-md border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800 px-2 py-1 text-[11px] font-semibold text-slate-700 dark:text-slate-200 cursor-pointer"
+                          >
+                            <ExternalLink className="h-3 w-3" />
+                            <span>Load</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleDownloadSavedFile(file)}
+                            title="Download Lorebook JSON file"
+                            className="rounded-md border border-slate-200 dark:border-slate-800 p-1.5 text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 cursor-pointer"
+                          >
+                            <Download className="h-3.5 w-3.5" />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => deleteSavedFile(file.id)}
+                            title="Delete Lorebook file from Save Folder"
+                            className="rounded-md border border-rose-200 dark:border-rose-900/40 p-1.5 text-rose-600 dark:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/40 cursor-pointer"
+                          >
+                            <Trash2 className="h-3.5 w-3.5" />
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              {/* ROOT METADATA FILE: _tavernsmith_meta.json */}
+              <div className="rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 overflow-hidden">
+                <button
+                  type="button"
+                  onClick={() => setMetaSectionOpen((prev) => !prev)}
+                  className="flex w-full items-center justify-between px-3 py-2 text-left text-xs font-semibold text-slate-900 dark:text-white hover:bg-slate-50 dark:hover:bg-slate-800/60 cursor-pointer"
+                >
+                  <div className="flex items-center gap-2">
+                    {metaSectionOpen ? (
+                      <ChevronDown className="h-3.5 w-3.5 text-slate-400" />
+                    ) : (
+                      <ChevronRight className="h-3.5 w-3.5 text-slate-400" />
+                    )}
+                    <ShieldCheck
+                      className="h-3.5 w-3.5"
+                      style={{ color: 'var(--theme-accent)' }}
+                    />
+                    <span className="font-mono">{META_FILENAME}</span>
+                  </div>
+                  <span className="font-mono text-[10px] text-slate-500">
+                    {tags.length} Tags · {themes.length} Context Themes
+                  </span>
+                </button>
+
+                {metaSectionOpen && (
+                  <div className="border-t border-slate-100 dark:border-slate-800/80 divide-y divide-slate-100 dark:divide-slate-800/60">
+                    {metaSavedFiles.map((file) => (
+                      <div
+                        key={file.id}
+                        className="flex items-center justify-between gap-2 px-3 py-2 text-xs hover:bg-slate-50/70 dark:hover:bg-slate-950/40"
+                      >
+                        <div className="min-w-0 flex-1">
+                          <div className="flex items-center gap-1.5">
+                            <span className="font-mono font-semibold text-slate-900 dark:text-white truncate">
+                              /{file.fileName}
+                            </span>
+                            <span className="rounded bg-slate-100 dark:bg-slate-800 px-1.5 py-0.5 font-mono text-[10px] uppercase text-slate-600 dark:text-slate-300">
+                              root meta
+                            </span>
+                          </div>
+                          <div className="font-mono text-[10px] text-slate-400">
+                            {(file.sizeBytes / 1024).toFixed(2)} KB · Synced{' '}
+                            {formatSafeTimestamp(file.updatedAt)}
+                          </div>
+                        </div>
+
+                        <div className="flex items-center gap-1.5 shrink-0">
+                          <button
+                            type="button"
+                            onClick={() => handleLoadFile(file)}
+                            title="Reload Tags & Context Themes from metadata file"
+                            className="theme-hover-outline flex items-center gap-1 rounded-md border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800 px-2 py-1 text-[11px] font-semibold text-slate-700 dark:text-slate-200 cursor-pointer"
+                          >
+                            <ExternalLink className="h-3 w-3" />
+                            <span>Load</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleDownloadSavedFile(file)}
+                            title="Download _tavernsmith_meta.json"
+                            className="rounded-md border border-slate-200 dark:border-slate-800 p-1.5 text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 cursor-pointer"
+                          >
+                            <Download className="h-3.5 w-3.5" />
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+
+          {/* Right Column: Storage Quota Telemetry & Live Save Activity Log */}
+          <div className="space-y-4 min-w-0">
             {/* Storage Quota & Counts Panel */}
             <div className="rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-950/60 p-3.5 space-y-3">
               <div className="flex items-center justify-between text-xs">
@@ -482,13 +758,13 @@ export const OptionsView: React.FC = () => {
                   <div className="text-xs font-bold text-slate-900 dark:text-white">
                     {characters.length}
                   </div>
-                  <div className="text-[10px] text-slate-500">Chars</div>
+                  <div className="text-[10px] text-slate-500">Characters/</div>
                 </div>
                 <div className="rounded border border-slate-200/80 dark:border-slate-800 bg-white dark:bg-slate-900 p-1.5">
                   <div className="text-xs font-bold text-slate-900 dark:text-white">
                     {lorebooks.length}
                   </div>
-                  <div className="text-[10px] text-slate-500">Books</div>
+                  <div className="text-[10px] text-slate-500">Lorebooks/</div>
                 </div>
                 <div className="rounded border border-slate-200/80 dark:border-slate-800 bg-white dark:bg-slate-900 p-1.5">
                   <div className="text-xs font-bold text-slate-900 dark:text-white">
@@ -503,78 +779,6 @@ export const OptionsView: React.FC = () => {
                   <div className="text-[10px] text-slate-500">Tags</div>
                 </div>
               </div>
-            </div>
-          </div>
-
-          {/* Right Column: Active Save Folder File Browser & Live Save Log */}
-          <div className="space-y-4 min-w-0">
-            <div className="rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-950/50 p-3.5 space-y-3">
-              <div className="flex items-center justify-between border-b border-slate-200 dark:border-slate-800 pb-2">
-                <div className="flex items-center gap-2 text-xs font-semibold text-slate-800 dark:text-slate-200">
-                  <FileJson
-                    className="h-3.5 w-3.5"
-                    style={{ color: 'var(--theme-accent)' }}
-                  />
-                  <span>
-                    Files in{' '}
-                    <code className="font-mono">{settings.activeSaveFolder}</code>
-                  </span>
-                </div>
-                <span className="font-mono text-[11px] text-slate-500">
-                  {filesInActiveFolder.length} saved file
-                  {filesInActiveFolder.length === 1 ? '' : 's'}
-                </span>
-              </div>
-
-              {filesInActiveFolder.length === 0 ? (
-                <div className="py-6 text-center text-xs text-slate-500 dark:text-slate-400">
-                  No files saved in this folder yet. Click{' '}
-                  <strong>Save to Folder Now</strong> or wait for the Auto-Save timer.
-                </div>
-              ) : (
-                <div className="max-h-48 overflow-y-auto space-y-1.5 pr-1">
-                  {filesInActiveFolder.map((file) => (
-                    <div
-                      key={file.id}
-                      className="flex items-center justify-between gap-2 rounded-lg border border-slate-200/90 dark:border-slate-800 bg-white dark:bg-slate-900 px-3 py-2 text-xs"
-                    >
-                      <div className="min-w-0 flex-1">
-                        <div className="flex items-center gap-2">
-                          <span className="font-mono font-semibold text-slate-900 dark:text-white truncate">
-                            {file.fileName}
-                          </span>
-                          <span className="rounded bg-slate-100 dark:bg-slate-800 px-1.5 py-0.5 font-mono text-[10px] uppercase text-slate-600 dark:text-slate-300">
-                            {file.kind}
-                          </span>
-                        </div>
-                        <div className="font-mono text-[10px] text-slate-400">
-                          {(file.sizeBytes / 1024).toFixed(2)} KB · Updated{' '}
-                          {formatSafeTimestamp(file.updatedAt)}
-                        </div>
-                      </div>
-
-                      <div className="flex items-center gap-1.5 shrink-0">
-                        <button
-                          type="button"
-                          onClick={() => handleDownloadSavedFile(file)}
-                          title="Download JSON file"
-                          className="rounded-md border border-slate-200 dark:border-slate-800 p-1.5 text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 cursor-pointer"
-                        >
-                          <Download className="h-3.5 w-3.5" />
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => deleteSavedFile(file.id)}
-                          title="Delete file permanently from Save Folder"
-                          className="rounded-md border border-rose-200 dark:border-rose-900/40 p-1.5 text-rose-600 dark:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/40 cursor-pointer"
-                        >
-                          <Trash2 className="h-3.5 w-3.5" />
-                        </button>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              )}
             </div>
 
             {/* Live Save Activity Log */}
@@ -597,17 +801,17 @@ export const OptionsView: React.FC = () => {
                   Save events will appear here with target folder path and timestamp.
                 </div>
               ) : (
-                <div className="max-h-28 overflow-y-auto space-y-1 font-mono text-[11px]">
-                  {saveLogs.slice(0, 6).map((log) => (
+                <div className="max-h-40 overflow-y-auto space-y-1 font-mono text-[11px]">
+                  {saveLogs.slice(0, 8).map((log) => (
                     <div
                       key={log.id}
-                      className="flex flex-wrap items-center justify-between gap-2 rounded bg-white dark:bg-slate-900 px-2.5 py-1 text-slate-600 dark:text-slate-300"
+                      className="flex flex-wrap items-center justify-between gap-2 rounded bg-white dark:bg-slate-900 px-2.5 py-1.5 text-slate-600 dark:text-slate-300"
                     >
                       <span className="truncate">
                         <strong className="uppercase text-slate-900 dark:text-white">
                           [{log.mode}]
                         </strong>{' '}
-                        {log.folderPath}/ ({log.filesWritten.join(', ')})
+                        {log.folderPath} ({log.filesWritten.join(', ')})
                       </span>
                       <span className="text-[10px] text-slate-400 tabular-nums">
                         {log.timestamp}
@@ -797,7 +1001,7 @@ export const OptionsView: React.FC = () => {
                 className="flex items-center gap-1.5 text-xs font-medium text-slate-700 dark:text-slate-300 cursor-pointer"
               >
                 <span>Enable Automatic Folder Save</span>
-                <Tooltip content="Periodically saves your active Character ([name].json), Lorebook ([name].json), and workspace state to the active Save Folder." />
+                <Tooltip content="Periodically saves all Characters (Characters/), Lorebooks (Lorebooks/), and _tavernsmith_meta.json to the active Save Folder." />
               </label>
               <input
                 id="autosave-toggle"
@@ -846,7 +1050,7 @@ export const OptionsView: React.FC = () => {
             <div className="pt-2 flex flex-wrap items-center justify-between gap-2 border-t border-slate-200 dark:border-slate-800">
               <button
                 type="button"
-                onClick={() => saveNow('manual')}
+                onClick={handleSaveAllToFolderNow}
                 style={{ borderColor: 'var(--theme-accent)' }}
                 className="theme-hover-outline flex items-center gap-1.5 rounded-lg border bg-slate-50 dark:bg-slate-800 px-3 py-1.5 text-xs font-medium text-slate-900 dark:text-white cursor-pointer"
               >
@@ -854,7 +1058,7 @@ export const OptionsView: React.FC = () => {
                   className="h-3.5 w-3.5"
                   style={{ color: 'var(--theme-accent)' }}
                 />
-                <span>Save Snapshot Now</span>
+                <span>Save All to Folder Now</span>
               </button>
 
               {!confirmReset ? (
@@ -1342,7 +1546,7 @@ export const OptionsView: React.FC = () => {
                     id="about-modal-title"
                     className="text-base font-bold text-slate-900 dark:text-white"
                   >
-                    TavernSmith IDE · Release v1.0.0
+                    TavernSmith IDE · Release v1.0.1
                   </h2>
                   <p className="text-xs text-slate-500 dark:text-slate-400">
                     SillyTavern V2 &amp; V3 Character Card &amp; Lorebook Workbench
@@ -1361,9 +1565,21 @@ export const OptionsView: React.FC = () => {
             <div className="space-y-4 text-xs leading-relaxed text-slate-600 dark:text-slate-300 max-h-[65vh] overflow-y-auto pr-1">
               <div className="space-y-1.5">
                 <div className="font-semibold text-slate-900 dark:text-white">
-                  v1.0.0 Release Notes (Synced with CHANGELOG.md)
+                  v1.0.1 Release Notes (Synced with CHANGELOG.md)
                 </div>
                 <ul className="list-disc pl-4 space-y-1">
+                  <li>
+                    <strong>Unified Root Save Folder &amp; Subfolders:</strong>{' '}
+                    Refactored storage into a single unified Root Save Folder with automatic <code className="font-mono">Characters/</code> and <code className="font-mono">Lorebooks/</code> subdirectories plus root <code className="font-mono">{META_FILENAME}</code>.
+                  </li>
+                  <li>
+                    <strong>Two-Way Live Directory Sync:</strong>{' '}
+                    Persists Local PC <code className="font-mono">FileSystemDirectoryHandle</code> in <code className="font-mono">IndexedDB</code> and automatically scans <code className="font-mono">Characters/</code>, <code className="font-mono">Lorebooks/</code>, and <code className="font-mono">{META_FILENAME}</code> on launch.
+                  </li>
+                  <li>
+                    <strong>Cross-Platform Standalone PWA &amp; CI/CD:</strong>{' '}
+                    Added standalone desktop launchers (<code className="font-mono">.bat</code> &amp; <code className="font-mono">.command</code>), PWA manifest/service worker, and Node 24 GitHub Actions release workflows.
+                  </li>
                   <li>
                     <strong>Interactive SillyTavern 2:3 Portrait Cropper:</strong>{' '}
                     Automatically verifies uploaded/dropped character portraits against SillyTavern&apos;s <code className="font-mono">2:3</code> aspect ratio (<code className="font-mono">512×768</code> / <code className="font-mono">400×600</code>) and opens an interactive HTML5 <code className="font-mono">&lt;canvas&gt;</code> pan &amp; zoom cropper modal.
@@ -1372,62 +1588,23 @@ export const OptionsView: React.FC = () => {
                     <strong>Full Drag-and-Drop Import &amp; Reordering:</strong>{' '}
                     Drop <code className="font-mono">.png</code> cards, <code className="font-mono">.json</code> files, or portrait images directly onto the workbenches, and drag-and-drop to reorder Lorebook Entries, DM Stat-Block attributes, and Alternate Greetings.
                   </li>
-                  <li>
-                    <strong>Pure-Browser PNG Steganography &amp; JSON I/O:</strong>{' '}
-                    Reads and writes SillyTavern V2 (<code className="font-mono">chara</code>) and V3 (<code className="font-mono">ccv3</code>) PNG <code className="font-mono">tEXt</code> chunks with IEEE 802.3 CRC32 verification.
-                  </li>
-                  <li>
-                    <strong>Storage &amp; Save Folder Manager:</strong> Local PC folder picker (<code className="font-mono">showDirectoryPicker</code>) + In-App Save Folder browser, unified manual/auto-save target, and 1-click folder backup export.
-                  </li>
-                  <li>
-                    <strong>Auto-Formatting &amp; Thinking Stripper:</strong>{' '}
-                    Auto-detects Llama 3/4, DeepSeek/Qwen{' '}
-                    <code className="font-mono">&lt;think&gt;</code>, Gemini
-                    Thinking, and xAI Grok Reasoning models, stripping
-                    chain-of-thought into a collapsible Reasoning drawer.
-                  </li>
                 </ul>
               </div>
 
-              <div
-                style={{
-                  borderColor:
-                    'color-mix(in srgb, var(--theme-accent) 35%, transparent)',
-                }}
-                className="rounded-lg border bg-slate-50 dark:bg-slate-950 p-3.5 space-y-2"
-              >
-                <div className="flex items-center gap-2 font-semibold text-slate-900 dark:text-white">
-                  <ShieldCheck
-                    className="h-4 w-4"
-                    style={{ color: 'var(--theme-accent)' }}
-                  />
-                  <span>Sandbox Security &amp; Memory Hygiene Status</span>
+              <div className="rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 p-3 space-y-1">
+                <div className="flex items-center gap-1.5 font-semibold text-slate-900 dark:text-white">
+                  <ShieldCheck className="h-3.5 w-3.5 text-emerald-500" />
+                  <span>Zero-Crash Sandbox &amp; Credential Hygiene</span>
                 </div>
-                <ul className="space-y-1 text-[11px] text-slate-600 dark:text-slate-400">
-                  <li>
-                    · <strong>Zero-Crash Browser Runtime:</strong> Pure Web APIs
-                    (<code className="font-mono">ArrayBuffer</code>,{' '}
-                    <code className="font-mono">DataView</code>,{' '}
-                    <code className="font-mono">Uint8Array</code>,{' '}
-                    <code className="font-mono">localStorage</code>) with zero
-                    Node-only polyfill dependencies.
-                  </li>
-                  <li>
-                    · <strong>Zero Credential Leakage:</strong> Exported PNG and
-                    JSON files strictly serialize only V2/V3 Character &amp; Lorebook
-                    fields—never API keys.
-                  </li>
-                  <li>
-                    · <strong>Lifecycle Cleanup Verified:</strong> All auto-save
-                    intervals, tooltip timers, and{' '}
-                    <code className="font-mono">AbortController</code> network
-                    probes are strictly torn down on unmount.
-                  </li>
-                </ul>
+                <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                  Pure browser binary APIs (<code className="font-mono">ArrayBuffer</code>,{' '}
+                  <code className="font-mono">DataView</code>,{' '}
+                  <code className="font-mono">Uint8Array</code>). API keys and bearer tokens are never included in exported <code className="font-mono">.png</code> or <code className="font-mono">.json</code> files.
+                </p>
               </div>
             </div>
 
-            <div className="flex justify-end border-t border-slate-200 dark:border-slate-800 pt-3">
+            <div className="flex justify-end pt-2 border-t border-slate-200 dark:border-slate-800">
               <button
                 type="button"
                 onClick={() => setShowAboutModal(false)}

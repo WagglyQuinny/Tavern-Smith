@@ -69,12 +69,9 @@ export const TopBar: React.FC = () => {
   }, [aiConfig]);
 
   const shortSaveFolderName = useMemo(() => {
-    if (nativeDirectoryName) return nativeDirectoryName;
-    const parts = (settings.activeSaveFolder || '/TavernSmith/Saves/Default')
-      .split('/')
-      .filter(Boolean);
-    return parts[parts.length - 1] || 'Default';
-  }, [nativeDirectoryName, settings.activeSaveFolder]);
+    if (nativeDirectoryName) return `Local PC: ${nativeDirectoryName}/`;
+    return '/TavernSmith_Saves/';
+  }, [nativeDirectoryName]);
 
   return (
     <header

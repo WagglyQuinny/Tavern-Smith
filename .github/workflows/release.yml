@@ -166,8 +166,9 @@ jobs:
           fi
 
           echo "Publishing GitHub Release for tag: $TAG"
-          gh release create "$TAG" TavernSmith-Standalone-Universal.zip \
-            --title "TavernSmith $TAG" \
-            --notes-file RELEASE_NOTES.md \
-            --clobber || \
-          gh release upload "$TAG" TavernSmith-Standalone-Universal.zip --clobber
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" TavernSmith-Standalone-Universal.zip --clobber
+            gh release edit "$TAG" --title "TavernSmith $TAG" --notes-file RELEASE_NOTES.md
+          else
+            gh release create "$TAG" TavernSmith-Standalone-Universal.zip --title "TavernSmith $TAG" --notes-file RELEASE_NOTES.md
+          fi
