@@ -38,6 +38,8 @@ export const TopBar: React.FC = () => {
     saveNow,
     setActiveTab,
     nativeDirectoryName,
+    pendingReconnectFolderName,
+    reconnectNativeSaveFolder,
     isMainSidebarOpen,
     toggleMainSidebar,
   } = useStore();
@@ -281,6 +283,18 @@ export const TopBar: React.FC = () => {
       {/* Right Zone: Save Folder Status + Token Counter + PWA Install + Dark/Light Switch + Save Action */}
       <div className="flex items-center gap-2.5 shrink-0">
         <PWAInstallButton />
+        {pendingReconnectFolderName && (
+          <button
+            type="button"
+            onClick={() => void reconnectNativeSaveFolder()}
+            style={{ borderColor: 'var(--theme-accent)' }}
+            title={`Grant read/write access to your saved local PC folder "${pendingReconnectFolderName}" and sync files.`}
+            className="theme-hover-outline flex items-center gap-1.5 rounded-md border bg-amber-500/15 px-2.5 py-1 text-xs font-semibold text-amber-700 dark:text-amber-300 cursor-pointer whitespace-nowrap"
+          >
+            <FolderOpen className="h-3.5 w-3.5 shrink-0" />
+            <span>📁 Reconnect Save Folder ({pendingReconnectFolderName})</span>
+          </button>
+        )}
         {/* Quick-Access Save Folder Button */}
         <button
           type="button"

@@ -29,6 +29,8 @@ import {
   Image as ImageIcon,
   Crop,
   GripVertical,
+  RefreshCw,
+  FolderOpen,
 } from 'lucide-react';
 import { useStore } from '../context/StoreContext';
 import {
@@ -99,6 +101,7 @@ export const CharacterEditor: React.FC = () => {
     statBlock,
     setStatBlock,
     tags,
+    ensureTagRegistered,
     activeTheme,
     aiConfig,
     settings,
@@ -106,6 +109,10 @@ export const CharacterEditor: React.FC = () => {
     tokenBreakdown,
     setActiveTab,
     importFromFiles,
+    scanAndLoadSaveFolder,
+    reconnectNativeSaveFolder,
+    pendingReconnectFolderName,
+    isSyncingFolder,
   } = useStore();
 
   // Roster Sidebar UI State
@@ -119,6 +126,7 @@ export const CharacterEditor: React.FC = () => {
   const [importStatusBanner, setImportStatusBanner] = useState<string | null>(
     null
   );
+  const [newCustomTagInput, setNewCustomTagInput] = useState('');
 
   // Interactive 2:3 Portrait Cropper Modal State
   const [cropperState, setCropperState] = useState<{
@@ -333,6 +341,7 @@ export const CharacterEditor: React.FC = () => {
   }, [characterWithMetrics, rosterSearch, rosterTagFilter, rosterSort]);
 
   const toggleCharacterTag = (tagName: string) => {
+    ensureTagRegistered(tagName);
     const exists = character.tags.includes(tagName);
     updateCharacterField(
       'tags',
@@ -340,6 +349,29 @@ export const CharacterEditor: React.FC = () => {
         ? character.tags.filter((t) => t !== tagName)
         : [...character.tags, tagName]
     );
+  };
+
+  const handleAddCustomCharacterTag = () => {
+    const clean = newCustomTagInput.trim();
+    if (!clean) return;
+    const registered = ensureTagRegistered(clean);
+    const tagName = registered ? registered.name : clean;
+    if (!character.tags.includes(tagName)) {
+      updateCharacterField('tags', [...character.tags, tagName]);
+    }
+    setNewCustomTagInput('');
+  };
+
+  const handleRescanFolderFromRoster = async () => {
+    const res = await scanAndLoadSaveFolder({ silent: false });
+    setImportStatusBanner(res.summary);
+    window.setTimeout(() => setImportStatusBanner(null), 4000);
+  };
+
+  const handleReconnectFolderFromRoster = async () => {
+    const res = await reconnectNativeSaveFolder();
+    setImportStatusBanner(res.message);
+    window.setTimeout(() => setImportStatusBanner(null), 4000);
   };
 
   // Greeting Carousel Handlers
@@ -1597,7 +1629,7 @@ export const CharacterEditor: React.FC = () => {
             </button>
           </div>
 
-          {/* + New Character & Import Card Buttons */}
+          {/* + New Character, Import Card & Rescan Save Folder Buttons */}
           <div className="grid grid-cols-2 gap-1.5">
             <button
               type="button"
@@ -1622,6 +1654,33 @@ export const CharacterEditor: React.FC = () => {
               <span>Import PNG/JSON</span>
             </button>
           </div>
+
+          <button
+            type="button"
+            onClick={() => void handleRescanFolderFromRoster()}
+            disabled={isSyncingFolder}
+            className="theme-hover-outline flex w-full items-center justify-center gap-1.5 rounded-lg border border-slate-200 dark:border-zinc-800 bg-slate-50 dark:bg-zinc-900 px-2.5 py-1.5 text-[11px] font-semibold text-slate-700 dark:text-slate-200 cursor-pointer disabled:opacity-50"
+          >
+            <RefreshCw
+              className={`h-3 w-3 ${isSyncingFolder ? 'animate-spin' : ''}`}
+              style={{ color: 'var(--theme-accent)' }}
+            />
+            <span>🔄 Rescan Save Folder</span>
+          </button>
+
+          {pendingReconnectFolderName && (
+            <button
+              type="button"
+              onClick={() => void handleReconnectFolderFromRoster()}
+              style={{ borderColor: 'var(--theme-accent)' }}
+              className="theme-hover-outline flex w-full items-center justify-center gap-1.5 rounded-lg border bg-amber-500/15 px-2.5 py-1.5 text-[11px] font-semibold text-amber-800 dark:text-amber-200 cursor-pointer"
+            >
+              <FolderOpen className="h-3.5 w-3.5 shrink-0" />
+              <span className="truncate">
+                📁 Reconnect Save Folder ({pendingReconnectFolderName})
+              </span>
+            </button>
+          )}
 
           <input
             ref={importFileInputRef}
@@ -2178,6 +2237,28 @@ export const CharacterEditor: React.FC = () => {
                             );
                           })}
                         </div>
+                        <div className="flex items-center gap-1.5 pt-1">
+                          <input
+                            type="text"
+                            value={newCustomTagInput}
+                            onChange={(e) => setNewCustomTagInput(e.target.value)}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter') {
+                                e.preventDefault();
+                                handleAddCustomCharacterTag();
+                              }
+                            }}
+                            placeholder="Create & attach custom tag..."
+                            className="theme-focus-ring rounded-md border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 px-2.5 py-1 text-xs text-slate-900 dark:text-white"
+                          />
+                          <button
+                            type="button"
+                            onClick={handleAddCustomCharacterTag}
+                            className="theme-hover-outline rounded-md border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-2.5 py-1 text-xs font-semibold text-slate-700 dark:text-slate-200 cursor-pointer"
+                          >
+                            + Add Tag
+                          </button>
+                        </div>
                       </div>
                     </div>
                   </div>
@@ -2526,6 +2607,28 @@ export const CharacterEditor: React.FC = () => {
                           </button>
                         );
                       })}
+                    </div>
+                    <div className="flex items-center gap-1.5 pt-1">
+                      <input
+                        type="text"
+                        value={newCustomTagInput}
+                        onChange={(e) => setNewCustomTagInput(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') {
+                            e.preventDefault();
+                            handleAddCustomCharacterTag();
+                          }
+                        }}
+                        placeholder="Create & attach custom tag..."
+                        className="theme-focus-ring rounded-md border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 px-2.5 py-1 text-xs text-slate-900 dark:text-white"
+                      />
+                      <button
+                        type="button"
+                        onClick={handleAddCustomCharacterTag}
+                        className="theme-hover-outline rounded-md border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-2.5 py-1 text-xs font-semibold text-slate-700 dark:text-slate-200 cursor-pointer"
+                      >
+                        + Add Tag
+                      </button>
                     </div>
                   </div>
                 </div>

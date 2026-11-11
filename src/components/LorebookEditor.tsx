@@ -22,6 +22,8 @@ import {
   ChevronLeft,
   ChevronRight,
   GripVertical,
+  RefreshCw,
+  FolderOpen,
 } from 'lucide-react';
 import { useStore } from '../context/StoreContext';
 import {
@@ -89,11 +91,16 @@ export const LorebookEditor: React.FC = () => {
     updateCharacterField,
     bindLorebookToCharacter,
     tags,
+    ensureTagRegistered,
     activeTheme,
     aiConfig,
     settings,
     updateSettings,
     importFromFiles,
+    scanAndLoadSaveFolder,
+    reconnectNativeSaveFolder,
+    pendingReconnectFolderName,
+    isSyncingFolder,
   } = useStore();
 
   // Lorebook Roster Sidebar State
@@ -107,6 +114,7 @@ export const LorebookEditor: React.FC = () => {
   const [importStatusBanner, setImportStatusBanner] = useState<string | null>(
     null
   );
+  const [newCustomTagInput, setNewCustomTagInput] = useState('');
   const lorebookFileInputRef = useRef<HTMLInputElement | null>(null);
 
   // Drag-and-Drop Reordering for Lorebook Entries
@@ -286,6 +294,7 @@ export const LorebookEditor: React.FC = () => {
   };
 
   const toggleLorebookGlobalTag = (tagName: string) => {
+    ensureTagRegistered(tagName);
     updateLorebookAndSync((prev) => {
       const current = prev.tags || [];
       const exists = current.includes(tagName);
@@ -296,6 +305,34 @@ export const LorebookEditor: React.FC = () => {
           : [...current, tagName],
       };
     });
+  };
+
+  const handleAddCustomLorebookTag = () => {
+    const clean = newCustomTagInput.trim();
+    if (!clean) return;
+    const registered = ensureTagRegistered(clean);
+    const tagName = registered ? registered.name : clean;
+    updateLorebookAndSync((prev) => {
+      const current = prev.tags || [];
+      if (current.includes(tagName)) return prev;
+      return {
+        ...prev,
+        tags: [...current, tagName],
+      };
+    });
+    setNewCustomTagInput('');
+  };
+
+  const handleRescanFolderFromRoster = async () => {
+    const res = await scanAndLoadSaveFolder({ silent: false });
+    setImportStatusBanner(res.summary);
+    window.setTimeout(() => setImportStatusBanner(null), 4000);
+  };
+
+  const handleReconnectFolderFromRoster = async () => {
+    const res = await reconnectNativeSaveFolder();
+    setImportStatusBanner(res.message);
+    window.setTimeout(() => setImportStatusBanner(null), 4000);
   };
 
   const handleBindToActiveCharacter = () => {
@@ -409,6 +446,7 @@ export const LorebookEditor: React.FC = () => {
 
   const toggleEntryTag = (tagName: string) => {
     if (!selectedEntry) return;
+    ensureTagRegistered(tagName);
     const current = selectedEntry.tags || [];
     const exists = current.includes(tagName);
     handleUpdateSelectedEntry({
@@ -416,6 +454,21 @@ export const LorebookEditor: React.FC = () => {
         ? current.filter((t) => t !== tagName)
         : [...current, tagName],
     });
+  };
+
+  const handleAddCustomEntryTag = () => {
+    if (!selectedEntry) return;
+    const clean = newCustomTagInput.trim();
+    if (!clean) return;
+    const registered = ensureTagRegistered(clean);
+    const tagName = registered ? registered.name : clean;
+    const current = selectedEntry.tags || [];
+    if (!current.includes(tagName)) {
+      handleUpdateSelectedEntry({
+        tags: [...current, tagName],
+      });
+    }
+    setNewCustomTagInput('');
   };
 
   // Wizard Step 1: "✨ AI Generate Multi-Entry Lorebook from Concept"
@@ -731,7 +784,7 @@ export const LorebookEditor: React.FC = () => {
             </button>
           </div>
 
-          {/* + New Lorebook & Import Lorebook Buttons */}
+          {/* + New Lorebook, Import Lorebook & Rescan Save Folder Buttons */}
           <div className="grid grid-cols-2 gap-1.5">
             <button
               type="button"
@@ -755,6 +808,33 @@ export const LorebookEditor: React.FC = () => {
               <span>Import JSON</span>
             </button>
           </div>
+
+          <button
+            type="button"
+            onClick={() => void handleRescanFolderFromRoster()}
+            disabled={isSyncingFolder}
+            className="theme-hover-outline flex w-full items-center justify-center gap-1.5 rounded-lg border border-slate-200 dark:border-zinc-800 bg-slate-50 dark:bg-zinc-900 px-2.5 py-1.5 text-[11px] font-semibold text-slate-700 dark:text-slate-200 cursor-pointer disabled:opacity-50"
+          >
+            <RefreshCw
+              className={`h-3 w-3 ${isSyncingFolder ? 'animate-spin' : ''}`}
+              style={{ color: 'var(--theme-accent)' }}
+            />
+            <span>🔄 Rescan Save Folder</span>
+          </button>
+
+          {pendingReconnectFolderName && (
+            <button
+              type="button"
+              onClick={() => void handleReconnectFolderFromRoster()}
+              style={{ borderColor: 'var(--theme-accent)' }}
+              className="theme-hover-outline flex w-full items-center justify-center gap-1.5 rounded-lg border bg-amber-500/15 px-2.5 py-1.5 text-[11px] font-semibold text-amber-800 dark:text-amber-200 cursor-pointer"
+            >
+              <FolderOpen className="h-3.5 w-3.5 shrink-0" />
+              <span className="truncate">
+                📁 Reconnect Save Folder ({pendingReconnectFolderName})
+              </span>
+            </button>
+          )}
           <input
             ref={lorebookFileInputRef}
             type="file"
@@ -1326,6 +1406,28 @@ export const LorebookEditor: React.FC = () => {
                           </button>
                         );
                       })}
+                    </div>
+                    <div className="flex items-center gap-1.5 pt-1">
+                      <input
+                        type="text"
+                        value={newCustomTagInput}
+                        onChange={(e) => setNewCustomTagInput(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') {
+                            e.preventDefault();
+                            handleAddCustomLorebookTag();
+                          }
+                        }}
+                        placeholder="Create & attach custom tag..."
+                        className="theme-focus-ring rounded-md border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 px-2.5 py-1 text-xs text-slate-900 dark:text-white"
+                      />
+                      <button
+                        type="button"
+                        onClick={handleAddCustomLorebookTag}
+                        className="theme-hover-outline rounded-md border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-2.5 py-1 text-xs font-semibold text-slate-700 dark:text-slate-200 cursor-pointer"
+                      >
+                        + Add Tag
+                      </button>
                     </div>
                   </div>
                 </div>
@@ -2624,6 +2726,28 @@ export const LorebookEditor: React.FC = () => {
                           </button>
                         );
                       })}
+                    </div>
+                    <div className="flex items-center gap-1.5 pt-1">
+                      <input
+                        type="text"
+                        value={newCustomTagInput}
+                        onChange={(e) => setNewCustomTagInput(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') {
+                            e.preventDefault();
+                            handleAddCustomEntryTag();
+                          }
+                        }}
+                        placeholder="Create & attach custom tag..."
+                        className="theme-focus-ring rounded-md border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 px-2.5 py-1 text-xs text-slate-900 dark:text-white"
+                      />
+                      <button
+                        type="button"
+                        onClick={handleAddCustomEntryTag}
+                        className="theme-hover-outline rounded-md border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-2.5 py-1 text-xs font-semibold text-slate-700 dark:text-slate-200 cursor-pointer"
+                      >
+                        + Add Tag
+                      </button>
                     </div>
                   </div>
                 </div>

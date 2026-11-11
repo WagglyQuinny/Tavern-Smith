@@ -180,16 +180,24 @@ export interface SavedFileEntry {
   id: string;
   folderPath: string;
   fileName: string;
-  kind: 'character' | 'lorebook';
+  kind: 'character' | 'lorebook' | 'meta';
   sizeBytes: number;
   updatedAt: string;
   content: string;
 }
 
+export interface TavernSmithMetaPayload {
+  schema: 'tavernsmith_meta_v1';
+  updatedAt: string;
+  activeThemeId: string;
+  contextThemes: ContextTheme[];
+  tags: TagDefinition[];
+}
+
 export interface SaveLogEntry {
   id: string;
   timestamp: string;
-  mode: 'manual' | 'autosave';
+  mode: 'manual' | 'autosave' | 'sync';
   folderPath: string;
   filesWritten: string[];
   nativeSynced: boolean;

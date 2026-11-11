@@ -20,17 +20,18 @@ jobs:
 
     steps:
       - name: Checkout Repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           fetch-depth: 0
 
-      - name: Setup Node.js 22 (No Lockfile Cache)
-        uses: actions/setup-node@v4
+      - name: Setup Node.js 24 (Native Action, No Lockfile Cache)
+        uses: actions/setup-node@v5
         with:
-          node-version: '22'
+          node-version: '24'
+          package-manager-cache: false
 
       - name: Install Dependencies
-        run: npm install
+        run: npm install --legacy-peer-deps
 
       - name: Run TypeScript Verification
         run: npm run lint
@@ -135,14 +136,9 @@ jobs:
           cd dist
           zip -r ../TavernSmith-Standalone-Universal.zip .
 
-      - name: Upload Universal Build Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: TavernSmith-Standalone-Universal
-          path: TavernSmith-Standalone-Universal.zip
-
-      - name: Extract Latest Release Notes from CHANGELOG.md
-        id: extract_notes
+      - name: Extract Latest Release Notes & Publish GitHub Release via GitHub CLI
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           node - << 'EOF'
           const fs = require('fs');
@@ -164,21 +160,14 @@ jobs:
           EOF
 
           if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
-            RESOLVED_TAG="${GITHUB_REF#refs/tags/}"
+            TAG="${GITHUB_REF_NAME}"
           else
-            PKG_VER=$(node -p "require('./package.json').version")
-            RESOLVED_TAG="v${PKG_VER}"
+            TAG="v$(node -p "require('./package.json').version")"
           fi
-          echo "tag_name=${RESOLVED_TAG}" >> "$GITHUB_OUTPUT"
 
-      - name: Publish GitHub Release
-        if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ steps.extract_notes.outputs.tag_name }}
-          name: TavernSmith ${{ steps.extract_notes.outputs.tag_name }} (Universal Standalone)
-          files: TavernSmith-Standalone-Universal.zip
-          body_path: RELEASE_NOTES.md
-          generate_release_notes: true
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          echo "Publishing GitHub Release for tag: $TAG"
+          gh release create "$TAG" TavernSmith-Standalone-Universal.zip \
+            --title "TavernSmith $TAG" \
+            --notes-file RELEASE_NOTES.md \
+            --clobber || \
+          gh release upload "$TAG" TavernSmith-Standalone-Universal.zip --clobber

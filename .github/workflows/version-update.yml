@@ -30,15 +30,16 @@ jobs:
 
     steps:
       - name: Checkout Repository (Full History)
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Setup Node.js 22 (No Lockfile Cache)
-        uses: actions/setup-node@v4
+      - name: Setup Node.js 24 (Native Action, No Lockfile Cache)
+        uses: actions/setup-node@v5
         with:
-          node-version: '22'
+          node-version: '24'
+          package-manager-cache: false
 
       - name: Calculate Next Semantic Version & Update CHANGELOG.md
         id: version_step

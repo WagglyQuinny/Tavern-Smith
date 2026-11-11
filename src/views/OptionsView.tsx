@@ -54,7 +54,11 @@ export const OptionsView: React.FC = () => {
     savedFiles,
     saveLogs,
     nativeDirectoryName,
+    pendingReconnectFolderName,
+    isSyncingFolder,
     selectNativeSaveFolder,
+    reconnectNativeSaveFolder,
+    scanAndLoadSaveFolder,
     createSaveFolder,
     setActiveSaveFolder,
     deleteSavedFile,
@@ -175,6 +179,18 @@ export const OptionsView: React.FC = () => {
     window.setTimeout(() => setFolderStatusMessage(null), 5000);
   };
 
+  const handleRescanSaveFolder = async () => {
+    const res = await scanAndLoadSaveFolder({ silent: false });
+    setFolderStatusMessage(res.summary);
+    window.setTimeout(() => setFolderStatusMessage(null), 5000);
+  };
+
+  const handleReconnectSaveFolder = async () => {
+    const res = await reconnectNativeSaveFolder();
+    setFolderStatusMessage(res.message);
+    window.setTimeout(() => setFolderStatusMessage(null), 5000);
+  };
+
   const handleCreateCustomFolder = (e: React.FormEvent) => {
     e.preventDefault();
     if (!newFolderInput.trim()) return;
@@ -279,6 +295,20 @@ export const OptionsView: React.FC = () => {
           <div className="flex flex-wrap items-center gap-2">
             <button
               type="button"
+              onClick={() => void handleRescanSaveFolder()}
+              disabled={isSyncingFolder}
+              style={{ borderColor: 'var(--theme-accent)' }}
+              className="theme-hover-outline flex items-center gap-1.5 rounded-lg border bg-white dark:bg-slate-900 px-3 py-1.5 text-xs font-semibold text-slate-900 dark:text-white cursor-pointer disabled:opacity-50"
+            >
+              <RefreshCw
+                className={`h-3.5 w-3.5 ${isSyncingFolder ? 'animate-spin' : ''}`}
+                style={{ color: 'var(--theme-accent)' }}
+              />
+              <span>🔄 Rescan Folder</span>
+            </button>
+
+            <button
+              type="button"
               onClick={() => void handlePickNativeDirectory()}
               style={{ borderColor: 'var(--theme-accent)' }}
               className="theme-hover-outline flex items-center gap-1.5 rounded-lg border bg-slate-50 dark:bg-slate-800 px-3 py-1.5 text-xs font-semibold text-slate-900 dark:text-white cursor-pointer"
@@ -303,6 +333,30 @@ export const OptionsView: React.FC = () => {
             </button>
           </div>
         </div>
+
+        {pendingReconnectFolderName && (
+          <div
+            style={{ borderColor: 'var(--theme-accent)' }}
+            className="flex flex-wrap items-center justify-between gap-3 rounded-lg border bg-amber-500/10 px-3.5 py-2.5 text-xs"
+          >
+            <div className="flex items-center gap-2 text-amber-800 dark:text-amber-200">
+              <FolderOpen className="h-4 w-4 shrink-0" />
+              <span>
+                Saved local PC folder{' '}
+                <strong className="font-mono">{pendingReconnectFolderName}</strong>{' '}
+                found in IndexedDB. Click to grant read/write access and sync files:
+              </span>
+            </div>
+            <button
+              type="button"
+              onClick={() => void handleReconnectSaveFolder()}
+              style={{ borderColor: 'var(--theme-accent)' }}
+              className="theme-hover-outline rounded-lg border bg-slate-900 dark:bg-white px-3 py-1.5 text-xs font-semibold text-white dark:text-slate-900 cursor-pointer shrink-0"
+            >
+              📁 Reconnect Save Folder ({pendingReconnectFolderName})
+            </button>
+          </div>
+        )}
 
         {folderStatusMessage && (
           <div
