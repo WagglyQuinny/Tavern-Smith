@@ -20,7 +20,6 @@ import {
   resolveEffectiveFormat,
 } from '../services/aiService';
 import { Tooltip } from './Tooltip';
-import { PWAInstallButton } from './PWAInstallButton';
 import { AppLogo } from './AppLogo';
 
 export const TopBar: React.FC = () => {
@@ -269,9 +268,8 @@ export const TopBar: React.FC = () => {
         </div>
       </div>
 
-      {/* Right Zone: Save Folder Status + Token Counter + PWA Install + Dark/Light Switch + Save Action */}
+      {/* Right Zone: Save Folder Status + Token Counter + Dark/Light Switch + Save Action */}
       <div className="flex items-center gap-2.5 shrink-0">
-        <PWAInstallButton />
         {pendingReconnectFolderName && (
           <button
             type="button"
