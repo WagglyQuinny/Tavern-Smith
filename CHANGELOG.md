@@ -2,6 +2,20 @@
 
 All notable changes to **TavernSmith** are documented in this file. This file is synced with the in-app **About & Changelog** modal (`src/utils/changelogData.ts`) and the automated GitHub Release workflows (`.github/workflows/version-update.yml` & `.github/workflows/release.yml`).
 
+## [v2.2.0] - 2026-11-12
+
+### 🚀 Highlights & Feature Additions
+- Remove PWA install button from top bar (96c5075)
+
+### 🛠️ Bug Fixes, AI & Stability Improvements
+- Rename standalone to portable in release build (82e2903)
+
+### 📂 Detailed Component & File Changes
+- **Repository Diff Summary**: 3 files changed, 68 insertions(+), 80 deletions(-)
+- `.github/workflows/release.yml — Updated GitHub Actions CI/CD & Standalone Release Workflow (+12 / -11 lines)`
+- `README.md — Updated Project Configuration & Metadata (+55 / -66 lines)`
+- `src/components/TopBar.tsx — Updated UI Workbench Component (+1 / -3 lines)`
+
 ## [v2.1.1] - 2026-11-12
 
 ### 🚀 Highlights & Feature Additions

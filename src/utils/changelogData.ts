@@ -7,9 +7,25 @@ export interface ChangelogReleaseEntry {
   fileChanges: string[];
 }
 
-export const APP_VERSION = "2.1.1";
+export const APP_VERSION = "2.2.0";
 
 export const CHANGELOG_RELEASES: ChangelogReleaseEntry[] = [
+  {
+    "version": "v2.2.0",
+    "date": "2026-11-12",
+    "title": "Remove PWA install button from top bar (96c5075)",
+    "highlights": [
+      "Remove PWA install button from top bar (96c5075)"
+    ],
+    "fixes": [
+      "Rename standalone to portable in release build (82e2903)"
+    ],
+    "fileChanges": [
+      ".github/workflows/release.yml — Updated GitHub Actions CI/CD & Standalone Release Workflow (+12 / -11 lines)",
+      "README.md — Updated Project Configuration & Metadata (+55 / -66 lines)",
+      "src/components/TopBar.tsx — Updated UI Workbench Component (+1 / -3 lines)"
+    ]
+  },
   {
     "version": "v2.1.1",
     "date": "2026-11-12",
