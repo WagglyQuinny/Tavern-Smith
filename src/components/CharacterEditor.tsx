@@ -31,8 +31,9 @@ import {
   GripVertical,
   RefreshCw,
   FolderOpen,
+  ShieldAlert,
 } from 'lucide-react';
-import { useStore } from '../context/StoreContext';
+import { useStore, isCharacterNsfw } from '../context/StoreContext';
 import {
   CharacterCardData,
   RosterSortOption,
@@ -114,6 +115,7 @@ export const CharacterEditor: React.FC = () => {
     reconnectNativeSaveFolder,
     pendingReconnectFolderName,
     isSyncingFolder,
+    checkAndTriggerNameConflict,
   } = useStore();
 
   // Roster Sidebar UI State
@@ -312,6 +314,9 @@ export const CharacterEditor: React.FC = () => {
   const filteredAndSortedRoster = useMemo(() => {
     const q = rosterSearch.trim().toLowerCase();
     const filtered = characterWithMetrics.filter(({ char }) => {
+      if (settings.hideNsfwTags && isCharacterNsfw(char, tags)) {
+        return false;
+      }
       const matchesTag =
         rosterTagFilter === 'all' || (char.tags || []).includes(rosterTagFilter);
       const matchesQuery =
@@ -339,7 +344,14 @@ export const CharacterEditor: React.FC = () => {
       // Default: modified_desc
       return (b.char.modification_date || 0) - (a.char.modification_date || 0);
     });
-  }, [characterWithMetrics, rosterSearch, rosterTagFilter, rosterSort]);
+  }, [
+    characterWithMetrics,
+    rosterSearch,
+    rosterTagFilter,
+    rosterSort,
+    settings.hideNsfwTags,
+    tags,
+  ]);
 
   const toggleCharacterTag = (tagName: string) => {
     ensureTagRegistered(tagName);
@@ -1833,8 +1845,15 @@ export const CharacterEditor: React.FC = () => {
                       </div>
 
                       <div className="min-w-0 flex-1">
-                        <div className="text-xs font-semibold text-slate-900 dark:text-white truncate">
-                          {char.name || 'Untitled Character'}
+                        <div className="flex items-center gap-1.5">
+                          <div className="text-xs font-semibold text-slate-900 dark:text-white truncate">
+                            {char.name || 'Untitled Character'}
+                          </div>
+                          {isCharacterNsfw(char, tags) && (
+                            <span className="shrink-0 rounded bg-rose-500/15 border border-rose-500/30 px-1 py-0.2 font-mono text-[9px] font-bold uppercase text-rose-600 dark:text-rose-400">
+                              NSFW
+                            </span>
+                          )}
                         </div>
                         {char.nickname && (
                           <div className="text-[11px] text-slate-500 dark:text-slate-400 truncate">
@@ -1908,6 +1927,36 @@ export const CharacterEditor: React.FC = () => {
               <h1 className="text-xl font-bold tracking-tight text-slate-900 dark:text-white truncate">
                 {character.name || 'Untitled Character'}
               </h1>
+              {isCharacterNsfw(character, tags) && (
+                <span
+                  title="Automatically flagged NSFW because an NSFW (18+) tag is attached or manual NSFW flag is enabled."
+                  className="inline-flex items-center gap-1 rounded-md border border-rose-500/40 bg-rose-500/15 px-2 py-0.5 font-mono text-[10px] font-bold uppercase text-rose-600 dark:text-rose-300"
+                >
+                  <ShieldAlert className="h-3 w-3" />
+                  <span>🔞 NSFW</span>
+                </span>
+              )}
+              <button
+                type="button"
+                onClick={() =>
+                  setCharacter((prev) => ({
+                    ...prev,
+                    isNsfw: !prev.isNsfw,
+                    extensions: {
+                      ...prev.extensions,
+                      isNsfw: !prev.isNsfw,
+                    },
+                  }))
+                }
+                title="Toggle explicit manual NSFW flag on this character (characters with NSFW tags are also auto-flagged NSFW)"
+                className={`rounded-md border px-2 py-0.5 text-[10px] font-semibold cursor-pointer transition-colors ${
+                  character.isNsfw
+                    ? 'border-rose-500/40 bg-rose-500/10 text-rose-600 dark:text-rose-300'
+                    : 'border-slate-200 dark:border-slate-800 text-slate-500 hover:text-slate-800 dark:hover:text-slate-200'
+                }`}
+              >
+                {character.isNsfw ? 'Manual NSFW: ON' : 'Flag NSFW'}
+              </button>
               <span className="text-xs text-slate-400" aria-hidden="true">
                 ·
               </span>
@@ -2173,6 +2222,16 @@ export const CharacterEditor: React.FC = () => {
                             onChange={(e) =>
                               updateCharacterField('name', e.target.value)
                             }
+                            onBlur={(e) => {
+                              if (character.id) {
+                                checkAndTriggerNameConflict(
+                                  'character',
+                                  character.id,
+                                  e.target.value,
+                                  'rename'
+                                );
+                              }
+                            }}
                             className="theme-focus-ring w-full rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 px-3 py-1.5 text-xs font-medium text-slate-900 dark:text-white"
                           />
                         </div>
@@ -2490,6 +2549,16 @@ export const CharacterEditor: React.FC = () => {
                         onChange={(e) =>
                           updateCharacterField('name', e.target.value)
                         }
+                        onBlur={(e) => {
+                          if (character.id) {
+                            checkAndTriggerNameConflict(
+                              'character',
+                              character.id,
+                              e.target.value,
+                              'rename'
+                            );
+                          }
+                        }}
                         className="theme-focus-ring w-full rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 px-3 py-1.5 text-xs font-medium text-slate-900 dark:text-white"
                       />
                     </div>

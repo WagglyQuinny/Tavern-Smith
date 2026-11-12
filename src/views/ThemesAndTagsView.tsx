@@ -1,48 +1,54 @@
 import React, { useState, useMemo } from 'react';
 import {
-  Plus,
-  Search,
-  Trash2,
-  Edit3,
-  Check,
-  X,
-  Copy,
-  Sparkles,
-  Tag as TagIcon,
   Palette,
-  Eye,
-  EyeOff,
-  CornerDownRight,
+  Plus,
+  Trash2,
+  Check,
+  Tag,
+  Search,
+  RotateCcw,
+  Sparkles,
+  Loader2,
+  AlertTriangle,
+  X,
+  Edit3,
+  ShieldAlert,
+  ShieldCheck,
+  Settings,
 } from 'lucide-react';
-import { useStore } from '../context/StoreContext';
-import { ContextTheme, SubTagDefinition, TagDefinition } from '../types';
-import { Tooltip } from '../components/Tooltip';
-import { buildActiveAIContextBlock } from '../services/aiService';
 import {
-  TagSelector,
-  normalizeTagCategory,
-  TagFilterCategory,
-  isTagNsfw,
-} from '../components/TagSelector';
+  DEFAULT_CONTEXT_THEMES,
+  DEFAULT_TAGS,
+  isTagNsfwFlagged,
+  mergeWithDefaultTags,
+  useStore,
+} from '../context/StoreContext';
+import { ContextTheme, TagCategory, TagDefinition } from '../types';
+import { SmartEditor } from '../components/SmartEditor';
+import { Tooltip } from '../components/Tooltip';
+import { isTagNsfw, TagSelector } from '../components/TagSelector';
+import { AIServiceError, generateCompletionDetailed } from '../services/aiService';
 
-const PRESET_SWATCHES = [
-  '#6366f1', // Indigo (Basic Default)
-  '#ef4444', // Red
-  '#ec4899', // Pink
-  '#a855f7', // Purple
-  '#f43f5e', // Rose
-  '#10b981', // Emerald
-  '#f59e0b', // Amber
-  '#0ea5e9', // Sky
+const TAG_CATEGORIES: { value: TagCategory; label: string }[] = [
+  { value: 'Rating', label: 'Rating' },
+  { value: 'Genre & Setting', label: 'Genre & Setting' },
+  { value: 'Personality & Archetype', label: 'Personality & Archetype' },
+  { value: 'Relationship & Role', label: 'Relationship & Role' },
+  { value: 'Tone & Style', label: 'Tone & Style' },
+  { value: 'NSFW & Kinks', label: 'NSFW & Kinks' },
+  { value: 'Extreme & Hentai Physics', label: 'Extreme & Hentai Physics' },
+  { value: 'Custom', label: 'Custom' },
 ];
 
-const TAG_CATEGORIES: Exclude<TagFilterCategory, 'All'>[] = [
-  'Rating',
-  'Archetype',
-  'Body & Attire',
-  'NSFW & Kinks',
-  'Extreme & Hentai Physics',
-  'Custom',
+const QUICK_SWATCHES = [
+  '#6366f1',
+  '#a855f7',
+  '#ec4899',
+  '#f43f5e',
+  '#f59e0b',
+  '#10b981',
+  '#06b6d4',
+  '#3b82f6',
 ];
 
 export const ThemesAndTagsView: React.FC = () => {
@@ -53,1165 +59,1261 @@ export const ThemesAndTagsView: React.FC = () => {
     setActiveThemeId,
     tags,
     setTags,
-    character,
-    updateCharacterField,
+    aiConfig,
     settings,
-    updateSettings,
+    setActiveTab,
   } = useStore();
+
+  // Context Theme Creation State
+  const [newThemeName, setNewThemeName] = useState('');
+  const [newThemeColor, setNewThemeColor] = useState('#ec4899');
+  const [newThemePrompt, setNewThemePrompt] = useState('');
+  const [newThemeTags, setNewThemeTags] = useState<string[]>([]);
+  const [generatingThemeMode, setGeneratingThemeMode] = useState<
+    'new' | 'active' | null
+  >(null);
+  const [themeAiError, setThemeAiError] = useState<string | null>(null);
+
+  // Streamlined Quick-Creator Bar State for Tags
+  const [quickTagName, setQuickTagName] = useState('');
+  const [quickTagColor, setQuickTagColor] = useState('#a855f7');
+  const [quickTagCategory, setQuickTagCategory] =
+    useState<TagCategory>('Genre & Setting');
+  const [quickTagIsNsfw, setQuickTagIsNsfw] = useState(false);
+  const [quickTagAiDesc, setQuickTagAiDesc] = useState('');
+  const [generatingQuickTagDesc, setGeneratingQuickTagDesc] = useState(false);
+  const [quickTagFeedback, setQuickTagFeedback] = useState<string | null>(null);
+
+  // Tag Grid Filter & Search State
+  const [tagSearch, setTagSearch] = useState('');
+  const [safetyFilter, setSafetyFilter] = useState<'all' | 'sfw' | 'nsfw'>('all');
+  const [categoryFilter, setCategoryFilter] = useState<string>('All');
+  const [resetConfirm, setResetConfirm] = useState(false);
+
+  // Focused Edit Tag Modal State
+  const [editingTag, setEditingTag] = useState<TagDefinition | null>(null);
+  const [editTagName, setEditTagName] = useState('');
+  const [editTagCategory, setEditTagCategory] =
+    useState<TagCategory>('Genre & Setting');
+  const [editTagColor, setEditTagColor] = useState('#a855f7');
+  const [editTagIsNsfw, setEditTagIsNsfw] = useState(false);
+  const [editTagAiDesc, setEditTagAiDesc] = useState('');
+  const [generatingEditTagDesc, setGeneratingEditTagDesc] = useState(false);
 
   const hideNsfw = Boolean(settings.hideNsfwTags);
 
-  // Search & Filter states
-  const [themeSearch, setThemeSearch] = useState('');
-  const [tagSearch, setTagSearch] = useState('');
-  const [selectedCategory, setSelectedCategory] =
-    useState<TagFilterCategory>('All');
-
-  // Theme Editor state
-  const [editingThemeId, setEditingThemeId] = useState<string | null>(
-    activeTheme.id
-  );
-  const [isCreatingTheme, setIsCreatingTheme] = useState(false);
-  const [themeDraft, setThemeDraft] = useState<Omit<ContextTheme, 'id'>>({
-    name: activeTheme.name,
-    color: activeTheme.color,
-    aiContextPrompt: activeTheme.aiContextPrompt,
-    associatedTags: activeTheme.associatedTags,
-  });
-
-  // Tag Editor state (with isNsfw and subTags)
-  const [editingTagId, setEditingTagId] = useState<string | null>(null);
-  const [isCreatingTag, setIsCreatingTag] = useState(false);
-  const [tagDraft, setTagDraft] = useState<{
-    name: string;
-    color: string;
-    category: TagDefinition['category'];
-    isNsfw: boolean;
-    subTags: SubTagDefinition[];
-    aiContextDescription: string;
-  }>({
-    name: '',
-    color: '#6366f1',
-    category: 'Archetype',
-    isNsfw: false,
-    subTags: [],
-    aiContextDescription: '',
-  });
-
-  // Sub-Tag draft inside the Tag Editor drawer
-  const [subDraftName, setSubDraftName] = useState('');
-  const [subDraftDesc, setSubDraftDesc] = useState('');
-
-  const filteredThemes = useMemo(() => {
-    const q = themeSearch.trim().toLowerCase();
-    if (!q) return themes;
-    return themes.filter(
-      (t) =>
-        t.name.toLowerCase().includes(q) ||
-        t.aiContextPrompt.toLowerCase().includes(q) ||
-        t.associatedTags.some((tag) => tag.toLowerCase().includes(q))
+  const handleUpdateActiveTheme = (partial: Partial<ContextTheme>) => {
+    setThemes((prev) =>
+      prev.map((t) => (t.id === activeTheme.id ? { ...t, ...partial } : t))
     );
-  }, [themes, themeSearch]);
-
-  const visibleTags = useMemo(() => {
-    if (!hideNsfw) return tags;
-    return tags.filter((t) => !isTagNsfw(t));
-  }, [tags, hideNsfw]);
-
-  const categoryCounts = useMemo(() => {
-    const counts: Record<TagFilterCategory, number> = {
-      All: visibleTags.length,
-      Rating: 0,
-      Archetype: 0,
-      'Body & Attire': 0,
-      'NSFW & Kinks': 0,
-      'Extreme & Hentai Physics': 0,
-      Custom: 0,
-    };
-    for (const t of visibleTags) {
-      const norm = normalizeTagCategory(t.category);
-      counts[norm] = (counts[norm] || 0) + 1;
-    }
-    return counts;
-  }, [visibleTags]);
-
-  const filteredTags = useMemo(() => {
-    const q = tagSearch.trim().toLowerCase();
-    return visibleTags.filter((tag) => {
-      const normCat = normalizeTagCategory(tag.category);
-      const matchesCat =
-        selectedCategory === 'All' || normCat === selectedCategory;
-      const desc = (
-        tag.aiContextDescription ||
-        tag.aiDescription ||
-        tag.description ||
-        ''
-      ).toLowerCase();
-      const subMatches = (tag.subTags || []).some(
-        (s) =>
-          s.name.toLowerCase().includes(q) ||
-          s.aiDescription.toLowerCase().includes(q)
-      );
-      const matchesQuery =
-        !q ||
-        tag.name.toLowerCase().includes(q) ||
-        desc.includes(q) ||
-        normCat.toLowerCase().includes(q) ||
-        subMatches;
-      return matchesCat && matchesQuery;
-    });
-  }, [visibleTags, tagSearch, selectedCategory]);
-
-  // Select a theme to edit
-  const handleSelectThemeForEdit = (theme: ContextTheme) => {
-    setIsCreatingTheme(false);
-    setEditingThemeId(theme.id);
-    setThemeDraft({
-      name: theme.name,
-      color: theme.color,
-      aiContextPrompt: theme.aiContextPrompt,
-      associatedTags: [...theme.associatedTags],
-    });
   };
 
-  const handleStartNewTheme = () => {
-    setIsCreatingTheme(true);
-    setEditingThemeId(null);
-    setThemeDraft({
-      name: '',
-      color: '#8b5cf6',
-      aiContextPrompt: '',
-      associatedTags: [],
-    });
-  };
-
-  const handleSaveTheme = (e: React.FormEvent) => {
-    e.preventDefault();
-    const cleanName = themeDraft.name.trim();
-    if (!cleanName) return;
-
-    if (isCreatingTheme) {
-      const newTheme: ContextTheme = {
-        id: `theme-${Date.now()}`,
-        name: cleanName,
-        color: themeDraft.color,
-        aiContextPrompt: themeDraft.aiContextPrompt.trim(),
-        associatedTags: themeDraft.associatedTags,
-      };
-      setThemes((prev) => [...prev, newTheme]);
-      setActiveThemeId(newTheme.id);
-      setIsCreatingTheme(false);
-      setEditingThemeId(newTheme.id);
-    } else if (editingThemeId) {
-      setThemes((prev) =>
-        prev.map((t) =>
-          t.id === editingThemeId
-            ? {
-                ...t,
-                name: cleanName,
-                color: themeDraft.color,
-                aiContextPrompt: themeDraft.aiContextPrompt.trim(),
-                associatedTags: themeDraft.associatedTags,
-              }
-            : t
-        )
-      );
-    }
-  };
-
-  const handleDuplicateTheme = (theme: ContextTheme) => {
-    const duplicated: ContextTheme = {
-      ...theme,
+  const handleCreateTheme = () => {
+    if (!newThemeName.trim()) return;
+    const created: ContextTheme = {
       id: `theme-${Date.now()}`,
-      name: `${theme.name} (Copy)`,
+      name: newThemeName.trim(),
+      color: newThemeColor,
+      aiContextPrompt:
+        newThemePrompt.trim() ||
+        `Write in a compelling ${newThemeName.trim()} style with strong atmospheric detail.`,
+      associatedTags: newThemeTags,
       isBuiltIn: false,
     };
-    setThemes((prev) => [...prev, duplicated]);
-    handleSelectThemeForEdit(duplicated);
+    setThemes((prev) => [...prev, created]);
+    setActiveThemeId(created.id);
+    setNewThemeName('');
+    setNewThemePrompt('');
+    setNewThemeTags([]);
   };
 
   const handleDeleteTheme = (id: string) => {
     if (themes.length <= 1) return;
-    const remaining = themes.filter((t) => t.id !== id);
-    setThemes(remaining);
+    const filtered = themes.filter((t) => t.id !== id);
+    setThemes(filtered);
     if (activeTheme.id === id) {
-      setActiveThemeId(remaining[0].id);
-    }
-    if (editingThemeId === id) {
-      handleSelectThemeForEdit(remaining[0]);
+      setActiveThemeId(filtered[0].id);
     }
   };
 
-  const toggleTagInThemeDraft = (tagName: string) => {
-    setThemeDraft((prev) => {
-      const exists = prev.associatedTags.includes(tagName);
-      return {
-        ...prev,
-        associatedTags: exists
-          ? prev.associatedTags.filter((t) => t !== tagName)
-          : [...prev.associatedTags, tagName],
-      };
-    });
-  };
+  const handleGenerateThemeWithAI = async (mode: 'new' | 'active') => {
+    const targetName =
+      mode === 'new' ? newThemeName.trim() : activeTheme.name.trim();
+    const targetTags =
+      mode === 'new' ? newThemeTags : activeTheme.associatedTags || [];
 
-  // Tag & Sub-Tag CRUD handlers
-  const handleStartNewTag = () => {
-    setIsCreatingTag(true);
-    setEditingTagId(null);
-    setSubDraftName('');
-    setSubDraftDesc('');
-    setTagDraft({
-      name: '',
-      color: activeTheme.color,
-      category: 'Archetype',
-      isNsfw: false,
-      subTags: [],
-      aiContextDescription: '',
-    });
-  };
-
-  const handleSelectTagForEdit = (tag: TagDefinition) => {
-    setIsCreatingTag(false);
-    setEditingTagId(tag.id);
-    setSubDraftName('');
-    setSubDraftDesc('');
-    setTagDraft({
-      name: tag.name,
-      color: tag.color,
-      category: normalizeTagCategory(tag.category),
-      isNsfw: isTagNsfw(tag),
-      subTags: Array.isArray(tag.subTags) ? [...tag.subTags] : [],
-      aiContextDescription:
-        tag.aiContextDescription || tag.aiDescription || '',
-    });
-  };
-
-  const handleAddSubTagToDraft = () => {
-    const cleanName = subDraftName.trim();
-    if (!cleanName) return;
-    const newSub: SubTagDefinition = {
-      id: `sub-${Date.now()}-${Math.random().toString(36).slice(2, 5)}`,
-      name: cleanName,
-      aiDescription:
-        subDraftDesc.trim() ||
-        `Specific ${tagDraft.name || 'tag'} modifier: ${cleanName}.`,
-    };
-    setTagDraft((prev) => ({
-      ...prev,
-      subTags: [...prev.subTags, newSub],
-    }));
-    setSubDraftName('');
-    setSubDraftDesc('');
-  };
-
-  const handleUpdateSubTagInDraft = (
-    subId: string,
-    patch: Partial<SubTagDefinition>
-  ) => {
-    setTagDraft((prev) => ({
-      ...prev,
-      subTags: prev.subTags.map((s) =>
-        s.id === subId ? { ...s, ...patch } : s
-      ),
-    }));
-  };
-
-  const handleDeleteSubTagFromDraft = (subId: string) => {
-    setTagDraft((prev) => ({
-      ...prev,
-      subTags: prev.subTags.filter((s) => s.id !== subId),
-    }));
-  };
-
-  const handleSaveTag = (e: React.FormEvent) => {
-    e.preventDefault();
-    const cleanName = tagDraft.name.trim();
-    if (!cleanName) return;
-
-    // If user typed a sub-tag in the input box without clicking "+ Add Sub-Tag", include it automatically
-    let finalSubTags = [...tagDraft.subTags];
-    if (subDraftName.trim()) {
-      finalSubTags.push({
-        id: `sub-${Date.now()}`,
-        name: subDraftName.trim(),
-        aiDescription:
-          subDraftDesc.trim() ||
-          `Specific ${cleanName} modifier: ${subDraftName.trim()}.`,
-      });
+    if (!targetName) {
+      setThemeAiError('Enter a Theme Name first so the AI knows what genre or atmosphere to synthesize.');
+      return;
     }
 
-    if (isCreatingTag) {
-      const newTag: TagDefinition = {
-        id: `tag-${Date.now()}`,
-        name: cleanName,
-        color: tagDraft.color,
-        category: tagDraft.category,
-        isNsfw: tagDraft.isNsfw,
-        subTags: finalSubTags,
-        aiContextDescription: tagDraft.aiContextDescription.trim(),
-      };
-      setTags((prev) => [newTag, ...prev]);
-      setIsCreatingTag(false);
-      setEditingTagId(null);
-    } else if (editingTagId) {
-      const oldTag = tags.find((t) => t.id === editingTagId);
+    setGeneratingThemeMode(mode);
+    setThemeAiError(null);
+
+    const attachedTagDetails = targetTags
+      .map((tagName) => {
+        const found = tags.find(
+          (t) => t.name.toLowerCase() === tagName.toLowerCase()
+        );
+        const desc =
+          found?.aiContextDescription ||
+          found?.aiDescription ||
+          found?.description ||
+          '';
+        return found ? `- [${found.name}]: ${desc}` : `- [${tagName}]`;
+      })
+      .join('\n');
+
+    const systemPrompt = [
+      'You are an expert SillyTavern prompt engineer and narrative director.',
+      'Write a rich, authoritative Context Theme AI Instruction Block (2 to 4 sentences) that instructs an AI writer on the exact tone, vocabulary, sensory atmosphere, and pacing to use when generating character cards and lorebooks under this theme.',
+      'Return ONLY the instruction paragraph itself with no markdown headers or introductory chatter.',
+    ].join('\n');
+
+    const userPrompt = [
+      `Context Theme Name: "${targetName}"`,
+      attachedTagDetails
+        ? `Associated Semantic Tags:\n${attachedTagDetails}`
+        : 'No specific tags attached yet; infer the strongest matching genre & stylistic conventions from the theme name.',
+      '\nWrite the overarching Context Theme AI Instruction Prompt now:',
+    ].join('\n\n');
+
+    try {
+      const res = await generateCompletionDetailed(
+        userPrompt,
+        systemPrompt,
+        aiConfig
+      );
+      const cleaned = res.content.trim();
+      if (cleaned) {
+        if (mode === 'new') {
+          setNewThemePrompt(cleaned);
+        } else {
+          handleUpdateActiveTheme({ aiContextPrompt: cleaned });
+        }
+      }
+    } catch (err) {
+      setThemeAiError(
+        err instanceof AIServiceError
+          ? `${err.message} (${err.corsHint})`
+          : err instanceof Error
+            ? err.message
+            : 'Failed to generate theme instructions.'
+      );
+    } finally {
+      setGeneratingThemeMode(null);
+    }
+  };
+
+  /**
+   * AI Auto-Write Description from Tag Name (works with connected AI backend or smart local synthesis fallback)
+   */
+  const synthesizeTagDescription = async (
+    tagName: string,
+    category: TagCategory,
+    isNsfwFlag: boolean
+  ): Promise<string> => {
+    const clean = tagName.trim();
+    if (!clean) return '';
+
+    const sys = [
+      'You are a SillyTavern character & lorebook prompt engineer.',
+      'Write a concise 1-to-2 sentence AI Context Directive explaining how the AI should adjust characterization, tone, or imagery when this tag is attached.',
+      'Return ONLY the directive sentence(s) with no quotes or preamble.',
+    ].join('\n');
+
+    const usr = `Tag Name: "${clean}"\nCategory: ${category}\nRating: ${
+      isNsfwFlag ? 'NSFW (18+ Adult)' : 'SFW / General'
+    }\nWrite the AI Context Description:`;
+
+    try {
+      const res = await generateCompletionDetailed(usr, sys, aiConfig);
+      if (res.content && res.content.trim()) {
+        return res.content.trim();
+      }
+    } catch {
+      // Fallback to instant smart template if offline / local server not running
+    }
+
+    if (isNsfwFlag) {
+      return `Explicit 18+ directive for "${clean}" (${category}): emphasize vivid, uncensored sensory detail, physical chemistry, and authentic adult characterization matching "${clean}".`;
+    }
+    return `Incorporate authentic "${clean}" (${category}) themes, dialogue nuances, and atmospheric storytelling details throughout character responses and world lore.`;
+  };
+
+  const handleAutoWriteQuickTagDesc = async () => {
+    const clean = quickTagName.trim();
+    if (!clean) {
+      setQuickTagFeedback('Type a Tag Name first to auto-write its AI description.');
+      window.setTimeout(() => setQuickTagFeedback(null), 3500);
+      return;
+    }
+    setGeneratingQuickTagDesc(true);
+    try {
+      const generated = await synthesizeTagDescription(
+        clean,
+        quickTagCategory,
+        quickTagIsNsfw
+      );
+      setQuickTagAiDesc(generated);
+    } finally {
+      setGeneratingQuickTagDesc(false);
+    }
+  };
+
+  const handleAutoWriteEditTagDesc = async () => {
+    const clean = editTagName.trim();
+    if (!clean) return;
+    setGeneratingEditTagDesc(true);
+    try {
+      const generated = await synthesizeTagDescription(
+        clean,
+        editTagCategory,
+        editTagIsNsfw
+      );
+      setEditTagAiDesc(generated);
+    } finally {
+      setGeneratingEditTagDesc(false);
+    }
+  };
+
+  const handleCreateQuickTag = () => {
+    const clean = quickTagName.trim();
+    if (!clean) return;
+
+    const existing = tags.find(
+      (t) => t.name.trim().toLowerCase() === clean.toLowerCase()
+    );
+    const desc =
+      quickTagAiDesc.trim() ||
+      (quickTagIsNsfw
+        ? `Explicit 18+ directive for "${clean}": incorporate vivid sensory and thematic elements consistent with "${clean}".`
+        : `Incorporate thematic, tonal, and character elements consistent with "${clean}".`);
+
+    if (existing) {
       setTags((prev) =>
         prev.map((t) =>
-          t.id === editingTagId
+          t.id === existing.id
             ? {
                 ...t,
-                name: cleanName,
-                color: tagDraft.color,
-                category: tagDraft.category,
-                isNsfw: tagDraft.isNsfw,
-                subTags: finalSubTags,
-                aiContextDescription: tagDraft.aiContextDescription.trim(),
+                color: quickTagColor,
+                category: quickTagCategory,
+                isNsfw: quickTagIsNsfw,
+                aiContextDescription: desc,
+                aiDescription: desc,
               }
             : t
         )
       );
-      if (oldTag && oldTag.name !== cleanName) {
-        setThemes((prev) =>
-          prev.map((theme) => ({
-            ...theme,
-            associatedTags: theme.associatedTags.map((tName) =>
-              tName === oldTag.name ? cleanName : tName
-            ),
-          }))
-        );
-        if (character.tags.includes(oldTag.name)) {
-          updateCharacterField(
-            'tags',
-            character.tags.map((tName) =>
-              tName === oldTag.name ? cleanName : tName
-            )
-          );
-        }
+      setQuickTagFeedback(`Updated existing tag "${clean}".`);
+    } else {
+      const created: TagDefinition = {
+        id: `tag-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+        name: clean,
+        color: quickTagColor,
+        category: quickTagCategory,
+        isNsfw: quickTagIsNsfw,
+        aiContextDescription: desc,
+        aiDescription: desc,
+      };
+      setTags((prev) => [created, ...prev]);
+      setQuickTagFeedback(`Created tag "${clean}" (${quickTagIsNsfw ? 'NSFW 18+' : 'SFW'}).`);
+    }
+
+    setQuickTagName('');
+    setQuickTagAiDesc('');
+    window.setTimeout(() => setQuickTagFeedback(null), 3500);
+  };
+
+  // 1-Click Toggle NSFW Flag directly on any Tag Card
+  const handleToggleTagNsfwDirect = (
+    e: React.MouseEvent,
+    tagId: string
+  ) => {
+    e.stopPropagation();
+    setTags((prev) =>
+      prev.map((t) =>
+        t.id === tagId ? { ...t, isNsfw: !isTagNsfwFlagged(t) } : t
+      )
+    );
+  };
+
+  const handleOpenEditModal = (tag: TagDefinition) => {
+    setEditingTag(tag);
+    setEditTagName(tag.name);
+    setEditTagCategory(tag.category || 'Custom');
+    setEditTagColor(tag.color || '#a855f7');
+    setEditTagIsNsfw(isTagNsfwFlagged(tag));
+    setEditTagAiDesc(
+      tag.aiContextDescription || tag.aiDescription || tag.description || ''
+    );
+  };
+
+  const handleSaveEditModal = () => {
+    if (!editingTag) return;
+    const cleanName = editTagName.trim();
+    if (!cleanName) return;
+    const cleanDesc =
+      editTagAiDesc.trim() ||
+      `Incorporate thematic, tonal, and character elements consistent with "${cleanName}".`;
+
+    setTags((prev) =>
+      prev.map((t) =>
+        t.id === editingTag.id
+          ? {
+              ...t,
+              name: cleanName,
+              category: editTagCategory,
+              color: editTagColor,
+              isNsfw: editTagIsNsfw,
+              aiContextDescription: cleanDesc,
+              aiDescription: cleanDesc,
+            }
+          : t
+      )
+    );
+    setEditingTag(null);
+  };
+
+  const handleDeleteTag = (id: string) => {
+    setTags((prev) => prev.filter((t) => t.id !== id));
+    if (editingTag?.id === id) {
+      setEditingTag(null);
+    }
+  };
+
+  const handleResetBuiltInTags = () => {
+    setTags((prev) => mergeWithDefaultTags(prev));
+    setResetConfirm(false);
+  };
+
+  const availableCategories = useMemo(() => {
+    const visiblePool = hideNsfw ? tags.filter((t) => !isTagNsfw(t)) : tags;
+    const set = new Set<string>();
+    for (const c of TAG_CATEGORIES) {
+      if (visiblePool.some((t) => t.category === c.value)) {
+        set.add(c.value);
       }
-      setEditingTagId(null);
     }
-    setSubDraftName('');
-    setSubDraftDesc('');
-  };
-
-  const handleDeleteTag = (tag: TagDefinition) => {
-    setTags((prev) => prev.filter((t) => t.id !== tag.id));
-    if (editingTagId === tag.id) {
-      setEditingTagId(null);
+    for (const t of visiblePool) {
+      if (t.category) set.add(t.category);
     }
-  };
+    return ['All', ...Array.from(set)];
+  }, [tags, hideNsfw]);
 
-  const compiledContextPreview = useMemo(
-    () => buildActiveAIContextBlock(activeTheme, tags, character.tags),
-    [activeTheme, tags, character.tags]
+  const filteredTags = useMemo(() => {
+    const q = tagSearch.trim().toLowerCase();
+    return tags.filter((t) => {
+      const nsfw = isTagNsfw(t);
+      if (hideNsfw && nsfw) return false;
+      if (safetyFilter === 'sfw' && nsfw) return false;
+      if (safetyFilter === 'nsfw' && !nsfw) return false;
+      if (categoryFilter !== 'All' && t.category !== categoryFilter) {
+        return false;
+      }
+      if (!q) return true;
+      const desc = (
+        t.aiContextDescription ||
+        t.aiDescription ||
+        t.description ||
+        ''
+      ).toLowerCase();
+      return (
+        t.name.toLowerCase().includes(q) ||
+        (t.category || '').toLowerCase().includes(q) ||
+        desc.includes(q)
+      );
+    });
+  }, [tags, hideNsfw, safetyFilter, categoryFilter, tagSearch]);
+
+  // Group filtered tags by category for clean visual browsing
+  const groupedTags = useMemo(() => {
+    const groups = new Map<string, TagDefinition[]>();
+    for (const t of filteredTags) {
+      const cat = t.category || 'Custom';
+      const list = groups.get(cat) || [];
+      list.push(t);
+      groups.set(cat, list);
+    }
+    return Array.from(groups.entries());
+  }, [filteredTags]);
+
+  const totalNsfwCount = useMemo(
+    () => tags.filter((t) => isTagNsfw(t)).length,
+    [tags]
   );
+  const totalSfwCount = tags.length - totalNsfwCount;
 
   return (
-    <div className="space-y-8">
-      {/* Header Section */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-slate-200 dark:border-slate-800 pb-4">
-        <div>
-          <div className="flex items-center gap-2">
-            <h1 className="text-xl font-bold tracking-tight text-slate-900 dark:text-white">
-              Context Themes, Tags &amp; Sub-Tags Library
-            </h1>
-            <Tooltip
-              position="right"
-              title="Dual-Layer Context System"
-              content="Context Themes govern both the UI accent color (--theme-accent) and the system-level AI instructions injected when generating or autocompleting Character and Lorebook fields."
-            />
-          </div>
+    <div className="space-y-8 min-w-0 w-full">
+      {/* Top Header */}
+      <div className="flex flex-wrap items-center justify-between gap-4 border-b border-slate-200 dark:border-slate-800 pb-4">
+        <div className="min-w-0">
+          <h1 className="text-xl font-bold tracking-tight text-slate-900 dark:text-white">
+            Context Themes &amp; Tag Studio
+          </h1>
           <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
-            Configure overarching AI worldbuilding directives, workspace accent colors, semantic tags, and sub-tags.
+            Create and customize Context Themes and semantic AI Tags (`{tags.length}` total: `{totalSfwCount}` SFW · `{totalNsfwCount}` NSFW 18+). Any tag flagged `NSFW` automatically flags Characters and Lorebooks that use it.
           </p>
         </div>
 
-        <div className="flex flex-wrap items-center gap-2.5 shrink-0">
-          <button
-            type="button"
-            onClick={() => updateSettings({ hideNsfwTags: !hideNsfw })}
-            title="Hides all 18+ NSFW tags and sub-tags from the visible UI lists while still injecting any attached NSFW tags into AI generation prompts."
-            className={`flex items-center gap-1.5 rounded-lg border px-3 py-2 text-xs font-semibold cursor-pointer transition-colors ${
-              hideNsfw
-                ? 'border-rose-500/50 bg-rose-500/15 text-rose-700 dark:text-rose-300'
-                : 'border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 text-slate-700 dark:text-slate-200'
-            }`}
-          >
-            {hideNsfw ? (
-              <>
-                <EyeOff className="h-3.5 w-3.5 text-rose-500" />
-                <span>🔞 NSFW Tags Hidden</span>
-              </>
-            ) : (
-              <>
-                <Eye className="h-3.5 w-3.5 text-slate-400" />
-                <span>🔞 Hide NSFW Tags</span>
-              </>
-            )}
-          </button>
+        <div className="flex flex-wrap items-center gap-2 shrink-0">
+          {hideNsfw && (
+            <button
+              type="button"
+              onClick={() => setActiveTab('options')}
+              title="NSFW Content is currently hidden. Click to open Options (⚙️) to change visibility."
+              className="flex items-center gap-1.5 rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-1.5 text-xs font-semibold text-amber-700 dark:text-amber-300 cursor-pointer"
+            >
+              <Settings className="h-3.5 w-3.5" />
+              <span>NSFW Hidden in Options (⚙️)</span>
+            </button>
+          )}
 
-          <button
-            type="button"
-            onClick={handleStartNewTheme}
-            style={{ borderColor: 'var(--theme-accent)' }}
-            className="theme-hover-outline flex items-center gap-1.5 rounded-lg border bg-white dark:bg-slate-900 px-3.5 py-2 text-xs font-semibold text-slate-900 dark:text-white cursor-pointer"
-          >
-            <Plus
-              className="h-3.5 w-3.5"
-              style={{ color: 'var(--theme-accent)' }}
-            />
-            <span>New Context Theme</span>
-          </button>
-          <button
-            type="button"
-            onClick={handleStartNewTag}
-            className="theme-hover-outline flex items-center gap-1.5 rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-3.5 py-2 text-xs font-semibold text-slate-700 dark:text-slate-200 cursor-pointer"
-          >
-            <Plus
-              className="h-3.5 w-3.5"
-              style={{ color: 'var(--theme-accent)' }}
-            />
-            <span>New Tag / Sub-Tags</span>
-          </button>
+          {resetConfirm ? (
+            <div className="flex items-center gap-1.5 rounded-lg border border-amber-500/40 bg-amber-500/10 px-2.5 py-1">
+              <span className="text-[11px] font-medium text-amber-600 dark:text-amber-300">
+                Restore {DEFAULT_TAGS.length} built-in tags?
+              </span>
+              <button
+                type="button"
+                onClick={handleResetBuiltInTags}
+                className="rounded bg-amber-500 px-2 py-0.5 text-[11px] font-semibold text-white cursor-pointer"
+              >
+                Confirm
+              </button>
+              <button
+                type="button"
+                onClick={() => setResetConfirm(false)}
+                className="text-[11px] text-slate-500 hover:text-slate-800 dark:hover:text-slate-200 px-1 cursor-pointer"
+              >
+                Cancel
+              </button>
+            </div>
+          ) : (
+            <button
+              type="button"
+              onClick={() => setResetConfirm(true)}
+              className="theme-hover-outline flex items-center gap-1.5 rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-3 py-1.5 text-xs font-medium text-slate-700 dark:text-slate-300 cursor-pointer"
+            >
+              <RotateCcw className="h-3.5 w-3.5" />
+              <span>Restore Built-In Tags ({DEFAULT_TAGS.length})</span>
+            </button>
+          )}
         </div>
       </div>
 
-      {/* Section 1: Context Themes Fluid Responsive Grid */}
-      <div
-        style={{
-          gridTemplateColumns:
-            'repeat(auto-fit, minmax(min(100%, 340px), 1fr))',
-        }}
-        className="grid gap-6 items-start"
-      >
-        {/* Left Column: Context Theme List */}
+      {/* ===================================================================== */}
+      {/* PART 1: STREAMLINED TAG QUICK-CREATOR BAR & INTERACTIVE TAG STUDIO     */}
+      {/* ===================================================================== */}
+      <section className="space-y-4">
+        {/* Streamlined Quick-Creator Bar at the Top */}
         <div
-          style={{
-            borderColor:
-              'color-mix(in srgb, var(--theme-accent) 35%, transparent)',
-          }}
-          className="rounded-xl border bg-white dark:bg-slate-900 p-4 space-y-4 min-w-0"
+          style={{ borderColor: 'var(--theme-accent)' }}
+          className="rounded-2xl border bg-white dark:bg-slate-900 p-5 shadow-xs space-y-4"
         >
-          <div className="flex items-center justify-between gap-2">
+          <div className="flex flex-wrap items-center justify-between gap-2">
             <div className="flex items-center gap-2">
-              <Palette
+              <Tag
                 className="h-4 w-4"
                 style={{ color: 'var(--theme-accent)' }}
               />
-              <h2 className="text-sm font-semibold text-slate-900 dark:text-white">
-                Context Themes ({themes.length})
+              <h2 className="text-sm font-bold text-slate-900 dark:text-white">
+                Quick-Create or Update Semantic AI Tag
               </h2>
+              <Tooltip content="Create a new Tag in seconds: enter a name, pick a category, toggle the 🔞 NSFW Flag if it's 18+ adult content, choose a color swatch, and let AI auto-write the context description." />
             </div>
+            {quickTagFeedback && (
+              <span className="rounded-md border border-emerald-500/40 bg-emerald-500/10 px-2.5 py-1 text-xs font-semibold text-emerald-600 dark:text-emerald-300">
+                {quickTagFeedback}
+              </span>
+            )}
           </div>
 
-          {/* Search Themes */}
-          <div className="relative">
-            <Search className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-slate-400" />
-            <input
-              type="text"
-              value={themeSearch}
-              onChange={(e) => setThemeSearch(e.target.value)}
-              placeholder="Search themes or tags..."
-              className="theme-focus-ring w-full rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 pl-8 pr-3 py-1.5 text-xs text-slate-900 dark:text-slate-100 placeholder:text-slate-400"
-            />
-          </div>
-
-          {/* Theme Rows */}
-          <div className="space-y-2.5">
-            {filteredThemes.map((theme) => {
-              const isActive = theme.id === activeTheme.id;
-              const isEditing = !isCreatingTheme && editingThemeId === theme.id;
-
-              return (
-                <div
-                  key={theme.id}
-                  style={
-                    isActive
-                      ? { borderColor: theme.color }
-                      : isEditing
-                        ? { borderColor: 'var(--theme-accent)' }
-                        : undefined
+          {/* Row 1: Tag Name + Category Dropdown + 1-Click NSFW Flag Switch + Color Swatch */}
+          <div className="grid grid-cols-1 md:grid-cols-12 gap-3 items-end">
+            {/* Tag Name */}
+            <div className="md:col-span-4 space-y-1">
+              <label className="block text-[11px] font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">
+                Tag Name
+              </label>
+              <input
+                type="text"
+                value={quickTagName}
+                onChange={(e) => setQuickTagName(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    e.preventDefault();
+                    handleCreateQuickTag();
                   }
-                  className={`rounded-lg border p-3 transition-colors ${
-                    isActive
-                      ? 'bg-slate-50/90 dark:bg-slate-800/60'
-                      : 'border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-950/60'
-                  }`}
-                >
-                  <div className="flex items-start justify-between gap-2">
-                    <div className="flex items-center gap-2.5 min-w-0">
-                      <span
-                        style={{ backgroundColor: theme.color }}
-                        className="h-3.5 w-3.5 rounded-sm shrink-0 border border-black/10"
-                      />
-                      <button
-                        type="button"
-                        onClick={() => handleSelectThemeForEdit(theme)}
-                        className="text-left text-xs font-semibold text-slate-900 dark:text-white hover:underline truncate cursor-pointer"
-                      >
-                        {theme.name}
-                      </button>
-                      <span className="font-mono text-[11px] uppercase text-slate-400 dark:text-slate-500 tabular-nums">
-                        {theme.color}
-                      </span>
-                    </div>
-
-                    <div className="flex items-center gap-1 shrink-0">
-                      <button
-                        type="button"
-                        onClick={() => setActiveThemeId(theme.id)}
-                        style={
-                          isActive
-                            ? {
-                                borderColor: theme.color,
-                                color: theme.color,
-                              }
-                            : undefined
-                        }
-                        className={`rounded px-2 py-0.5 text-[11px] font-medium border transition-colors cursor-pointer whitespace-nowrap ${
-                          isActive
-                            ? 'bg-white dark:bg-slate-900'
-                            : 'border-slate-200 dark:border-slate-800 text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
-                        }`}
-                      >
-                        {isActive ? 'Active' : 'Activate'}
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => handleSelectThemeForEdit(theme)}
-                        title="Edit Context Theme"
-                        className="p-1 text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 cursor-pointer"
-                      >
-                        <Edit3 className="h-3.5 w-3.5" />
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => handleDuplicateTheme(theme)}
-                        title="Duplicate Context Theme"
-                        className="p-1 text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 cursor-pointer"
-                      >
-                        <Copy className="h-3.5 w-3.5" />
-                      </button>
-                      {themes.length > 1 && (
-                        <button
-                          type="button"
-                          onClick={() => handleDeleteTheme(theme.id)}
-                          title="Delete Context Theme"
-                          className="p-1 text-slate-400 hover:text-rose-600 dark:hover:text-rose-400 cursor-pointer"
-                        >
-                          <Trash2 className="h-3.5 w-3.5" />
-                        </button>
-                      )}
-                    </div>
-                  </div>
-
-                  <p className="mt-1.5 text-xs text-slate-600 dark:text-slate-400 line-clamp-2">
-                    {theme.aiContextPrompt}
-                  </p>
-
-                  {theme.associatedTags.length > 0 && (
-                    <div className="mt-2 flex flex-wrap items-center gap-1.5 text-[11px] text-slate-500 dark:text-slate-400">
-                      {theme.associatedTags.map((tag, idx) => (
-                        <React.Fragment key={tag}>
-                          {idx > 0 && <span aria-hidden="true">·</span>}
-                          <span>{tag}</span>
-                        </React.Fragment>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              );
-            })}
-          </div>
-        </div>
-
-        {/* Right Column: Context Theme Editor + Live Compiled AI Context Preview */}
-        <div className="space-y-6 min-w-0">
-          <form
-            onSubmit={handleSaveTheme}
-            style={{ borderColor: 'var(--theme-accent)' }}
-            className="rounded-xl border bg-white dark:bg-slate-900 p-5 space-y-4"
-          >
-            <div className="flex items-center justify-between border-b border-slate-200 dark:border-slate-800 pb-3">
-              <div className="flex items-center gap-2">
-                <h3 className="text-sm font-semibold text-slate-900 dark:text-white">
-                  {isCreatingTheme
-                    ? 'Create New Context Theme'
-                    : `Edit Theme: ${themeDraft.name || 'Untitled'}`}
-                </h3>
-                <Tooltip
-                  title="Context Theme Configuration"
-                  content="Changes saved here update the theme's global AI prompt instructions, associated genre tags, and hex accent color."
-                />
-              </div>
-
-              <div className="flex items-center gap-2">
-                <button
-                  type="submit"
-                  style={{ borderColor: 'var(--theme-accent)' }}
-                  className="theme-hover-outline flex items-center gap-1.5 rounded-lg border bg-slate-900 dark:bg-white px-3 py-1.5 text-xs font-semibold text-white dark:text-slate-900 cursor-pointer"
-                >
-                  <Check className="h-3.5 w-3.5" />
-                  <span>{isCreatingTheme ? 'Create Theme' : 'Save Changes'}</span>
-                </button>
-              </div>
+                }}
+                placeholder="e.g., Cyberpunk Noir, Enemies to Lovers, Breeding..."
+                className="w-full rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 px-3 py-2 text-xs font-medium text-slate-900 dark:text-white focus:outline-none"
+              />
             </div>
 
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-              <div className="sm:col-span-2 space-y-1.5">
-                <label className="flex items-center gap-1.5 text-xs font-medium text-slate-700 dark:text-slate-300">
-                  <span>Theme Name</span>
-                  <Tooltip content="Concise title displayed in the top header Context Theme switcher." />
-                </label>
+            {/* Category Dropdown */}
+            <div className="md:col-span-3 space-y-1">
+              <label className="block text-[11px] font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">
+                Category
+              </label>
+              <select
+                aria-label="Tag Category"
+                value={quickTagCategory}
+                onChange={(e) => {
+                  const nextCat = e.target.value as TagCategory;
+                  setQuickTagCategory(nextCat);
+                  if (
+                    nextCat === 'NSFW & Kinks' ||
+                    nextCat === 'Extreme & Hentai Physics'
+                  ) {
+                    setQuickTagIsNsfw(true);
+                  }
+                }}
+                className="w-full rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 px-2.5 py-2 text-xs font-medium text-slate-900 dark:text-white focus:outline-none cursor-pointer"
+              >
+                {TAG_CATEGORIES.map((c) => (
+                  <option key={c.value} value={c.value}>
+                    {c.label}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            {/* 1-Click NSFW Flag Switch */}
+            <div className="md:col-span-2 space-y-1">
+              <label className="block text-[11px] font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">
+                Content Rating Flag
+              </label>
+              <button
+                type="button"
+                onClick={() => setQuickTagIsNsfw((prev) => !prev)}
+                className={`flex w-full items-center justify-center gap-1.5 rounded-lg border px-3 py-2 text-xs font-bold cursor-pointer transition-all ${
+                  quickTagIsNsfw
+                    ? 'border-rose-500 bg-rose-500/15 text-rose-600 dark:text-rose-300 shadow-2xs'
+                    : 'border-emerald-500/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300'
+                }`}
+              >
+                {quickTagIsNsfw ? (
+                  <>
+                    <ShieldAlert className="h-3.5 w-3.5 shrink-0" />
+                    <span>🔞 NSFW (18+)</span>
+                  </>
+                ) : (
+                  <>
+                    <ShieldCheck className="h-3.5 w-3.5 shrink-0" />
+                    <span>SFW Tag</span>
+                  </>
+                )}
+              </button>
+            </div>
+
+            {/* Color Swatch Picker + Presets */}
+            <div className="md:col-span-3 space-y-1">
+              <label className="block text-[11px] font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">
+                Tag Accent Color
+              </label>
+              <div className="flex items-center gap-1.5 rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 px-2 py-1.5">
                 <input
-                  type="text"
-                  required
-                  value={themeDraft.name}
-                  onChange={(e) =>
-                    setThemeDraft((prev) => ({ ...prev, name: e.target.value }))
-                  }
-                  placeholder="e.g., Cosmic Horror, Regency Romance..."
-                  className="theme-focus-ring w-full rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 px-3 py-2 text-xs text-slate-900 dark:text-white"
+                  type="color"
+                  aria-label="Tag Accent Color"
+                  value={quickTagColor}
+                  onChange={(e) => setQuickTagColor(e.target.value)}
+                  className="h-6 w-7 cursor-pointer rounded border-0 bg-transparent shrink-0"
                 />
-              </div>
-
-              <div className="space-y-1.5">
-                <label className="flex items-center gap-1.5 text-xs font-medium text-slate-700 dark:text-slate-300">
-                  <span>Hex Accent Color</span>
-                  <Tooltip content="Dynamically styles all active borders, tab highlights, and hover outlines when this theme is active." />
-                </label>
-                <div className="flex items-center gap-2">
-                  <input
-                    type="color"
-                    value={themeDraft.color}
-                    onChange={(e) =>
-                      setThemeDraft((prev) => ({
-                        ...prev,
-                        color: e.target.value,
-                      }))
-                    }
-                    className="h-8 w-10 cursor-pointer rounded border border-slate-200 dark:border-slate-800 bg-transparent p-0.5"
-                  />
-                  <input
-                    type="text"
-                    value={themeDraft.color}
-                    onChange={(e) =>
-                      setThemeDraft((prev) => ({
-                        ...prev,
-                        color: e.target.value,
-                      }))
-                    }
-                    className="theme-focus-ring font-mono w-full rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 px-2.5 py-2 text-xs uppercase text-slate-900 dark:text-white tabular-nums"
-                  />
-                </div>
-                <div className="flex items-center gap-1.5 pt-1">
-                  {PRESET_SWATCHES.map((hex) => (
+                <div className="flex items-center gap-1 overflow-x-auto">
+                  {QUICK_SWATCHES.map((swatch) => (
                     <button
-                      key={hex}
+                      key={swatch}
                       type="button"
-                      onClick={() =>
-                        setThemeDraft((prev) => ({ ...prev, color: hex }))
-                      }
-                      style={{ backgroundColor: hex }}
-                      title={`Use ${hex}`}
-                      className={`h-4 w-4 rounded-xs border cursor-pointer transition-transform ${
-                        themeDraft.color.toLowerCase() === hex.toLowerCase()
-                          ? 'scale-110 border-slate-900 dark:border-white'
-                          : 'border-black/15 opacity-80 hover:opacity-100'
+                      onClick={() => setQuickTagColor(swatch)}
+                      title={`Select color ${swatch}`}
+                      style={{ backgroundColor: swatch }}
+                      className={`h-4 w-4 rounded-full cursor-pointer transition-transform ${
+                        quickTagColor.toLowerCase() === swatch.toLowerCase()
+                          ? 'ring-2 ring-offset-1 ring-slate-900 dark:ring-white scale-110'
+                          : 'opacity-75 hover:opacity-100'
                       }`}
                     />
                   ))}
                 </div>
               </div>
             </div>
+          </div>
 
-            <div className="space-y-1.5">
-              <label className="flex items-center gap-1.5 text-xs font-medium text-slate-700 dark:text-slate-300">
-                <span>Global AI Prompt Context</span>
-                <Tooltip content="Overarching prose style, vocabulary rules, and worldbuilding constraints sent to the AI assistant during character and lore generation." />
-              </label>
-              <textarea
-                rows={4}
-                value={themeDraft.aiContextPrompt}
-                onChange={(e) =>
-                  setThemeDraft((prev) => ({
-                    ...prev,
-                    aiContextPrompt: e.target.value,
-                  }))
-                }
-                placeholder="Describe tone, sensory cues, dialogue register, and genre boundaries for the AI..."
-                className="theme-focus-ring w-full rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 p-3 text-xs leading-relaxed text-slate-900 dark:text-slate-100"
+          {/* Row 2: AI Context Description + Auto-Write Button + Create Button */}
+          <div className="flex flex-col md:flex-row items-stretch md:items-center gap-2.5">
+            <div className="relative flex-1">
+              <input
+                type="text"
+                value={quickTagAiDesc}
+                onChange={(e) => setQuickTagAiDesc(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    e.preventDefault();
+                    handleCreateQuickTag();
+                  }
+                }}
+                placeholder="AI Context Description (tells the AI how to adjust tone, vocabulary & characterization when this tag is attached)..."
+                className="w-full rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 px-3 py-2 text-xs text-slate-900 dark:text-white focus:outline-none"
               />
             </div>
 
-            {/* Associated Genre Tags Selector */}
-            <TagSelector
-              tags={tags}
-              selectedTagNames={themeDraft.associatedTags}
-              onToggleTag={toggleTagInThemeDraft}
-              label="Associated Genre & Tone Tags"
-              tooltip="Select tags or sub-tags from the Global Tag Library to automatically attach their AI context rules whenever this theme is active."
-              maxHeightClass="max-h-48"
-            />
-          </form>
+            <div className="flex flex-wrap items-center gap-2 shrink-0">
+              <button
+                type="button"
+                disabled={generatingQuickTagDesc}
+                onClick={() => void handleAutoWriteQuickTagDesc()}
+                style={{ borderColor: 'var(--theme-accent)' }}
+                className="theme-hover-outline flex items-center gap-1.5 rounded-lg border bg-slate-50 dark:bg-slate-800 px-3 py-2 text-xs font-semibold text-slate-900 dark:text-white cursor-pointer disabled:opacity-50"
+              >
+                {generatingQuickTagDesc ? (
+                  <Loader2
+                    className="h-3.5 w-3.5 animate-spin"
+                    style={{ color: 'var(--theme-accent)' }}
+                  />
+                ) : (
+                  <Sparkles
+                    className="h-3.5 w-3.5"
+                    style={{ color: 'var(--theme-accent)' }}
+                  />
+                )}
+                <span>✨ AI Auto-Write Description</span>
+              </button>
 
-          {/* Live Synthesized AI Context Prompt Preview */}
-          <div
-            style={{
-              borderColor:
-                'color-mix(in srgb, var(--theme-accent) 35%, transparent)',
-            }}
-            className="rounded-xl border bg-slate-50/70 dark:bg-slate-900/50 p-4 space-y-2.5"
-          >
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <Sparkles
-                  className="h-4 w-4"
-                  style={{ color: 'var(--theme-accent)' }}
-                />
-                <span className="text-xs font-semibold text-slate-900 dark:text-white">
-                  Active AI Context System Prompt Preview ({activeTheme.name})
-                </span>
-              </div>
-              <Tooltip content="This synthesized context block is automatically prepended to AI generation and inline ghost-text requests. Note: Attached NSFW tags are always included in AI context even when hidden in the UI." />
+              <button
+                type="button"
+                onClick={handleCreateQuickTag}
+                disabled={!quickTagName.trim()}
+                style={{ borderColor: 'var(--theme-accent)' }}
+                className="theme-hover-outline flex items-center gap-1.5 rounded-lg border bg-slate-900 dark:bg-white px-4 py-2 text-xs font-semibold text-white dark:text-slate-900 cursor-pointer disabled:opacity-40"
+              >
+                <Plus className="h-3.5 w-3.5" />
+                <span>Create Tag</span>
+              </button>
             </div>
-            <pre className="font-mono text-xs leading-relaxed text-slate-600 dark:text-slate-300 whitespace-pre-wrap rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-950 p-3">
-              {compiledContextPreview}
-            </pre>
           </div>
         </div>
-      </div>
 
-      {/* Section 2: Global Tag & Sub-Tag Library CRUD */}
-      <div
-        style={{
-          borderColor:
-            'color-mix(in srgb, var(--theme-accent) 35%, transparent)',
-        }}
-        className="rounded-xl border bg-white dark:bg-slate-900 p-5 space-y-5"
-      >
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-slate-200 dark:border-slate-800 pb-4">
-          <div className="flex items-center gap-2">
-            <TagIcon
-              className="h-4 w-4"
-              style={{ color: 'var(--theme-accent)' }}
-            />
-            <h2 className="text-base font-semibold text-slate-900 dark:text-white">
-              Global Tag &amp; Sub-Tag Library ({visibleTags.length} shown /{' '}
-              {tags.length} total)
-            </h2>
-            <Tooltip
-              title="Semantic AI Context Tags & Sub-Tags"
-              content="Each Tag and Sub-Tag carries an AI Context Directive so the LLM understands how that tag shapes character anatomy, personality, kinks, or lore entries."
-            />
-          </div>
-
-          <div className="flex flex-wrap items-center gap-2">
-            <button
-              type="button"
-              onClick={() => updateSettings({ hideNsfwTags: !hideNsfw })}
-              className={`inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs font-semibold cursor-pointer transition-colors ${
-                hideNsfw
-                  ? 'border-rose-500/50 bg-rose-500/15 text-rose-700 dark:text-rose-300'
-                  : 'border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 text-slate-700 dark:text-slate-200'
-              }`}
-            >
-              {hideNsfw ? (
-                <>
-                  <EyeOff className="h-3.5 w-3.5 text-rose-500" />
-                  <span>🔞 NSFW Tags Hidden</span>
-                </>
-              ) : (
-                <>
-                  <Eye className="h-3.5 w-3.5 text-slate-400" />
-                  <span>🔞 Hide NSFW Tags</span>
-                </>
-              )}
-            </button>
-
-            <div className="relative">
-              <Search className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-slate-400" />
+        {/* Interactive Tag Grid Toolbar: Search + Safety Filter (`All`, `SFW Only`, `NSFW Flagged`) + Category Pills */}
+        <div className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-5 space-y-4">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            {/* Search Input */}
+            <div className="relative flex-1 min-w-[220px]">
+              <Search className="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-400" />
               <input
                 type="text"
                 value={tagSearch}
                 onChange={(e) => setTagSearch(e.target.value)}
-                placeholder="Search tags, sub-tags, or directives..."
-                className="theme-focus-ring rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 pl-8 pr-7 py-1.5 text-xs text-slate-900 dark:text-white"
+                placeholder={`Search ${filteredTags.length} visible tags by name, category, or AI directive...`}
+                className="w-full rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 pl-9 pr-8 py-2 text-xs text-slate-900 dark:text-white focus:outline-none"
               />
               {tagSearch && (
                 <button
                   type="button"
                   onClick={() => setTagSearch('')}
-                  className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200"
+                  className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 cursor-pointer"
                 >
                   <X className="h-3.5 w-3.5" />
                 </button>
               )}
             </div>
 
-            {/* Category Segmented Filter Pills */}
-            <div className="flex flex-wrap items-center gap-1 rounded-lg bg-slate-100 dark:bg-slate-950 p-1 border border-slate-200 dark:border-slate-800">
-              {(hideNsfw
-                ? (['All', 'Rating', 'Archetype', 'Body & Attire'] as TagFilterCategory[])
-                : ([
-                    'All',
-                    'Rating',
-                    'Archetype',
-                    'Body & Attire',
-                    'NSFW & Kinks',
-                    'Extreme & Hentai Physics',
-                  ] as TagFilterCategory[])
-              )
-                .concat(categoryCounts.Custom > 0 ? ['Custom'] : [])
-                .map((cat) => (
-                  <button
-                    key={cat}
-                    type="button"
-                    onClick={() => setSelectedCategory(cat)}
-                    className={`rounded px-2.5 py-1 text-xs font-medium transition-colors cursor-pointer whitespace-nowrap ${
-                      selectedCategory === cat
-                        ? 'bg-[var(--theme-accent)] text-white shadow-2xs'
-                        : 'text-slate-500 hover:text-slate-900 dark:hover:text-white'
-                    }`}
-                  >
-                    {cat} ({categoryCounts[cat] ?? 0})
-                  </button>
-                ))}
+            {/* Rating Filter Pills (`All`, `SFW Only`, `NSFW Flagged`) */}
+            {!hideNsfw && (
+              <div className="flex items-center gap-1 rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 p-1">
+                <button
+                  type="button"
+                  onClick={() => setSafetyFilter('all')}
+                  className={`rounded-md px-2.5 py-1 text-xs font-medium cursor-pointer transition-colors ${
+                    safetyFilter === 'all'
+                      ? 'bg-white dark:bg-slate-800 text-slate-900 dark:text-white font-semibold shadow-2xs'
+                      : 'text-slate-500 hover:text-slate-900 dark:hover:text-white'
+                  }`}
+                >
+                  All ({tags.length})
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setSafetyFilter('sfw')}
+                  className={`rounded-md px-2.5 py-1 text-xs font-medium cursor-pointer transition-colors ${
+                    safetyFilter === 'sfw'
+                      ? 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 font-semibold'
+                      : 'text-slate-500 hover:text-slate-900 dark:hover:text-white'
+                  }`}
+                >
+                  SFW Only ({totalSfwCount})
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setSafetyFilter('nsfw')}
+                  className={`rounded-md px-2.5 py-1 text-xs font-medium cursor-pointer transition-colors ${
+                    safetyFilter === 'nsfw'
+                      ? 'bg-rose-500/15 text-rose-600 dark:text-rose-300 font-semibold'
+                      : 'text-slate-500 hover:text-slate-900 dark:hover:text-white'
+                  }`}
+                >
+                  🔞 NSFW Flagged ({totalNsfwCount})
+                </button>
+              </div>
+            )}
+          </div>
+
+          {/* Category Tabs */}
+          <div className="flex items-center gap-1.5 overflow-x-auto pb-1">
+            {availableCategories.map((cat) => {
+              const active = categoryFilter === cat;
+              return (
+                <button
+                  key={cat}
+                  type="button"
+                  onClick={() => setCategoryFilter(cat)}
+                  style={
+                    active
+                      ? {
+                          borderColor: 'var(--theme-accent)',
+                          backgroundColor:
+                            'color-mix(in srgb, var(--theme-accent) 15%, transparent)',
+                        }
+                      : undefined
+                  }
+                  className={`rounded-lg border px-3 py-1 text-xs font-medium whitespace-nowrap cursor-pointer transition-colors ${
+                    active
+                      ? 'text-slate-900 dark:text-white font-semibold'
+                      : 'border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+                  }`}
+                >
+                  {cat}
+                </button>
+              );
+            })}
+          </div>
+
+          {/* Grouped Clean Interactive Tag Cards Grid */}
+          {groupedTags.length === 0 ? (
+            <div className="rounded-xl border border-dashed border-slate-200 dark:border-slate-800 p-8 text-center text-xs text-slate-400">
+              No tags match your current filter criteria.
             </div>
+          ) : (
+            <div className="space-y-5 max-h-[600px] overflow-y-auto pr-1">
+              {groupedTags.map(([categoryName, categoryTags]) => (
+                <div key={categoryName} className="space-y-2.5">
+                  <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800/80 pb-1.5">
+                    <span className="font-mono text-xs font-bold uppercase tracking-wider text-slate-600 dark:text-slate-300">
+                      {categoryName}
+                    </span>
+                    <span className="font-mono text-[11px] text-slate-400">
+                      {categoryTags.length} tag{categoryTags.length === 1 ? '' : 's'}
+                    </span>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2.5">
+                    {categoryTags.map((tag) => {
+                      const nsfw = isTagNsfw(tag);
+                      const desc =
+                        tag.aiContextDescription ||
+                        tag.aiDescription ||
+                        tag.description ||
+                        '';
+
+                      return (
+                        <div
+                          key={tag.id}
+                          onClick={() => handleOpenEditModal(tag)}
+                          role="button"
+                          tabIndex={0}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter' || e.key === ' ') {
+                              e.preventDefault();
+                              handleOpenEditModal(tag);
+                            }
+                          }}
+                          style={{
+                            borderColor: `color-mix(in srgb, ${tag.color} 40%, transparent)`,
+                          }}
+                          className="group flex flex-col justify-between rounded-xl border bg-slate-50/70 dark:bg-slate-950/60 p-3 hover:bg-white dark:hover:bg-slate-900 transition-all cursor-pointer shadow-2xs"
+                        >
+                          <div className="space-y-1.5">
+                            <div className="flex items-center justify-between gap-2">
+                              <div className="flex items-center gap-2 min-w-0">
+                                <span
+                                  className="h-2.5 w-2.5 rounded-full shrink-0"
+                                  style={{ backgroundColor: tag.color }}
+                                />
+                                <span className="text-xs font-bold text-slate-900 dark:text-white truncate">
+                                  {tag.name}
+                                </span>
+                              </div>
+
+                              <div className="flex items-center gap-1 shrink-0">
+                                {/* 1-Click Direct NSFW Toggle Pill */}
+                                <button
+                                  type="button"
+                                  onClick={(e) =>
+                                    handleToggleTagNsfwDirect(e, tag.id)
+                                  }
+                                  title={
+                                    nsfw
+                                      ? 'Flagged NSFW (18+). Click to switch to SFW.'
+                                      : 'Currently SFW. Click to flag as NSFW (18+).'
+                                  }
+                                  className={`rounded px-1.5 py-0.5 font-mono text-[9px] font-bold uppercase transition-colors cursor-pointer ${
+                                    nsfw
+                                      ? 'border border-rose-500/40 bg-rose-500/15 text-rose-600 dark:text-rose-300 hover:bg-rose-500/25'
+                                      : 'border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 text-slate-400 hover:text-slate-700 dark:hover:text-slate-200'
+                                  }`}
+                                >
+                                  {nsfw ? '🔞 NSFW' : 'SFW'}
+                                </button>
+
+                                <span className="rounded p-1 text-slate-400 opacity-0 group-hover:opacity-100 transition-opacity">
+                                  <Edit3 className="h-3 w-3" />
+                                </span>
+                              </div>
+                            </div>
+
+                            <p className="text-[11px] text-slate-500 dark:text-slate-400 line-clamp-2 leading-relaxed">
+                              {desc || 'Click to add AI writing directive...'}
+                            </p>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </section>
+
+      {/* ===================================================================== */}
+      {/* PART 2: CONTEXT THEMES STUDIO                                         */}
+      {/* ===================================================================== */}
+      <section
+        style={{
+          gridTemplateColumns:
+            'repeat(auto-fit, minmax(min(100%, 360px), 1fr))',
+        }}
+        className="grid gap-6 items-start"
+      >
+        {/* Left Column: Active Context Theme Customizer */}
+        <div
+          style={{
+            borderColor:
+              'color-mix(in srgb, var(--theme-accent) 40%, transparent)',
+          }}
+          className="rounded-2xl border bg-white dark:bg-slate-900 p-5 space-y-4 min-w-0"
+        >
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <Palette
+                className="h-4 w-4"
+                style={{ color: 'var(--theme-accent)' }}
+              />
+              <h2 className="text-sm font-bold text-slate-900 dark:text-white">
+                Context Themes ({themes.length})
+              </h2>
+              <Tooltip content="Select or customize the overarching genre theme. Its AI Context Prompt and associated Tag directives are automatically injected into every AI generation call." />
+            </div>
+          </div>
+
+          {/* Theme Selector Grid */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+            {themes.map((theme) => {
+              const isSelected = theme.id === activeTheme.id;
+              return (
+                <div
+                  key={theme.id}
+                  onClick={() => setActiveThemeId(theme.id)}
+                  style={
+                    isSelected ? { borderColor: theme.color } : undefined
+                  }
+                  className={`theme-hover-outline group relative flex flex-col justify-between rounded-xl border p-3 transition-all cursor-pointer ${
+                    isSelected
+                      ? 'bg-slate-50 dark:bg-slate-950 shadow-xs'
+                      : 'border-slate-200 dark:border-slate-800 hover:bg-slate-50/60 dark:hover:bg-slate-950/50'
+                  }`}
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="flex items-center gap-2 min-w-0">
+                      <span
+                        className="h-3 w-3 rounded-full shrink-0"
+                        style={{ backgroundColor: theme.color }}
+                      />
+                      <span className="text-xs font-semibold text-slate-900 dark:text-white truncate">
+                        {theme.name}
+                      </span>
+                    </div>
+                    {isSelected && (
+                      <Check
+                        className="h-3.5 w-3.5 shrink-0"
+                        style={{ color: theme.color }}
+                      />
+                    )}
+                    {!theme.isBuiltIn && themes.length > 1 && (
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleDeleteTheme(theme.id);
+                        }}
+                        className="opacity-0 group-hover:opacity-100 text-slate-400 hover:text-rose-500 transition-opacity cursor-pointer"
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </button>
+                    )}
+                  </div>
+                  <p className="mt-1.5 text-[11px] text-slate-500 dark:text-slate-400 line-clamp-2">
+                    {theme.aiContextPrompt}
+                  </p>
+                </div>
+              );
+            })}
+          </div>
+
+          {/* Active Theme Editor */}
+          <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-950/60 p-4 space-y-4">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <span className="text-xs font-semibold text-slate-800 dark:text-slate-200">
+                Editing Theme: {activeTheme.name}
+              </span>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  disabled={generatingThemeMode !== null}
+                  onClick={() => void handleGenerateThemeWithAI('active')}
+                  style={{ borderColor: 'var(--theme-accent)' }}
+                  className="theme-hover-outline flex items-center gap-1.5 rounded-lg border bg-white dark:bg-slate-900 px-2.5 py-1 text-[11px] font-semibold text-slate-800 dark:text-slate-100 cursor-pointer disabled:opacity-50"
+                >
+                  {generatingThemeMode === 'active' ? (
+                    <Loader2
+                      className="h-3 w-3 animate-spin"
+                      style={{ color: 'var(--theme-accent)' }}
+                    />
+                  ) : (
+                    <Sparkles
+                      className="h-3 w-3"
+                      style={{ color: 'var(--theme-accent)' }}
+                    />
+                  )}
+                  <span>✨ AI Synthesize Prompt</span>
+                </button>
+                <label className="text-[11px] text-slate-500">Accent:</label>
+                <input
+                  type="color"
+                  aria-label="Active Theme Accent Color"
+                  value={activeTheme.color}
+                  onChange={(e) =>
+                    handleUpdateActiveTheme({ color: e.target.value })
+                  }
+                  className="h-6 w-8 cursor-pointer rounded border border-slate-300 dark:border-slate-700 bg-transparent"
+                />
+              </div>
+            </div>
+
+            <SmartEditor
+              label="AI Context Prompt Injection"
+              fieldKey="theme_ai_context_prompt"
+              value={activeTheme.aiContextPrompt}
+              onChange={(val) =>
+                handleUpdateActiveTheme({ aiContextPrompt: val })
+              }
+              rows={3}
+              tooltip="Automatically prepended to the system prompt whenever you generate or autocomplete character fields while this theme is active."
+            />
+
+            <TagSelector
+              selectedTags={activeTheme.associatedTags || []}
+              onChange={(nextTags) =>
+                handleUpdateActiveTheme({ associatedTags: nextTags })
+              }
+              title="Theme Associated Tags"
+              tooltip="Attach default semantic tags to this Context Theme."
+              compact
+            />
           </div>
         </div>
 
-        {/* Inline Tag + Sub-Tag Create / Edit Drawer */}
-        {(isCreatingTag || editingTagId) && (
-          <form
-            onSubmit={handleSaveTag}
-            style={{ borderColor: 'var(--theme-accent)' }}
-            className="rounded-lg border bg-slate-50 dark:bg-slate-950 p-4 space-y-4"
-          >
-            <div className="flex items-center justify-between border-b border-slate-200 dark:border-slate-800 pb-2.5">
-              <span className="text-xs font-semibold text-slate-900 dark:text-white">
-                {isCreatingTag
-                  ? 'Create Semantic Tag & Sub-Tags'
-                  : `Edit Semantic Tag: ${tagDraft.name}`}
-              </span>
+        {/* Right Column: Create New Context Theme */}
+        <div
+          style={{
+            borderColor:
+              'color-mix(in srgb, var(--theme-accent) 40%, transparent)',
+          }}
+          className="rounded-2xl border bg-white dark:bg-slate-900 p-5 space-y-4 min-w-0"
+        >
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <h3 className="text-sm font-bold text-slate-900 dark:text-white">
+              Create Custom Context Theme
+            </h3>
+            <button
+              type="button"
+              disabled={generatingThemeMode !== null}
+              onClick={() => void handleGenerateThemeWithAI('new')}
+              style={{ borderColor: 'var(--theme-accent)' }}
+              className="theme-hover-outline flex items-center gap-1.5 rounded-lg border bg-slate-50 dark:bg-slate-800 px-2.5 py-1 text-xs font-semibold text-slate-900 dark:text-white cursor-pointer disabled:opacity-50"
+            >
+              {generatingThemeMode === 'new' ? (
+                <Loader2
+                  className="h-3.5 w-3.5 animate-spin"
+                  style={{ color: 'var(--theme-accent)' }}
+                />
+              ) : (
+                <Sparkles
+                  className="h-3.5 w-3.5"
+                  style={{ color: 'var(--theme-accent)' }}
+                />
+              )}
+              <span>✨ AI Generate from Name &amp; Tags</span>
+            </button>
+          </div>
+
+          {themeAiError && (
+            <div className="flex items-start justify-between gap-2 rounded-lg border border-rose-500/40 bg-rose-500/10 p-2.5 text-xs text-rose-400">
+              <div className="flex items-start gap-2">
+                <AlertTriangle className="h-4 w-4 shrink-0 mt-0.5" />
+                <span>{themeAiError}</span>
+              </div>
               <button
                 type="button"
-                onClick={() => {
-                  setIsCreatingTag(false);
-                  setEditingTagId(null);
-                }}
-                className="text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 cursor-pointer"
+                onClick={() => setThemeAiError(null)}
+                className="text-[11px] underline shrink-0 cursor-pointer"
+              >
+                Dismiss
+              </button>
+            </div>
+          )}
+
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+            <div className="sm:col-span-2">
+              <input
+                type="text"
+                value={newThemeName}
+                onChange={(e) => setNewThemeName(e.target.value)}
+                placeholder="Theme Name (e.g., Space Opera, Cozy Tavern, Dark Romance)"
+                className="w-full rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 px-3 py-2 text-xs text-slate-900 dark:text-white focus:outline-none"
+              />
+            </div>
+            <div className="flex items-center gap-2">
+              <input
+                type="color"
+                aria-label="New Theme Accent Color"
+                value={newThemeColor}
+                onChange={(e) => setNewThemeColor(e.target.value)}
+                className="h-9 w-12 cursor-pointer rounded border border-slate-200 dark:border-slate-800 bg-transparent"
+              />
+              <span className="font-mono text-xs text-slate-500">
+                {newThemeColor}
+              </span>
+            </div>
+          </div>
+
+          <TagSelector
+            selectedTags={newThemeTags}
+            onChange={setNewThemeTags}
+            title="Select Tags for New Theme"
+            tooltip="Pick tags for this new theme, then click '✨ AI Generate from Name & Tags' to synthesize its prompt."
+            compact
+          />
+
+          <textarea
+            value={newThemePrompt}
+            onChange={(e) => setNewThemePrompt(e.target.value)}
+            rows={3}
+            placeholder="AI Context Prompt instructions for this theme (or click ✨ AI Generate above)..."
+            className="w-full rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 p-3 text-xs text-slate-900 dark:text-white focus:outline-none"
+          />
+
+          <button
+            type="button"
+            onClick={handleCreateTheme}
+            style={{ borderColor: 'var(--theme-accent)' }}
+            className="theme-hover-outline flex items-center gap-1.5 rounded-lg border bg-slate-900 dark:bg-white px-3.5 py-2 text-xs font-semibold text-white dark:text-slate-900 cursor-pointer"
+          >
+            <Plus className="h-3.5 w-3.5" />
+            <span>Add Context Theme</span>
+          </button>
+        </div>
+      </section>
+
+      {/* ===================================================================== */}
+      {/* FOCUSED EDIT TAG MODAL                                                */}
+      {/* ===================================================================== */}
+      {editingTag && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 p-4 backdrop-blur-xs">
+          <div
+            style={{ borderColor: editTagColor || 'var(--theme-accent)' }}
+            className="w-full max-w-lg rounded-2xl border bg-white dark:bg-slate-900 p-6 shadow-2xl space-y-4"
+          >
+            <div className="flex items-center justify-between border-b border-slate-200 dark:border-slate-800 pb-3">
+              <div className="flex items-center gap-2.5">
+                <span
+                  className="h-3.5 w-3.5 rounded-full shrink-0"
+                  style={{ backgroundColor: editTagColor }}
+                />
+                <h3 className="text-sm font-bold text-slate-900 dark:text-white">
+                  Edit Tag: {editingTag.name}
+                </h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => setEditingTag(null)}
+                className="rounded-lg p-1 text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800 hover:text-slate-700 cursor-pointer"
               >
                 <X className="h-4 w-4" />
               </button>
             </div>
 
-            <div className="grid grid-cols-1 sm:grid-cols-5 gap-3 items-end">
-              <div className="space-y-1 sm:col-span-2">
-                <label className="text-xs font-medium text-slate-600 dark:text-slate-400">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div className="space-y-1">
+                <label className="block text-[11px] font-semibold uppercase tracking-wider text-slate-500">
                   Tag Name
                 </label>
                 <input
                   type="text"
-                  required
-                  value={tagDraft.name}
-                  onChange={(e) =>
-                    setTagDraft((prev) => ({ ...prev, name: e.target.value }))
-                  }
-                  placeholder="e.g., Big Breasts, Bondage, Tsundere..."
-                  className="theme-focus-ring w-full rounded-md border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-2.5 py-1.5 text-xs text-slate-900 dark:text-white"
+                  value={editTagName}
+                  onChange={(e) => setEditTagName(e.target.value)}
+                  className="w-full rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 px-3 py-2 text-xs font-semibold text-slate-900 dark:text-white focus:outline-none"
                 />
               </div>
 
               <div className="space-y-1">
-                <label className="text-xs font-medium text-slate-600 dark:text-slate-400">
+                <label className="block text-[11px] font-semibold uppercase tracking-wider text-slate-500">
                   Category
                 </label>
                 <select
-                  value={tagDraft.category}
-                  onChange={(e) => {
-                    const cat = e.target.value as TagDefinition['category'];
-                    setTagDraft((prev) => ({
-                      ...prev,
-                      category: cat,
-                      isNsfw:
-                        cat === 'NSFW & Kinks' ||
-                        cat === 'Extreme & Hentai Physics'
-                          ? true
-                          : prev.isNsfw,
-                    }));
-                  }}
-                  className="theme-focus-ring w-full rounded-md border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-2.5 py-1.5 text-xs capitalize text-slate-900 dark:text-white"
+                  aria-label="Edit Tag Category"
+                  value={editTagCategory}
+                  onChange={(e) =>
+                    setEditTagCategory(e.target.value as TagCategory)
+                  }
+                  className="w-full rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 px-2.5 py-2 text-xs font-medium text-slate-900 dark:text-white focus:outline-none cursor-pointer"
                 >
-                  {TAG_CATEGORIES.map((cat) => (
-                    <option key={cat} value={cat}>
-                      {cat}
+                  {TAG_CATEGORIES.map((c) => (
+                    <option key={c.value} value={c.value}>
+                      {c.label}
                     </option>
                   ))}
                 </select>
               </div>
+            </div>
 
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 items-end">
               <div className="space-y-1">
-                <label className="text-xs font-medium text-slate-600 dark:text-slate-400">
-                  Tag Color
+                <label className="block text-[11px] font-semibold uppercase tracking-wider text-slate-500">
+                  NSFW Content Flag
                 </label>
-                <div className="flex items-center gap-2">
-                  <input
-                    type="color"
-                    value={tagDraft.color}
-                    onChange={(e) =>
-                      setTagDraft((prev) => ({
-                        ...prev,
-                        color: e.target.value,
-                      }))
-                    }
-                    className="h-7 w-9 cursor-pointer rounded border border-slate-200 dark:border-slate-800 bg-transparent"
-                  />
-                  <input
-                    type="text"
-                    value={tagDraft.color}
-                    onChange={(e) =>
-                      setTagDraft((prev) => ({
-                        ...prev,
-                        color: e.target.value,
-                      }))
-                    }
-                    className="font-mono w-full rounded-md border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-2 py-1.5 text-xs uppercase text-slate-900 dark:text-white tabular-nums"
-                  />
-                </div>
+                <button
+                  type="button"
+                  onClick={() => setEditTagIsNsfw((prev) => !prev)}
+                  className={`flex w-full items-center justify-center gap-1.5 rounded-lg border px-3 py-2 text-xs font-bold cursor-pointer transition-all ${
+                    editTagIsNsfw
+                      ? 'border-rose-500 bg-rose-500/15 text-rose-600 dark:text-rose-300'
+                      : 'border-emerald-500/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300'
+                  }`}
+                >
+                  {editTagIsNsfw ? (
+                    <>
+                      <ShieldAlert className="h-3.5 w-3.5" />
+                      <span>🔞 Flagged NSFW (18+)</span>
+                    </>
+                  ) : (
+                    <>
+                      <ShieldCheck className="h-3.5 w-3.5" />
+                      <span>SFW / All-Ages</span>
+                    </>
+                  )}
+                </button>
               </div>
 
-              {/* NSFW Tag Checkbox */}
-              <div className="flex items-center justify-between sm:justify-end gap-3 pb-1">
-                <label className="inline-flex items-center gap-1.5 text-xs font-semibold text-rose-600 dark:text-rose-400 cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={tagDraft.isNsfw}
-                    onChange={(e) =>
-                      setTagDraft((prev) => ({
-                        ...prev,
-                        isNsfw: e.target.checked,
-                      }))
-                    }
-                    className="h-4 w-4 accent-rose-500 cursor-pointer"
-                  />
-                  <span>🔞 NSFW Tag</span>
+              <div className="space-y-1">
+                <label className="block text-[11px] font-semibold uppercase tracking-wider text-slate-500">
+                  Tag Color
                 </label>
-
-                <button
-                  type="submit"
-                  style={{ borderColor: 'var(--theme-accent)' }}
-                  className="theme-hover-outline flex items-center gap-1.5 rounded-md border bg-slate-900 dark:bg-white px-3.5 py-1.5 text-xs font-semibold text-white dark:text-slate-900 cursor-pointer"
-                >
-                  <Check className="h-3.5 w-3.5" />
-                  <span>Save Tag</span>
-                </button>
+                <div className="flex items-center gap-1.5 rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 px-2.5 py-1.5">
+                  <input
+                    type="color"
+                    aria-label="Edit Tag Color"
+                    value={editTagColor}
+                    onChange={(e) => setEditTagColor(e.target.value)}
+                    className="h-6 w-7 cursor-pointer rounded border-0 bg-transparent shrink-0"
+                  />
+                  <div className="flex items-center gap-1">
+                    {QUICK_SWATCHES.map((swatch) => (
+                      <button
+                        key={swatch}
+                        type="button"
+                        onClick={() => setEditTagColor(swatch)}
+                        style={{ backgroundColor: swatch }}
+                        className="h-4 w-4 rounded-full cursor-pointer"
+                      />
+                    ))}
+                  </div>
+                </div>
               </div>
             </div>
 
-            <div className="space-y-1">
-              <label className="text-xs font-medium text-slate-600 dark:text-slate-400">
-                AI Context Directive (Injected when tag is active on Character, Lorebook, or Theme)
-              </label>
-              <input
-                type="text"
-                required
-                value={tagDraft.aiContextDescription}
-                onChange={(e) =>
-                  setTagDraft((prev) => ({
-                    ...prev,
-                    aiContextDescription: e.target.value,
-                  }))
-                }
-                placeholder="Explain how the AI should interpret this tag when writing dialogue or lore..."
-                className="theme-focus-ring w-full rounded-md border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-3 py-1.5 text-xs text-slate-900 dark:text-white"
+            <div className="space-y-1.5">
+              <div className="flex items-center justify-between">
+                <label className="text-[11px] font-semibold uppercase tracking-wider text-slate-500">
+                  AI Context Directive
+                </label>
+                <button
+                  type="button"
+                  disabled={generatingEditTagDesc}
+                  onClick={() => void handleAutoWriteEditTagDesc()}
+                  className="inline-flex items-center gap-1 text-[11px] font-semibold text-indigo-500 hover:text-indigo-400 cursor-pointer disabled:opacity-50"
+                >
+                  {generatingEditTagDesc ? (
+                    <Loader2 className="h-3 w-3 animate-spin" />
+                  ) : (
+                    <Sparkles className="h-3 w-3" />
+                  )}
+                  <span>✨ AI Auto-Write Description</span>
+                </button>
+              </div>
+              <textarea
+                value={editTagAiDesc}
+                onChange={(e) => setEditTagAiDesc(e.target.value)}
+                rows={3}
+                placeholder="Describe how the AI should adjust tone, style, or characterization when this tag is attached..."
+                className="w-full rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 p-3 text-xs text-slate-900 dark:text-white focus:outline-none"
               />
             </div>
 
-            {/* Sub-Tags Builder inside Tag Create/Edit Form */}
-            <div className="rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-3 space-y-2.5">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-1.5 text-xs font-semibold text-slate-800 dark:text-slate-200">
-                  <CornerDownRight
-                    className="h-3.5 w-3.5"
-                    style={{ color: tagDraft.color }}
-                  />
-                  <span>
-                    Sub-Tags ({tagDraft.subTags.length}) — Specific Nuances &amp; Variations
-                  </span>
-                </div>
-              </div>
+            <div className="flex items-center justify-between pt-2 border-t border-slate-200 dark:border-slate-800">
+              <button
+                type="button"
+                onClick={() => handleDeleteTag(editingTag.id)}
+                className="flex items-center gap-1.5 rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-xs font-semibold text-rose-600 dark:text-rose-400 hover:bg-rose-500/20 cursor-pointer"
+              >
+                <Trash2 className="h-3.5 w-3.5" />
+                <span>Delete Tag</span>
+              </button>
 
-              {tagDraft.subTags.length > 0 && (
-                <div className="space-y-1.5">
-                  {tagDraft.subTags.map((sub) => (
-                    <div
-                      key={sub.id}
-                      className="grid grid-cols-1 sm:grid-cols-12 gap-2 items-center"
-                    >
-                      <input
-                        type="text"
-                        value={sub.name}
-                        onChange={(e) =>
-                          handleUpdateSubTagInDraft(sub.id, {
-                            name: e.target.value,
-                          })
-                        }
-                        placeholder="Sub-Tag Name"
-                        className="sm:col-span-3 rounded border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 px-2.5 py-1 text-xs font-medium text-slate-900 dark:text-white"
-                      />
-                      <input
-                        type="text"
-                        value={sub.aiDescription}
-                        onChange={(e) =>
-                          handleUpdateSubTagInDraft(sub.id, {
-                            aiDescription: e.target.value,
-                          })
-                        }
-                        placeholder="Sub-Tag AI Context Description"
-                        className="sm:col-span-8 rounded border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 px-2.5 py-1 text-xs text-slate-700 dark:text-slate-200"
-                      />
-                      <button
-                        type="button"
-                        onClick={() => handleDeleteSubTagFromDraft(sub.id)}
-                        className="sm:col-span-1 flex items-center justify-center p-1 text-slate-400 hover:text-rose-500 cursor-pointer"
-                        title="Remove Sub-Tag"
-                      >
-                        <Trash2 className="h-3.5 w-3.5" />
-                      </button>
-                    </div>
-                  ))}
-                </div>
-              )}
-
-              <div className="flex flex-wrap sm:flex-nowrap gap-2 pt-1">
-                <input
-                  type="text"
-                  value={subDraftName}
-                  onChange={(e) => setSubDraftName(e.target.value)}
-                  placeholder="New Sub-Tag name (e.g., Shibari Rope, Perky)..."
-                  className="w-full sm:w-52 rounded border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 px-2.5 py-1 text-xs text-slate-900 dark:text-white"
-                />
-                <input
-                  type="text"
-                  value={subDraftDesc}
-                  onChange={(e) => setSubDraftDesc(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter') {
-                      e.preventDefault();
-                      handleAddSubTagToDraft();
-                    }
-                  }}
-                  placeholder="Sub-Tag AI context directive..."
-                  className="flex-1 rounded border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 px-2.5 py-1 text-xs text-slate-900 dark:text-white"
-                />
+              <div className="flex items-center gap-2">
                 <button
                   type="button"
-                  onClick={handleAddSubTagToDraft}
-                  className="inline-flex items-center gap-1 rounded border border-slate-300 dark:border-slate-700 bg-slate-100 dark:bg-slate-800 px-3 py-1 text-xs font-semibold text-slate-800 dark:text-slate-200 cursor-pointer shrink-0"
+                  onClick={() => setEditingTag(null)}
+                  className="rounded-lg border border-slate-200 dark:border-slate-800 px-3.5 py-2 text-xs font-medium text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800 cursor-pointer"
                 >
-                  <Plus className="h-3.5 w-3.5" />
-                  <span>Add Sub-Tag</span>
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={handleSaveEditModal}
+                  style={{ borderColor: 'var(--theme-accent)' }}
+                  className="theme-hover-outline flex items-center gap-1.5 rounded-lg border bg-slate-900 dark:bg-white px-4 py-2 text-xs font-semibold text-white dark:text-slate-900 cursor-pointer"
+                >
+                  <Check className="h-3.5 w-3.5" />
+                  <span>Save Tag Changes</span>
                 </button>
               </div>
             </div>
-          </form>
-        )}
-
-        {/* High-Density Tag Table */}
-        <div className="overflow-x-auto">
-          <table className="w-full text-left border-collapse">
-            <thead>
-              <tr className="border-b border-slate-200 dark:border-slate-800 text-[11px] font-semibold text-slate-500 dark:text-slate-400">
-                <th className="py-2.5 px-3">Tag &amp; Sub-Tags</th>
-                <th className="py-2.5 px-3">Category</th>
-                <th className="py-2.5 px-3">AI Context Directive</th>
-                <th className="py-2.5 px-3 text-right">Actions</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-200/70 dark:divide-slate-800/70 text-xs">
-              {filteredTags.map((tag) => {
-                const nsfw = isTagNsfw(tag);
-                const subs = tag.subTags || [];
-                return (
-                  <tr
-                    key={tag.id}
-                    className="hover:bg-slate-50/80 dark:hover:bg-slate-800/40 transition-colors align-top"
-                  >
-                    <td className="py-2.5 px-3">
-                      <div className="flex items-center gap-2">
-                        <span
-                          style={{ backgroundColor: tag.color }}
-                          className="h-3 w-3 rounded-xs shrink-0"
-                        />
-                        <span className="font-semibold text-slate-900 dark:text-white">
-                          {tag.name}
-                        </span>
-                        {nsfw && (
-                          <span className="rounded bg-rose-500/15 px-1.5 py-0.5 font-mono text-[10px] font-semibold text-rose-500">
-                            18+ NSFW
-                          </span>
-                        )}
-                      </div>
-
-                      {subs.length > 0 && (
-                        <div className="mt-1.5 flex flex-wrap items-center gap-1 pl-4">
-                          <CornerDownRight className="h-3 w-3 text-slate-400 shrink-0 mr-0.5" />
-                          {subs.map((sub) => (
-                            <span
-                              key={sub.id}
-                              title={sub.aiDescription}
-                              className="inline-flex items-center gap-1 rounded border border-slate-200 dark:border-slate-800 bg-slate-100/80 dark:bg-slate-950 px-1.5 py-0.5 text-[10px] font-medium text-slate-700 dark:text-slate-300"
-                            >
-                              {sub.name}
-                            </span>
-                          ))}
-                        </div>
-                      )}
-                    </td>
-                    <td className="py-2.5 px-3 whitespace-nowrap capitalize text-slate-500 dark:text-slate-400">
-                      {tag.category}
-                    </td>
-                    <td className="py-2.5 px-3 text-slate-600 dark:text-slate-300">
-                      {tag.aiContextDescription}
-                    </td>
-                    <td className="py-2.5 px-3 text-right whitespace-nowrap">
-                      <div className="inline-flex items-center gap-1.5">
-                        <button
-                          type="button"
-                          onClick={() => handleSelectTagForEdit(tag)}
-                          className="p-1 text-slate-400 hover:text-slate-800 dark:hover:text-slate-200 cursor-pointer"
-                          title="Edit Tag & Sub-Tags"
-                        >
-                          <Edit3 className="h-3.5 w-3.5" />
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => handleDeleteTag(tag)}
-                          className="p-1 text-slate-400 hover:text-rose-600 dark:hover:text-rose-400 cursor-pointer"
-                          title="Delete Tag"
-                        >
-                          <Trash2 className="h-3.5 w-3.5" />
-                        </button>
-                      </div>
-                    </td>
-                  </tr>
-                );
-              })}
-              {filteredTags.length === 0 && (
-                <tr>
-                  <td
-                    colSpan={4}
-                    className="py-8 text-center text-xs text-slate-400 dark:text-slate-500"
-                  >
-                    No visible tags match your current filter. Click &ldquo;New Tag / Sub-Tags&rdquo; to add one.
-                  </td>
-                </tr>
-              )}
-            </tbody>
-          </table>
+          </div>
         </div>
-      </div>
+      )}
     </div>
   );
 };

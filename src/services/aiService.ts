@@ -77,15 +77,15 @@ export const AI_BACKEND_PRESETS: AIPresetMeta[] = [
     providerKey: 'google',
     label: 'Google Gemini',
     group: 'Cloud API',
-    defaultUrl: 'https://generativelanguage.googleapis.com/v1beta/openai',
-    defaultModel: 'gemini-2.5-flash',
+    defaultUrl: '/api/gemini',
+    defaultModel: 'gemini-3.8-flash',
     description:
-      'Google Gemini OpenAI-compatible endpoint & native v1beta/models scanner.',
-    requiresKey: true,
+      'Server-side Google Gemini integration powered by @google/genai.',
+    requiresKey: false,
     suggestedModels: [
-      'gemini-2.5-flash',
-      'gemini-2.5-pro',
-      'gemini-2.0-flash-thinking-exp',
+      'gemini-3.8-flash',
+      'gemini-3.1-flash-lite',
+      'gemini-flash-latest',
       'gemma-3-27b-it',
     ],
   },
@@ -419,11 +419,11 @@ export interface ConnectionTestResult {
 }
 
 /**
- * Synthesizes the active Context Theme's instructions and ALL associated Tag & Sub-Tag definitions
+ * Synthesizes the active Context Theme's instructions and ALL associated Tag definitions
  * into a unified system prompt context block for AI generation and ghost-text.
  *
- * CRITICAL RULE: Always includes all attached tags and sub-tags (including `isNsfw: true` tags)
- * regardless of whether "Hide NSFW Tags" is toggled ON in the visual UI!
+ * CRITICAL RULE: Always includes all attached tags (including `isNsfw: true` tags)
+ * regardless of whether "Hide NSFW Content" is toggled ON in the visual UI!
  */
 export function buildActiveAIContextBlock(
   theme?: ContextTheme,
@@ -443,8 +443,14 @@ export function buildActiveAIContextBlock(
     const trimmed = rawSelected.trim();
     const lower = trimmed.toLowerCase();
 
-    // 1. Check if it matches a Main Tag directly
-    const mainMatch = allTags.find((t) => t.name.trim().toLowerCase() === lower);
+    // Check if it matches a Tag directly (or a legacy "Parent: Sub" prefix)
+    const cleanLookup = lower.includes(':') ? lower.split(':')[0].trim() : lower;
+    const mainMatch = allTags.find(
+      (t) =>
+        t.name.trim().toLowerCase() === lower ||
+        t.name.trim().toLowerCase() === cleanLookup ||
+        t.id === trimmed
+    );
     if (mainMatch) {
       const key = `main:${mainMatch.name.toLowerCase()}`;
       if (!emittedKeys.has(key)) {
@@ -454,53 +460,11 @@ export function buildActiveAIContextBlock(
           mainMatch.aiDescription ||
           mainMatch.description ||
           '';
-        tagContextLines.push(`- [${mainMatch.name}] (${mainMatch.category}): ${desc}`);
+        const nsfwMarker = mainMatch.isNsfw ? ' • NSFW 18+' : '';
+        tagContextLines.push(
+          `- [${mainMatch.name}] (${mainMatch.category}${nsfwMarker}): ${desc}`
+        );
       }
-      continue;
-    }
-
-    // 2. Check if it is formatted as "ParentTag: SubTag" or "ParentTag :: SubTag" or matches a SubTag inside any Main Tag
-    let matchedSub = false;
-    for (const parentTag of allTags) {
-      if (!Array.isArray(parentTag.subTags) || parentTag.subTags.length === 0) {
-        continue;
-      }
-      for (const sub of parentTag.subTags) {
-        const compositeColon = `${parentTag.name}: ${sub.name}`.toLowerCase();
-        const compositeDoubleColon = `${parentTag.name} :: ${sub.name}`.toLowerCase();
-        const bareSub = sub.name.trim().toLowerCase();
-
-        if (
-          lower === compositeColon ||
-          lower === compositeDoubleColon ||
-          lower === bareSub
-        ) {
-          // Ensure parent tag directive is also present for full context
-          const parentKey = `main:${parentTag.name.toLowerCase()}`;
-          if (!emittedKeys.has(parentKey)) {
-            emittedKeys.add(parentKey);
-            const pDesc =
-              parentTag.aiContextDescription ||
-              parentTag.aiDescription ||
-              parentTag.description ||
-              '';
-            tagContextLines.push(
-              `- [${parentTag.name}] (${parentTag.category}): ${pDesc}`
-            );
-          }
-
-          const subKey = `sub:${parentTag.name.toLowerCase()}:${sub.name.toLowerCase()}`;
-          if (!emittedKeys.has(subKey)) {
-            emittedKeys.add(subKey);
-            tagContextLines.push(
-              `  • Sub-Tag [${parentTag.name} -> ${sub.name}]: ${sub.aiDescription}`
-            );
-          }
-          matchedSub = true;
-          break;
-        }
-      }
-      if (matchedSub) break;
     }
   }
 
@@ -508,7 +472,7 @@ export function buildActiveAIContextBlock(
     `### Overarching Context Theme: ${theme.name}`,
     theme.aiContextPrompt.trim(),
     tagContextLines.length > 0
-      ? `\n### Active Semantic Tag & Sub-Tag Directives:\n${tagContextLines.join('\n')}`
+      ? `\n### Active Semantic Tag Directives:\n${tagContextLines.join('\n')}`
       : '',
   ]
     .filter(Boolean)
@@ -548,66 +512,53 @@ function buildAuthHeaders(apiKey: string): Record<string, string> {
   return headers;
 }
 
+export function isGeminiBackend(config: AIBackendConfig): boolean {
+  const urlLower = (config.url || '').trim().toLowerCase();
+  const modelLower = (config.modelName || '').trim().toLowerCase();
+  return (
+    config.preset === 'gemini' ||
+    urlLower.startsWith('/api/gemini') ||
+    urlLower.includes('/api/gemini') ||
+    modelLower.startsWith('gemini-')
+  );
+}
+
 /**
- * Live Model Scanner: Queries `/v1/models`, Ollama `/api/tags`, Gemini `/v1beta/models`,
- * and KoboldCPP `/api/v1/model` to discover all hosted models on the target backend.
+ * Live Model Scanner: Queries `/api/gemini/models` for server-side Gemini,
+ * or `/v1/models`, Ollama `/api/tags`, and KoboldCPP `/api/v1/model` for local/custom backends.
  */
 export async function fetchModels(
   config: AIBackendConfig,
   abortSignal?: AbortSignal
 ): Promise<string[]> {
+  // 1. Server-side Gemini endpoint (`/api/gemini/models`)
+  if (isGeminiBackend(config)) {
+    const geminiRes = await fetch('/api/gemini/models', {
+      method: 'GET',
+      headers: { Accept: 'application/json' },
+      signal: abortSignal,
+    });
+    const geminiData = await geminiRes.json().catch(() => ({}));
+    if (!geminiRes.ok) {
+      throw new AIServiceError(
+        geminiData?.error ||
+          `Server Gemini endpoint returned HTTP ${geminiRes.status}`,
+        { statusCode: geminiRes.status }
+      );
+    }
+    if (Array.isArray(geminiData?.models) && geminiData.models.length > 0) {
+      return geminiData.models;
+    }
+    return [
+      'gemini-3.8-flash',
+      'gemini-3.1-flash-lite',
+      'gemini-flash-latest',
+      'gemma-3-27b-it',
+    ];
+  }
+
   const { rootUrl, v1Url } = normalizeBaseUrl(config.url);
   const headers = buildAuthHeaders(config.apiKey);
-
-  // 1. If Gemini endpoint and key provided, support both /v1beta/openai/models and native /v1beta/models?key=
-  if (
-    config.preset === 'gemini' ||
-    config.url.includes('generativelanguage.googleapis.com')
-  ) {
-    if (!config.apiKey.trim()) {
-      throw new AIServiceError(
-        'Invalid or missing API Key for Google Gemini endpoint',
-        { statusCode: 401 }
-      );
-    }
-    try {
-      const keyParam = `?key=${encodeURIComponent(config.apiKey.trim())}`;
-      const geminiRes = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models${keyParam}`,
-        {
-          method: 'GET',
-          headers: { Accept: 'application/json' },
-          signal: abortSignal,
-        }
-      );
-      if (geminiRes.ok) {
-        const geminiData = await geminiRes.json();
-        if (Array.isArray(geminiData?.models)) {
-          const parsed = geminiData.models
-            .map((m: { name?: string }) =>
-              (m.name || '').replace(/^models\//, '')
-            )
-            .filter(
-              (name: string) =>
-                name.startsWith('gemini') || name.startsWith('gemma')
-            );
-          if (parsed.length > 0) return parsed;
-        }
-      } else if (
-        geminiRes.status === 400 ||
-        geminiRes.status === 401 ||
-        geminiRes.status === 403
-      ) {
-        throw new AIServiceError(
-          `Invalid API Key (HTTP ${geminiRes.status})`,
-          { statusCode: geminiRes.status }
-        );
-      }
-    } catch (err: unknown) {
-      if (err instanceof DOMException && err.name === 'AbortError') throw err;
-      if (err instanceof AIServiceError) throw err;
-    }
-  }
 
   try {
     // 2. Standard OpenAI-Compatible `GET /v1/models`
@@ -712,7 +663,11 @@ export async function testBackendConnection(
   const start = performance.now();
   const presetMeta = AI_BACKEND_PRESETS.find((p) => p.id === config.preset);
 
-  if (presetMeta?.requiresKey && !config.apiKey.trim()) {
+  if (
+    presetMeta?.requiresKey &&
+    !isGeminiBackend(config) &&
+    !config.apiKey.trim()
+  ) {
     const fmt = COMPATIBILITY_FORMAT_LABELS[resolveEffectiveFormat(config)];
     return {
       ok: false,
@@ -870,10 +825,49 @@ export async function generateCompletionDetailed(
   abortSignal?: AbortSignal,
   options?: GenerateCompletionOptions
 ): Promise<DetailedCompletionResult> {
-  const { rootUrl, v1Url } = normalizeBaseUrl(config.url);
-  const headers = buildAuthHeaders(config.apiKey);
   const effectiveFormat = resolveEffectiveFormat(config);
   const fullSystemPrompt = buildFullSystemPromptForRequest(systemContext, options);
+
+  // Server-side Google Gemini route (`/api/gemini/generate`)
+  if (isGeminiBackend(config)) {
+    const response = await fetch('/api/gemini/generate', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: 'application/json',
+      },
+      signal: abortSignal,
+      body: JSON.stringify({
+        model: config.modelName || 'gemini-3.8-flash',
+        prompt,
+        systemInstruction: fullSystemPrompt,
+      }),
+    });
+
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      throw new AIServiceError(
+        data?.error ||
+          `Server Gemini endpoint returned HTTP ${response.status}`,
+        { statusCode: response.status }
+      );
+    }
+
+    const parsed = extractThinkingAndCleanContent(
+      typeof data?.text === 'string' ? data.text : '',
+      typeof data?.reasoning === 'string' ? data.reasoning : undefined
+    );
+
+    return {
+      content: parsed.content,
+      reasoning: parsed.reasoning,
+      detectedFormat: 'gemini_thinking',
+      sentSystemPrompt: fullSystemPrompt,
+    };
+  }
+
+  const { rootUrl, v1Url } = normalizeBaseUrl(config.url);
+  const headers = buildAuthHeaders(config.apiKey);
 
   const maxTokens = options?.maxTokens ?? config.maxTokens ?? 512;
   const temperature = options?.temperature ?? config.temperature ?? 0.75;
@@ -1072,6 +1066,53 @@ export async function generateCompletionDetailed(
       }
     }
 
+    // If a localhost backend is unreachable in the hosted browser environment,
+    // automatically fall back to the server-side Gemini endpoint (`/api/gemini/generate`)
+    // so the app keeps working for everyone who opens it!
+    const isLocalhostUrl =
+      config.url.includes('localhost') || config.url.includes('127.0.0.1');
+    if (isLocalhostUrl) {
+      try {
+        const serverGeminiFallback = await fetch('/api/gemini/generate', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Accept: 'application/json',
+          },
+          signal: abortSignal,
+          body: JSON.stringify({
+            model: 'gemini-3.8-flash',
+            prompt,
+            systemInstruction: fullSystemPrompt,
+          }),
+        });
+        if (serverGeminiFallback.ok) {
+          const geminiData = await serverGeminiFallback.json();
+          const parsed = extractThinkingAndCleanContent(
+            typeof geminiData?.text === 'string' ? geminiData.text : '',
+            typeof geminiData?.reasoning === 'string'
+              ? geminiData.reasoning
+              : undefined
+          );
+          if (parsed.content) {
+            return {
+              content: parsed.content,
+              reasoning: parsed.reasoning,
+              detectedFormat: 'gemini_thinking',
+              sentSystemPrompt: fullSystemPrompt,
+            };
+          }
+        }
+      } catch (geminiFallbackErr: unknown) {
+        if (
+          geminiFallbackErr instanceof DOMException &&
+          geminiFallbackErr.name === 'AbortError'
+        ) {
+          throw geminiFallbackErr;
+        }
+      }
+    }
+
     if (err instanceof AIServiceError) {
       throw err;
     }
@@ -1084,6 +1125,75 @@ export async function generateCompletionDetailed(
       }
     );
   }
+}
+
+/**
+ * Server-side streaming helper via `/api/gemini/stream` (SSE).
+ */
+export async function generateCompletionStream(
+  prompt: string,
+  systemContext: string,
+  config: AIBackendConfig,
+  onChunk: (chunkText: string) => void,
+  abortSignal?: AbortSignal,
+  options?: GenerateCompletionOptions
+): Promise<string> {
+  const fullSystemPrompt = buildFullSystemPromptForRequest(systemContext, options);
+  const response = await fetch('/api/gemini/stream', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Accept: 'text/event-stream',
+    },
+    signal: abortSignal,
+    body: JSON.stringify({
+      model: config.modelName || 'gemini-3.8-flash',
+      prompt,
+      systemInstruction: fullSystemPrompt,
+    }),
+  });
+
+  if (!response.ok || !response.body) {
+    const errData = await response.json().catch(() => ({}));
+    throw new AIServiceError(
+      errData?.error || `Streaming request failed (HTTP ${response.status})`,
+      { statusCode: response.status }
+    );
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let accumulated = '';
+  let buffer = '';
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split('\n');
+    buffer = lines.pop() ?? '';
+
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed.startsWith('data:')) continue;
+      const jsonStr = trimmed.slice(5).trim();
+      if (!jsonStr) continue;
+      try {
+        const payload = JSON.parse(jsonStr);
+        if (payload.error) {
+          throw new AIServiceError(payload.error);
+        }
+        if (typeof payload.text === 'string' && payload.text) {
+          accumulated += payload.text;
+          onChunk(payload.text);
+        }
+      } catch (e) {
+        if (e instanceof AIServiceError) throw e;
+      }
+    }
+  }
+
+  return extractThinkingAndCleanContent(accumulated).content;
 }
 
 /**

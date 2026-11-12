@@ -24,8 +24,9 @@ import {
   GripVertical,
   RefreshCw,
   FolderOpen,
+  ShieldAlert,
 } from 'lucide-react';
-import { useStore } from '../context/StoreContext';
+import { useStore, isLorebookNsfw } from '../context/StoreContext';
 import {
   Lorebook,
   LorebookEntry,
@@ -102,6 +103,7 @@ export const LorebookEditor: React.FC = () => {
     reconnectNativeSaveFolder,
     pendingReconnectFolderName,
     isSyncingFolder,
+    checkAndTriggerNameConflict,
   } = useStore();
 
   // Lorebook Roster Sidebar State
@@ -203,6 +205,9 @@ export const LorebookEditor: React.FC = () => {
   const filteredAndSortedLorebooks = useMemo(() => {
     const q = rosterSearch.trim().toLowerCase();
     const filtered = lorebooksWithTokens.filter(({ lb }) => {
+      if (settings.hideNsfwTags && isLorebookNsfw(lb, tags)) {
+        return false;
+      }
       const lbTags = Array.from(
         new Set([
           ...(lb.tags || []),
@@ -234,7 +239,14 @@ export const LorebookEditor: React.FC = () => {
       }
       return (b.lb.modification_date || 0) - (a.lb.modification_date || 0);
     });
-  }, [lorebooksWithTokens, rosterSearch, rosterTagFilter, rosterSort]);
+  }, [
+    lorebooksWithTokens,
+    rosterSearch,
+    rosterTagFilter,
+    rosterSort,
+    settings.hideNsfwTags,
+    tags,
+  ]);
 
   const activeLorebookTokens = useMemo(
     () => calculateLorebookTokens(lorebook),
@@ -956,8 +968,15 @@ export const LorebookEditor: React.FC = () => {
                       onClick={() => setActiveLorebookId(lb.id!)}
                       className="flex-1 text-left min-w-0 cursor-pointer"
                     >
-                      <div className="text-xs font-semibold text-slate-900 dark:text-white truncate">
-                        {lb.name || 'Untitled Lorebook'}
+                      <div className="flex items-center gap-1.5">
+                        <div className="text-xs font-semibold text-slate-900 dark:text-white truncate">
+                          {lb.name || 'Untitled Lorebook'}
+                        </div>
+                        {isLorebookNsfw(lb, tags) && (
+                          <span className="shrink-0 rounded bg-rose-500/15 border border-rose-500/30 px-1 py-0.2 font-mono text-[9px] font-bold uppercase text-rose-600 dark:text-rose-400">
+                            NSFW
+                          </span>
+                        )}
                       </div>
                       <div className="text-[11px] text-slate-500 dark:text-slate-400 truncate">
                         {lb.entries.length} entries
@@ -1029,10 +1048,36 @@ export const LorebookEditor: React.FC = () => {
         >
           <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 dark:border-slate-800 pb-3.5">
             <div className="min-w-0">
-              <div className="flex items-center gap-2">
+              <div className="flex flex-wrap items-center gap-2">
                 <h1 className="text-lg font-bold tracking-tight text-slate-900 dark:text-white truncate">
                   {lorebook.name || 'Untitled Lorebook'}
                 </h1>
+                {isLorebookNsfw(lorebook, tags) && (
+                  <span
+                    title="Automatically flagged NSFW because an NSFW (18+) tag is attached or manual NSFW flag is enabled."
+                    className="inline-flex items-center gap-1 rounded-md border border-rose-500/40 bg-rose-500/15 px-2 py-0.5 font-mono text-[10px] font-bold uppercase text-rose-600 dark:text-rose-300"
+                  >
+                    <ShieldAlert className="h-3 w-3" />
+                    <span>🔞 NSFW</span>
+                  </span>
+                )}
+                <button
+                  type="button"
+                  onClick={() =>
+                    updateLorebookAndSync((prev) => ({
+                      ...prev,
+                      isNsfw: !prev.isNsfw,
+                    }))
+                  }
+                  title="Toggle explicit manual NSFW flag on this lorebook (lorebooks with NSFW tags are also auto-flagged NSFW)"
+                  className={`rounded-md border px-2 py-0.5 text-[10px] font-semibold cursor-pointer transition-colors ${
+                    lorebook.isNsfw
+                      ? 'border-rose-500/40 bg-rose-500/10 text-rose-600 dark:text-rose-300'
+                      : 'border-slate-200 dark:border-slate-800 text-slate-500 hover:text-slate-800 dark:hover:text-slate-200'
+                  }`}
+                >
+                  {lorebook.isNsfw ? 'Manual NSFW: ON' : 'Flag NSFW'}
+                </button>
                 <Tooltip content="SillyTavern World Info / Character Book settings and trigger entries." />
               </div>
               <p className="text-xs text-slate-500 dark:text-slate-400">
@@ -1137,6 +1182,16 @@ export const LorebookEditor: React.FC = () => {
                     name: e.target.value,
                   }))
                 }
+                onBlur={(e) => {
+                  if (lorebook.id) {
+                    checkAndTriggerNameConflict(
+                      'lorebook',
+                      lorebook.id,
+                      e.target.value,
+                      'rename'
+                    );
+                  }
+                }}
                 className="theme-focus-ring w-full rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 px-3 py-1.5 text-xs font-medium text-slate-900 dark:text-white"
               />
             </div>
@@ -1373,6 +1428,16 @@ export const LorebookEditor: React.FC = () => {
                             name: e.target.value,
                           }))
                         }
+                        onBlur={(e) => {
+                          if (lorebook.id) {
+                            checkAndTriggerNameConflict(
+                              'lorebook',
+                              lorebook.id,
+                              e.target.value,
+                              'rename'
+                            );
+                          }
+                        }}
                         className="theme-focus-ring w-full rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 px-3 py-1.5 text-xs font-medium text-slate-900 dark:text-white"
                       />
                     </div>

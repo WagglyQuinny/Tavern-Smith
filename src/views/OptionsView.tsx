@@ -63,6 +63,7 @@ export const OptionsView: React.FC = () => {
     setAiConfig,
     switchAIPreset,
     saveNow,
+    saveAndSyncNow,
     resetWorkspaceToDefaults,
     lastSavedAt,
     savedFiles,
@@ -210,14 +211,9 @@ export const OptionsView: React.FC = () => {
     window.setTimeout(() => setFolderStatusMessage(null), 5000);
   };
 
-  const handleSaveAllToFolderNow = () => {
-    saveNow('manual');
-    const rootDisplay = nativeDirectoryName
-      ? `Local PC Hard Drive Folder: ${nativeDirectoryName}/`
-      : `Browser Internal Storage (${UNIFIED_INTERNAL_ROOT})`;
-    setFolderStatusMessage(
-      `Saved ${characterSavedFiles.length} character(s) to Characters/, ${lorebookSavedFiles.length} lorebook(s) to Lorebooks/, and ${META_FILENAME} in ${rootDisplay}.`
-    );
+  const handleSaveAllToFolderNow = async () => {
+    const res = await saveAndSyncNow();
+    setFolderStatusMessage(res.message);
     window.setTimeout(() => setFolderStatusMessage(null), 5000);
   };
 
@@ -971,6 +967,64 @@ export const OptionsView: React.FC = () => {
                 </button>
               </div>
             </div>
+
+            {/* Centralized Master Toggle: Show / Hide NSFW Content */}
+            <div className="space-y-2 border-t border-slate-200 dark:border-slate-800 pt-4">
+              <label className="flex items-center justify-between gap-2 text-xs font-medium text-slate-700 dark:text-slate-300">
+                <div className="flex items-center gap-1.5">
+                  <span>Show / Hide NSFW Content (Master Filter)</span>
+                  <Tooltip content="Centralized NSFW visibility control. When 'Hide NSFW Content' is enabled, all NSFW-flagged Tags, NSFW-flagged Characters, and NSFW-flagged Lorebooks are hidden across the visual UI while keeping any active AI generation context intact." />
+                </div>
+                <span
+                  className={`rounded px-1.5 py-0.5 font-mono text-[10px] font-bold uppercase ${
+                    settings.hideNsfwTags
+                      ? 'bg-amber-500/15 text-amber-600 dark:text-amber-300'
+                      : 'bg-rose-500/15 text-rose-600 dark:text-rose-300'
+                  }`}
+                >
+                  {settings.hideNsfwTags ? 'SFW Safe View' : '18+ Visible'}
+                </span>
+              </label>
+
+              <div className="grid grid-cols-2 gap-2.5">
+                <button
+                  type="button"
+                  onClick={() => updateSettings({ hideNsfwTags: false })}
+                  style={
+                    !settings.hideNsfwTags
+                      ? { borderColor: 'var(--theme-accent)' }
+                      : undefined
+                  }
+                  className={`theme-hover-outline flex items-center justify-center gap-2 rounded-lg border px-3 py-2.5 text-xs font-semibold cursor-pointer ${
+                    !settings.hideNsfwTags
+                      ? 'bg-rose-500/10 text-rose-600 dark:text-rose-300'
+                      : 'border-slate-200 dark:border-slate-800 text-slate-600 dark:text-slate-400'
+                  }`}
+                >
+                  <span>🔞 Show NSFW Content</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => updateSettings({ hideNsfwTags: true })}
+                  style={
+                    settings.hideNsfwTags
+                      ? { borderColor: 'var(--theme-accent)' }
+                      : undefined
+                  }
+                  className={`theme-hover-outline flex items-center justify-center gap-2 rounded-lg border px-3 py-2.5 text-xs font-semibold cursor-pointer ${
+                    settings.hideNsfwTags
+                      ? 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300'
+                      : 'border-slate-200 dark:border-slate-800 text-slate-600 dark:text-slate-400'
+                  }`}
+                >
+                  <ShieldCheck className="h-3.5 w-3.5" />
+                  <span>Hide NSFW Content</span>
+                </button>
+              </div>
+              <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                Hides all NSFW-flagged Tags, Characters, and Lorebooks across the entire workspace when enabled.
+              </p>
+            </div>
           </div>
 
           {/* Persistence & Auto-Save Interval Card */}
@@ -1219,29 +1273,45 @@ export const OptionsView: React.FC = () => {
                 />
               </div>
 
-              <div className="space-y-1.5">
-                <label className="flex items-center gap-1.5 text-xs font-medium text-slate-700 dark:text-slate-300">
-                  <span>
-                    {currentPresetMeta.requiresKey
-                      ? 'Provider Bearer Token (Required)'
-                      : 'Bearer Token (Optional for Local)'}
-                  </span>
-                  <Tooltip content="Authorization token for cloud endpoints (Gemini, xAI Grok, OpenRouter, Groq, OpenAI). Stored locally in your browser workspace and never exported into Character Cards." />
-                </label>
-                <input
-                  type="password"
-                  value={aiConfig.apiKey}
-                  onChange={(e) =>
-                    setAiConfig((prev) => ({ ...prev, apiKey: e.target.value }))
-                  }
-                  placeholder={
-                    currentPresetMeta.requiresKey
-                      ? 'Enter endpoint authorization token...'
-                      : 'Not required for localhost'
-                  }
-                  className="theme-focus-ring font-mono w-full rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 px-3 py-2 text-xs text-slate-900 dark:text-white"
-                />
-              </div>
+              {aiConfig.preset === 'gemini' ? (
+                <div className="space-y-1.5">
+                  <label className="flex items-center gap-1.5 text-xs font-medium text-slate-700 dark:text-slate-300">
+                    <span>Server-Side Gemini Status</span>
+                    <Tooltip content="Google Gemini calls run on the server via /api/gemini using the @google/genai SDK." />
+                  </label>
+                  <div className="flex items-center gap-2 rounded-lg border border-emerald-500/40 bg-emerald-500/10 px-3 py-2 text-xs font-mono font-semibold text-emerald-700 dark:text-emerald-300">
+                    <ShieldCheck className="h-3.5 w-3.5 shrink-0" />
+                    <span>Connected via Server (/api/gemini)</span>
+                  </div>
+                </div>
+              ) : (
+                <div className="space-y-1.5">
+                  <label className="flex items-center gap-1.5 text-xs font-medium text-slate-700 dark:text-slate-300">
+                    <span>
+                      {currentPresetMeta.requiresKey
+                        ? 'Provider Bearer Token (Required)'
+                        : 'Bearer Token (Optional for Local)'}
+                    </span>
+                    <Tooltip content="Authorization token for custom or 3rd-party endpoints. Stored locally in your browser workspace and never exported into Character Cards." />
+                  </label>
+                  <input
+                    type="password"
+                    value={aiConfig.apiKey}
+                    onChange={(e) =>
+                      setAiConfig((prev) => ({
+                        ...prev,
+                        apiKey: e.target.value,
+                      }))
+                    }
+                    placeholder={
+                      currentPresetMeta.requiresKey
+                        ? 'Enter endpoint authorization token...'
+                        : 'Not required for localhost'
+                    }
+                    className="theme-focus-ring font-mono w-full rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 px-3 py-2 text-xs text-slate-900 dark:text-white"
+                  />
+                </div>
+              )}
 
               <div>
                 <button

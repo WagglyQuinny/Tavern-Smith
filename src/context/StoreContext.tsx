@@ -14,10 +14,10 @@ import {
   CharacterCardData,
   ContextTheme,
   Lorebook,
+  NameConflictRequest,
   SavedFileEntry,
   SaveLogEntry,
   StatBlockConfig,
-  SubTagDefinition,
   TagDefinition,
   TavernSmithMetaPayload,
   TokenBreakdown,
@@ -41,9 +41,11 @@ import {
 } from '../utils/folderDb';
 import { AI_BACKEND_PRESETS, getProviderKeyId } from '../services/aiService';
 
-const STORAGE_KEY = 'tavernsmith_store_v2';
+const PREFERENCES_STORAGE_KEY = 'tavernsmith_preferences_v1';
+const SAVE_FOLDER_FILES_STORAGE_KEY = 'tavernsmith_save_folder_files_v1';
 const PROVIDER_CREDENTIALS_STORAGE_KEY = 'tavernsmith_provider_credentials_v1';
 const LEGACY_STORAGE_KEYS = [
+  'tavernsmith_store_v2',
   'tavernsmith_ide_state_v2',
   'tavernsmith_ide_state_v1',
   'tavernsmith_store_v1',
@@ -82,6 +84,62 @@ function safeLocalStorageRemove(key: string): void {
   }
 }
 
+/**
+ * Purges all registered Service Workers and browser CacheStorage entries
+ * so the browser NEVER caches stale HTML, JS, CSS, or tag schemas across sessions.
+ */
+export function purgeBrowserRuntimeCaches(): void {
+  try {
+    if (
+      typeof navigator !== 'undefined' &&
+      navigator.serviceWorker &&
+      typeof navigator.serviceWorker.getRegistrations === 'function'
+    ) {
+      navigator.serviceWorker
+        .getRegistrations()
+        .then((regs) => {
+          regs.forEach((r) => {
+            try {
+              void r.unregister();
+            } catch {
+              // Ignore individual unregister error
+            }
+          });
+        })
+        .catch(() => {
+          // Ignore restricted ServiceWorker environment
+        });
+    }
+  } catch {
+    // Ignore synchronous SecurityError
+  }
+
+  try {
+    if (
+      typeof window !== 'undefined' &&
+      window.caches &&
+      typeof window.caches.keys === 'function'
+    ) {
+      window.caches
+        .keys()
+        .then((keys) => {
+          keys.forEach((k) => {
+            try {
+              void window.caches.delete(k);
+            } catch {
+              // Ignore individual cache delete error
+            }
+          });
+        })
+        .catch(() => {
+          // Ignore restricted CacheStorage environment
+        });
+    }
+  } catch {
+    // Ignore synchronous SecurityError
+  }
+}
+
 const AUTO_TAG_PALETTE = [
   '#a855f7',
   '#06b6d4',
@@ -112,7 +170,7 @@ function createBuiltInTag(
   category: TagDefinition['category'],
   description: string,
   isNsfw: boolean,
-  subTags?: SubTagDefinition[]
+  _legacySubTags?: unknown
 ): TagDefinition {
   return {
     id,
@@ -120,7 +178,6 @@ function createBuiltInTag(
     color,
     category,
     isNsfw,
-    subTags: subTags || [],
     aiContextDescription: description,
     aiDescription: description,
     description,
@@ -1100,57 +1157,257 @@ export const DEFAULT_TAGS: TagDefinition[] = [
 export const DEFAULT_TAG_LIBRARY: TagDefinition[] = DEFAULT_TAGS;
 
 /**
- * Merges any missing built-in tags from `DEFAULT_TAGS` by `name` (case-insensitive)
- * into an existing persisted tag array AND backfills `isNsfw` and `subTags` on built-in tags
- * so newly added sub-tags and NSFW classifications appear automatically without wiping user edits.
+ * Returns true if a TagDefinition has its NSFW (18+) flag set.
  */
-export function mergeWithDefaultTags(
-  existingTags?: TagDefinition[] | null
-): TagDefinition[] {
-  if (!Array.isArray(existingTags) || existingTags.length === 0) {
-    return DEFAULT_TAGS;
+export function isTagNsfwFlagged(tag: TagDefinition): boolean {
+  if (tag.isNsfw !== undefined) return Boolean(tag.isNsfw);
+  const cat = (tag.category || '').toLowerCase();
+  if (cat.includes('nsfw') || cat.includes('extreme') || cat.includes('hentai')) {
+    return true;
   }
+  const n = (tag.name || '').toLowerCase();
+  return n.includes('nsfw') || n.includes('18+') || n.includes('explicit');
+}
+
+/**
+ * Automatically computes whether a Character is NSFW:
+ * Returns true if manually flagged (`char.isNsfw` or `char.extensions?.isNsfw`)
+ * OR if at least one attached tag on the character (or its embedded lorebook) has `isNsfw: true`.
+ */
+export function isCharacterNsfw(
+  char: CharacterCardData | undefined | null,
+  allTags: TagDefinition[]
+): boolean {
+  if (!char) return false;
+  if (char.isNsfw || char.extensions?.isNsfw) return true;
+
+  const nsfwTagNames = new Set<string>();
+  for (const t of allTags) {
+    if (isTagNsfwFlagged(t)) {
+      nsfwTagNames.add(t.name.trim().toLowerCase());
+      nsfwTagNames.add(t.id.toLowerCase());
+    }
+  }
+
+  for (const rawTag of char.tags || []) {
+    const clean = (rawTag || '').trim().toLowerCase();
+    if (!clean) continue;
+    const baseName = clean.includes(':') ? clean.split(':')[0].trim() : clean;
+    if (
+      nsfwTagNames.has(clean) ||
+      nsfwTagNames.has(baseName) ||
+      clean.includes('nsfw') ||
+      clean.includes('18+')
+    ) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+/**
+ * Automatically computes whether a Lorebook is NSFW:
+ * Returns true if manually flagged (`lb.isNsfw`)
+ * OR if at least one attached tag on the lorebook or any of its entries has `isNsfw: true`.
+ */
+export function isLorebookNsfw(
+  lb: Lorebook | undefined | null,
+  allTags: TagDefinition[]
+): boolean {
+  if (!lb) return false;
+  if (lb.isNsfw) return true;
+
+  const nsfwTagNames = new Set<string>();
+  for (const t of allTags) {
+    if (isTagNsfwFlagged(t)) {
+      nsfwTagNames.add(t.name.trim().toLowerCase());
+      nsfwTagNames.add(t.id.toLowerCase());
+    }
+  }
+
+  const checkList = (tagsList?: string[]) => {
+    for (const rawTag of tagsList || []) {
+      const clean = (rawTag || '').trim().toLowerCase();
+      if (!clean) continue;
+      const baseName = clean.includes(':') ? clean.split(':')[0].trim() : clean;
+      if (
+        nsfwTagNames.has(clean) ||
+        nsfwTagNames.has(baseName) ||
+        clean.includes('nsfw') ||
+        clean.includes('18+')
+      ) {
+        return true;
+      }
+    }
+    return false;
+  };
+
+  if (checkList(lb.tags)) return true;
+  for (const entry of lb.entries || []) {
+    if (checkList(entry.tags)) return true;
+  }
+
+  return false;
+}
+
+/**
+ * Generates unique suggested names when a duplicate Character or Lorebook name conflict is detected.
+ */
+export function buildSuggestedUniqueNames(
+  baseName: string,
+  existingNames: string[]
+): string[] {
+  const cleanBase = (baseName || 'Untitled').trim().replace(/\s+\(\d+\)$/, '');
+  const lowerSet = new Set(existingNames.map((n) => n.trim().toLowerCase()));
+  const suggestions: string[] = [];
+
+  for (let i = 2; i <= 20; i++) {
+    const candidate = `${cleanBase} (${i})`;
+    if (!lowerSet.has(candidate.toLowerCase())) {
+      suggestions.push(candidate);
+      if (suggestions.length >= 2) break;
+    }
+  }
+
+  const altCandidate = `${cleanBase} - Alt`;
+  if (!lowerSet.has(altCandidate.toLowerCase())) {
+    suggestions.push(altCandidate);
+  }
+
+  const v2Candidate = `${cleanBase} - Variant`;
+  if (!lowerSet.has(v2Candidate.toLowerCase()) && suggestions.length < 4) {
+    suggestions.push(v2Candidate);
+  }
+
+  return suggestions;
+}
+
+/**
+ * Extracts ONLY user-created custom tags (or built-in tags whose NSFW flag or description was customized)
+ * so the built-in `DEFAULT_TAGS` array is NEVER cached in `localStorage`.
+ */
+export function extractCustomUserTags(
+  allTags?: TagDefinition[] | null
+): TagDefinition[] {
+  if (!Array.isArray(allTags) || allTags.length === 0) return [];
 
   const builtInByName = new Map(
     DEFAULT_TAGS.map((b) => [b.name.trim().toLowerCase(), b])
   );
 
-  const merged: TagDefinition[] = existingTags
-    .filter((t) => t && typeof t.name === 'string')
-    .map((existing) => {
-      const key = existing.name.trim().toLowerCase();
-      const builtIn = builtInByName.get(key);
-      if (!builtIn) {
-        return {
-          ...existing,
-          isNsfw:
-            existing.isNsfw !== undefined
-              ? existing.isNsfw
-              : existing.category === 'NSFW & Kinks' ||
-                existing.category === 'Extreme & Hentai Physics',
-          subTags: Array.isArray(existing.subTags) ? existing.subTags : [],
-        };
-      }
-      return {
-        ...existing,
-        isNsfw:
-          existing.isNsfw !== undefined ? existing.isNsfw : builtIn.isNsfw,
-        subTags:
-          Array.isArray(existing.subTags) && existing.subTags.length > 0
-            ? existing.subTags
-            : builtIn.subTags || [],
-      };
-    });
+  const customOnly: TagDefinition[] = [];
+  for (const tag of allTags) {
+    if (!tag || typeof tag.name !== 'string') continue;
+    const key = tag.name.trim().toLowerCase();
+    const builtIn = builtInByName.get(key);
 
-  const seenNames = new Set(merged.map((t) => t.name.trim().toLowerCase()));
-  for (const builtIn of DEFAULT_TAGS) {
-    const key = builtIn.name.trim().toLowerCase();
-    if (!seenNames.has(key)) {
-      merged.push(builtIn);
-      seenNames.add(key);
+    if (!builtIn) {
+      const { ...cleanTag } = tag;
+      customOnly.push(cleanTag);
+      continue;
+    }
+
+    // If user toggled isNsfw or customized aiContextDescription on a built-in tag, record that override
+    if (
+      Boolean(tag.isNsfw) !== Boolean(builtIn.isNsfw) ||
+      (tag.aiContextDescription &&
+        tag.aiContextDescription !== builtIn.aiContextDescription) ||
+      (tag.color && tag.color !== builtIn.color)
+    ) {
+      customOnly.push({
+        ...builtIn,
+        color: tag.color || builtIn.color,
+        isNsfw: Boolean(tag.isNsfw),
+        aiContextDescription:
+          tag.aiContextDescription || builtIn.aiContextDescription,
+        aiDescription:
+          tag.aiContextDescription ||
+          tag.aiDescription ||
+          builtIn.aiDescription,
+      });
     }
   }
-  return merged;
+
+  return customOnly;
+}
+
+/**
+ * Always loads the 84+ built-in `DEFAULT_TAGS` (including their `isNsfw` flags, categories,
+ * colors, and `aiDescription`) 100% fresh from source code, and merges user-created custom tags on top.
+ */
+export function mergeWithDefaultTags(
+  customOrMetaTags?: TagDefinition[] | null
+): TagDefinition[] {
+  const freshBuiltIns: TagDefinition[] = DEFAULT_TAGS.map((b) => ({
+    ...b,
+  }));
+
+  if (!Array.isArray(customOrMetaTags) || customOrMetaTags.length === 0) {
+    return freshBuiltIns;
+  }
+
+  const builtInIndexByName = new Map<string, number>();
+  freshBuiltIns.forEach((b, idx) => {
+    builtInIndexByName.set(b.name.trim().toLowerCase(), idx);
+  });
+
+  const userCustomTags: TagDefinition[] = [];
+  const seenCustomNames = new Set<string>();
+
+  for (const incoming of customOrMetaTags) {
+    if (!incoming || typeof incoming.name !== 'string') continue;
+    const cleanName = incoming.name.trim();
+    if (!cleanName) continue;
+    const key = cleanName.toLowerCase();
+
+    const builtInIdx = builtInIndexByName.get(key);
+    if (builtInIdx !== undefined) {
+      const targetBuiltIn = freshBuiltIns[builtInIdx];
+      freshBuiltIns[builtInIdx] = {
+        ...targetBuiltIn,
+        color: incoming.color || targetBuiltIn.color,
+        isNsfw:
+          incoming.isNsfw !== undefined
+            ? Boolean(incoming.isNsfw)
+            : targetBuiltIn.isNsfw,
+        aiContextDescription:
+          incoming.aiContextDescription || targetBuiltIn.aiContextDescription,
+        aiDescription:
+          incoming.aiContextDescription ||
+          incoming.aiDescription ||
+          targetBuiltIn.aiDescription,
+      };
+      continue;
+    }
+
+    if (!seenCustomNames.has(key)) {
+      seenCustomNames.add(key);
+      userCustomTags.push({
+        id: incoming.id || `tag-custom-${Date.now()}-${userCustomTags.length}`,
+        name: cleanName,
+        color: incoming.color || '#a855f7',
+        category: incoming.category || 'Custom',
+        isNsfw:
+          incoming.isNsfw !== undefined
+            ? Boolean(incoming.isNsfw)
+            : incoming.category === 'NSFW & Kinks' ||
+              incoming.category === 'Extreme & Hentai Physics',
+        aiContextDescription:
+          incoming.aiContextDescription ||
+          incoming.aiDescription ||
+          incoming.description ||
+          `Incorporate thematic, tonal, and character elements consistent with "${cleanName}".`,
+        aiDescription:
+          incoming.aiContextDescription ||
+          incoming.aiDescription ||
+          incoming.description ||
+          `Incorporate thematic, tonal, and character elements consistent with "${cleanName}".`,
+      });
+    }
+  }
+
+  return [...freshBuiltIns, ...userCustomTags];
 }
 
 export const DEFAULT_STAT_BLOCK: StatBlockConfig = {
@@ -1218,16 +1475,21 @@ export const DEFAULT_CHARACTER: CharacterCardData = {
 };
 
 export const DEFAULT_AI_CONFIG: AIBackendConfig = {
-  preset: 'lmstudio',
-  url: 'http://localhost:1234/v1',
+  preset: 'gemini',
+  url: '/api/gemini',
   apiKey: '',
-  modelName: 'gemma-4-27b-it',
+  modelName: 'gemini-3.8-flash',
   compatibilityFormat: 'auto',
   temperature: 0.78,
   maxTokens: 512,
   ghostTextEnabled: true,
   debounceMs: 650,
-  availableModels: [],
+  availableModels: [
+    'gemini-3.8-flash',
+    'gemini-3.1-flash-lite',
+    'gemini-flash-latest',
+    'gemma-3-27b-it',
+  ],
   savedProviderKeys: {},
   savedProviderModels: {},
 };
@@ -1467,11 +1729,13 @@ export function buildUnifiedSavedFiles(
     const fileName = `${sanitizeFilename(lb.name)}.json`;
     const loreJson = JSON.stringify(
       {
+        id: lb.id,
         name: lb.name,
         description: lb.description,
         scan_depth: lb.scan_depth,
         token_budget: lb.token_budget,
         recursive_scanning: lb.recursive_scanning,
+        modification_date: lb.modification_date,
         entries: lb.entries,
         tags: lb.tags || [],
       },
@@ -1496,13 +1760,14 @@ export function buildUnifiedSavedFiles(
     });
   }
 
-  // 3. Root _tavernsmith_meta.json
+  // 3. Root _tavernsmith_meta.json (stores ONLY custom user tags + themes, never built-in DEFAULT_TAGS)
+  const customTagsOnly = extractCustomUserTags(tags);
   const metaPayload: TavernSmithMetaPayload = {
     schema: 'tavernsmith_meta_v1',
     updatedAt: nowIso,
     activeThemeId,
     contextThemes: themes,
-    tags,
+    tags: customTagsOnly,
   };
   const metaJson = JSON.stringify(metaPayload, null, 2);
   entries.push({
@@ -1518,7 +1783,16 @@ export function buildUnifiedSavedFiles(
   return entries;
 }
 
-interface PersistedWorkspaceState {
+interface PersistedPreferencesState {
+  activeCharacterId: string;
+  activeLorebookId: string;
+  aiConfig: AIBackendConfig;
+  settings: AppSettings;
+  saveLogs: SaveLogEntry[];
+  lastSavedAt: string | null;
+}
+
+interface InitialWorkspaceBootstrap {
   characters: CharacterCardData[];
   activeCharacterId: string;
   lorebooks: Lorebook[];
@@ -1530,6 +1804,79 @@ interface PersistedWorkspaceState {
   savedFiles: SavedFileEntry[];
   saveLogs: SaveLogEntry[];
   lastSavedAt: string | null;
+}
+
+/**
+ * Re-reads Characters (`Characters/*.json`), Lorebooks (`Lorebooks/*.json`), and user custom
+ * metadata (`_tavernsmith_meta.json`) directly from the Save Folder file entries.
+ * Always loads `DEFAULT_TAGS` fresh from source code and merges only user-created custom tags on top.
+ */
+function reconstructWorkspaceFromSaveFiles(files: SavedFileEntry[]): {
+  characters: CharacterCardData[];
+  lorebooks: Lorebook[];
+  themes: ContextTheme[];
+  tags: TagDefinition[];
+  activeThemeIdFromMeta?: string;
+} {
+  const loadedCharacters: CharacterCardData[] = [];
+  const loadedLorebooks: Lorebook[] = [];
+  let loadedThemes: ContextTheme[] = DEFAULT_CONTEXT_THEMES;
+  let customMetaTags: TagDefinition[] = [];
+  let activeThemeIdFromMeta: string | undefined;
+
+  for (const entry of files) {
+    if (!entry || typeof entry.content !== 'string') continue;
+    try {
+      if (entry.kind === 'meta' || entry.fileName === META_FILENAME) {
+        const parsedMeta = JSON.parse(
+          entry.content
+        ) as Partial<TavernSmithMetaPayload>;
+        if (
+          Array.isArray(parsedMeta.contextThemes) &&
+          parsedMeta.contextThemes.length > 0
+        ) {
+          const mapByName = new Map<string, ContextTheme>();
+          for (const t of DEFAULT_CONTEXT_THEMES) {
+            mapByName.set(t.name.trim().toLowerCase(), t);
+          }
+          for (const incoming of parsedMeta.contextThemes) {
+            if (incoming && incoming.name) {
+              mapByName.set(incoming.name.trim().toLowerCase(), incoming);
+            }
+          }
+          loadedThemes = Array.from(mapByName.values());
+        }
+        if (Array.isArray(parsedMeta.tags)) {
+          customMetaTags = parsedMeta.tags;
+        }
+        if (parsedMeta.activeThemeId) {
+          activeThemeIdFromMeta = parsedMeta.activeThemeId;
+        }
+        continue;
+      }
+
+      const parsedAsset = parseImportedJsonString(
+        entry.content,
+        undefined,
+        entry.fileName
+      );
+      if (parsedAsset.kind === 'character') {
+        loadedCharacters.push(parsedAsset.character);
+      } else if (parsedAsset.kind === 'lorebook') {
+        loadedLorebooks.push(parsedAsset.lorebook);
+      }
+    } catch {
+      // Ignore malformed file entry
+    }
+  }
+
+  return {
+    characters: loadedCharacters,
+    lorebooks: loadedLorebooks,
+    themes: loadedThemes,
+    tags: mergeWithDefaultTags(customMetaTags),
+    activeThemeIdFromMeta,
+  };
 }
 
 interface StoreContextValue {
@@ -1576,11 +1923,16 @@ interface StoreContextValue {
     tagName: string,
     category?: TagDefinition['category']
   ) => TagDefinition | null;
-  addSubTagToTag: (
-    parentTagId: string,
-    subTagName: string,
-    subTagAiDescription: string
-  ) => void;
+  // Duplicate Character / Lorebook Name Conflict Resolution
+  nameConflictRequest: NameConflictRequest | null;
+  checkAndTriggerNameConflict: (
+    kind: 'character' | 'lorebook',
+    itemId: string,
+    candidateName: string,
+    sourceAction?: 'create' | 'rename' | 'save' | 'import'
+  ) => boolean;
+  resolveNameConflict: (newUniqueName: string) => void;
+  dismissNameConflict: () => void;
   // AI Config & Settings
   aiConfig: AIBackendConfig;
   setAiConfig: React.Dispatch<React.SetStateAction<AIBackendConfig>>;
@@ -1592,6 +1944,7 @@ interface StoreContextValue {
   lastSavedAt: string | null;
   isDirty: boolean;
   saveNow: (mode?: 'manual' | 'autosave') => void;
+  saveAndSyncNow: () => Promise<{ ok: boolean; message: string }>;
   resetWorkspaceToDefaults: () => void;
   // Unified Save Folder, Two-Way Live Sync & Storage Management
   savedFiles: SavedFileEntry[];
@@ -1697,129 +2050,211 @@ export function createBlankLorebook(partial?: Partial<Lorebook>): Lorebook {
   };
 }
 
-function loadInitialState(): PersistedWorkspaceState {
+function loadInitialState(): InitialWorkspaceBootstrap {
+  purgeBrowserRuntimeCaches();
+
   const nowIso = new Date().toISOString();
   const nowDisplay = formatSafeTimestamp(nowIso);
   const dedicatedCreds = loadPersistedProviderCredentials();
 
   try {
+    // 1. One-time migration from legacy monolithic `tavernsmith_store_v2` into Save Folder files, then delete legacy keys
+    const legacyRaw = safeLocalStorageGet('tavernsmith_store_v2');
+    if (legacyRaw) {
+      try {
+        const legacyParsed = JSON.parse(legacyRaw);
+        const migratedFiles = buildUnifiedSavedFiles(
+          Array.isArray(legacyParsed.characters) ? legacyParsed.characters : [],
+          Array.isArray(legacyParsed.lorebooks) ? legacyParsed.lorebooks : [],
+          Array.isArray(legacyParsed.themes) && legacyParsed.themes.length > 0
+            ? legacyParsed.themes
+            : DEFAULT_CONTEXT_THEMES,
+          extractCustomUserTags(legacyParsed.tags),
+          legacyParsed.settings?.activeThemeId || DEFAULT_SETTINGS.activeThemeId,
+          legacyParsed.settings?.cardSpecVersion || DEFAULT_SETTINGS.cardSpecVersion,
+          nowIso
+        );
+        if (!safeLocalStorageGet(SAVE_FOLDER_FILES_STORAGE_KEY)) {
+          safeLocalStorageSet(
+            SAVE_FOLDER_FILES_STORAGE_KEY,
+            JSON.stringify(migratedFiles)
+          );
+        }
+        if (!safeLocalStorageGet(PREFERENCES_STORAGE_KEY)) {
+          const migratedPrefs: PersistedPreferencesState = {
+            activeCharacterId: legacyParsed.activeCharacterId || '',
+            activeLorebookId: legacyParsed.activeLorebookId || '',
+            aiConfig: legacyParsed.aiConfig || DEFAULT_AI_CONFIG,
+            settings: {
+              ...DEFAULT_SETTINGS,
+              ...(legacyParsed.settings || {}),
+            },
+            saveLogs: Array.isArray(legacyParsed.saveLogs)
+              ? legacyParsed.saveLogs
+              : [],
+            lastSavedAt: legacyParsed.lastSavedAt || nowDisplay,
+          };
+          safeLocalStorageSet(
+            PREFERENCES_STORAGE_KEY,
+            JSON.stringify(migratedPrefs)
+          );
+        }
+      } catch {
+        // Ignore malformed legacy state
+      }
+    }
+
     for (const oldKey of LEGACY_STORAGE_KEYS) {
       safeLocalStorageRemove(oldKey);
     }
 
-    const raw = safeLocalStorageGet(STORAGE_KEY);
-    if (raw) {
-      const parsed = JSON.parse(raw) as Partial<PersistedWorkspaceState>;
-      const characters = Array.isArray(parsed.characters)
-        ? parsed.characters
-        : [];
-      const lorebooks = Array.isArray(parsed.lorebooks) ? parsed.lorebooks : [];
-      const themes =
-        Array.isArray(parsed.themes) && parsed.themes.length > 0
-          ? parsed.themes
-          : DEFAULT_CONTEXT_THEMES;
-      const tags = mergeWithDefaultTags(parsed.tags);
-
-      const settings: AppSettings = {
-        ...DEFAULT_SETTINGS,
-        ...(parsed.settings || {}),
-        activeSaveFolder: UNIFIED_INTERNAL_ROOT,
-        availableSaveFolders: [UNIFIED_INTERNAL_ROOT],
-        mainSidebarOpen:
-          parsed.settings?.mainSidebarOpen !== undefined
-            ? parsed.settings.mainSidebarOpen
-            : true,
-        hideNsfwTags: Boolean(parsed.settings?.hideNsfwTags),
-      };
-      if (!themes.some((t) => t.id === settings.activeThemeId)) {
-        settings.activeThemeId = themes[0].id;
+    // 2. Read saved files from Save Folder storage (`Characters/`, `Lorebooks/`, `_tavernsmith_meta.json`)
+    let persistedFiles: SavedFileEntry[] = [];
+    const rawFiles = safeLocalStorageGet(SAVE_FOLDER_FILES_STORAGE_KEY);
+    if (rawFiles) {
+      const parsedFiles = JSON.parse(rawFiles);
+      if (Array.isArray(parsedFiles)) {
+        persistedFiles = parsedFiles;
       }
-
-      const activeCharacterId =
-        parsed.activeCharacterId &&
-        characters.some((c) => c.id === parsed.activeCharacterId)
-          ? parsed.activeCharacterId
-          : characters[0]?.id || '';
-
-      const activeLorebookId =
-        parsed.activeLorebookId &&
-        lorebooks.some((l) => l.id === parsed.activeLorebookId)
-          ? parsed.activeLorebookId
-          : lorebooks[0]?.id || '';
-
-      const mergedProviderKeys: Record<string, string> = {
-        ...dedicatedCreds.savedProviderKeys,
-        ...(parsed.aiConfig?.savedProviderKeys || {}),
-      };
-      const mergedProviderModels: Record<string, string> = {
-        ...dedicatedCreds.savedProviderModels,
-        ...(parsed.aiConfig?.savedProviderModels || {}),
-      };
-
-      const activePreset = parsed.aiConfig?.preset || DEFAULT_AI_CONFIG.preset;
-      const activeProviderKey = getProviderKeyId(activePreset);
-      const currentApiKey =
-        parsed.aiConfig?.apiKey ||
-        mergedProviderKeys[activeProviderKey] ||
-        mergedProviderKeys[activePreset] ||
-        '';
-      const currentModelName =
-        parsed.aiConfig?.modelName ||
-        mergedProviderModels[activeProviderKey] ||
-        mergedProviderModels[activePreset] ||
-        DEFAULT_AI_CONFIG.modelName;
-
-      if (currentApiKey) {
-        mergedProviderKeys[activeProviderKey] = currentApiKey;
-        mergedProviderKeys[activePreset] = currentApiKey;
-      }
-      if (currentModelName) {
-        mergedProviderModels[activeProviderKey] = currentModelName;
-        mergedProviderModels[activePreset] = currentModelName;
-      }
-
-      const hydratedAiConfig: AIBackendConfig = {
-        ...DEFAULT_AI_CONFIG,
-        ...(parsed.aiConfig || {}),
-        apiKey: currentApiKey,
-        modelName: currentModelName,
-        savedProviderKeys: mergedProviderKeys,
-        savedProviderModels: mergedProviderModels,
-      };
-
-      const unifiedFiles = buildUnifiedSavedFiles(
-        characters,
-        lorebooks,
-        themes,
-        tags,
-        settings.activeThemeId,
-        settings.cardSpecVersion,
-        nowIso
-      );
-
-      return {
-        characters,
-        activeCharacterId,
-        lorebooks,
-        activeLorebookId,
-        themes,
-        tags,
-        aiConfig: hydratedAiConfig,
-        settings,
-        savedFiles: unifiedFiles,
-        saveLogs: Array.isArray(parsed.saveLogs) ? parsed.saveLogs : [],
-        lastSavedAt: parsed.lastSavedAt || nowDisplay,
-      };
     }
+
+    const {
+      characters,
+      lorebooks,
+      themes,
+      tags,
+      activeThemeIdFromMeta,
+    } = reconstructWorkspaceFromSaveFiles(persistedFiles);
+
+    // 3. Read essential user preferences (Appearance mode, active Save Folder, AI Provider keys/models)
+    const rawPrefs = safeLocalStorageGet(PREFERENCES_STORAGE_KEY);
+    const parsedPrefs = rawPrefs
+      ? (JSON.parse(rawPrefs) as Partial<PersistedPreferencesState>)
+      : {};
+
+    const settings: AppSettings = {
+      ...DEFAULT_SETTINGS,
+      ...(parsedPrefs.settings || {}),
+      activeSaveFolder: UNIFIED_INTERNAL_ROOT,
+      availableSaveFolders: [UNIFIED_INTERNAL_ROOT],
+      mainSidebarOpen:
+        parsedPrefs.settings?.mainSidebarOpen !== undefined
+          ? parsedPrefs.settings.mainSidebarOpen
+          : true,
+      hideNsfwTags: Boolean(parsedPrefs.settings?.hideNsfwTags),
+    };
+
+    if (
+      activeThemeIdFromMeta &&
+      themes.some((t) => t.id === activeThemeIdFromMeta)
+    ) {
+      settings.activeThemeId = activeThemeIdFromMeta;
+    } else if (!themes.some((t) => t.id === settings.activeThemeId)) {
+      settings.activeThemeId = themes[0].id;
+    }
+
+    const activeCharacterId =
+      parsedPrefs.activeCharacterId &&
+      characters.some((c) => c.id === parsedPrefs.activeCharacterId)
+        ? parsedPrefs.activeCharacterId
+        : characters[0]?.id || '';
+
+    const activeLorebookId =
+      parsedPrefs.activeLorebookId &&
+      lorebooks.some((l) => l.id === parsedPrefs.activeLorebookId)
+        ? parsedPrefs.activeLorebookId
+        : lorebooks[0]?.id || '';
+
+    const mergedProviderKeys: Record<string, string> = {
+      ...dedicatedCreds.savedProviderKeys,
+      ...(parsedPrefs.aiConfig?.savedProviderKeys || {}),
+    };
+    const mergedProviderModels: Record<string, string> = {
+      ...dedicatedCreds.savedProviderModels,
+      ...(parsedPrefs.aiConfig?.savedProviderModels || {}),
+    };
+
+    const activePreset =
+      parsedPrefs.aiConfig?.preset || DEFAULT_AI_CONFIG.preset;
+    const activeProviderKey = getProviderKeyId(activePreset);
+    const currentApiKey =
+      parsedPrefs.aiConfig?.apiKey ||
+      mergedProviderKeys[activeProviderKey] ||
+      mergedProviderKeys[activePreset] ||
+      '';
+    const rawModelCandidate =
+      parsedPrefs.aiConfig?.modelName ||
+      mergedProviderModels[activeProviderKey] ||
+      mergedProviderModels[activePreset] ||
+      DEFAULT_AI_CONFIG.modelName;
+
+    const currentModelName =
+      activePreset === 'gemini' &&
+      (rawModelCandidate.startsWith('gemini-1.') ||
+        rawModelCandidate.startsWith('gemini-2.') ||
+        rawModelCandidate === 'gemini-pro')
+        ? 'gemini-3.8-flash'
+        : rawModelCandidate;
+
+    const rawUrlCandidate =
+      parsedPrefs.aiConfig?.url || DEFAULT_AI_CONFIG.url;
+    const normalizedUrl =
+      activePreset === 'gemini' ||
+      rawUrlCandidate.includes('generativelanguage.googleapis.com')
+        ? '/api/gemini'
+        : rawUrlCandidate;
+
+    if (currentApiKey) {
+      mergedProviderKeys[activeProviderKey] = currentApiKey;
+      mergedProviderKeys[activePreset] = currentApiKey;
+    }
+    if (currentModelName) {
+      mergedProviderModels[activeProviderKey] = currentModelName;
+      mergedProviderModels[activePreset] = currentModelName;
+    }
+
+    const hydratedAiConfig: AIBackendConfig = {
+      ...DEFAULT_AI_CONFIG,
+      ...(parsedPrefs.aiConfig || {}),
+      url: normalizedUrl,
+      apiKey: currentApiKey,
+      modelName: currentModelName,
+      savedProviderKeys: mergedProviderKeys,
+      savedProviderModels: mergedProviderModels,
+    };
+
+    const unifiedFiles = buildUnifiedSavedFiles(
+      characters,
+      lorebooks,
+      themes,
+      tags,
+      settings.activeThemeId,
+      settings.cardSpecVersion,
+      nowIso
+    );
+
+    return {
+      characters,
+      activeCharacterId,
+      lorebooks,
+      activeLorebookId,
+      themes,
+      tags,
+      aiConfig: hydratedAiConfig,
+      settings,
+      savedFiles: unifiedFiles,
+      saveLogs: Array.isArray(parsedPrefs.saveLogs) ? parsedPrefs.saveLogs : [],
+      lastSavedAt: parsedPrefs.lastSavedAt || nowDisplay,
+    };
   } catch {
-    // Fallback to clean defaults if storage is corrupted or blocked
+    // Fallback to clean defaults if storage is restricted
   }
 
   const initialFiles = buildUnifiedSavedFiles(
     [],
     [],
     DEFAULT_CONTEXT_THEMES,
-    DEFAULT_TAGS,
+    mergeWithDefaultTags([]),
     DEFAULT_SETTINGS.activeThemeId,
     DEFAULT_SETTINGS.cardSpecVersion,
     nowIso
@@ -1832,7 +2267,7 @@ function loadInitialState(): PersistedWorkspaceState {
     lorebooks: [],
     activeLorebookId: '',
     themes: DEFAULT_CONTEXT_THEMES,
-    tags: DEFAULT_TAGS,
+    tags: mergeWithDefaultTags([]),
     aiConfig: {
       ...DEFAULT_AI_CONFIG,
       apiKey:
@@ -2024,23 +2459,22 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
     const referencedTagNames = new Set<string>();
     for (const c of characters) {
       for (const t of c.tags || []) {
-        if (t && t.trim() && !t.includes(':')) referencedTagNames.add(t.trim());
+        if (t && t.trim()) referencedTagNames.add(t.trim());
       }
     }
     for (const lb of lorebooks) {
       for (const t of lb.tags || []) {
-        if (t && t.trim() && !t.includes(':')) referencedTagNames.add(t.trim());
+        if (t && t.trim()) referencedTagNames.add(t.trim());
       }
       for (const entry of lb.entries || []) {
         for (const t of entry.tags || []) {
-          if (t && t.trim() && !t.includes(':'))
-            referencedTagNames.add(t.trim());
+          if (t && t.trim()) referencedTagNames.add(t.trim());
         }
       }
     }
     for (const theme of themes) {
       for (const t of theme.associatedTags || []) {
-        if (t && t.trim() && !t.includes(':')) referencedTagNames.add(t.trim());
+        if (t && t.trim()) referencedTagNames.add(t.trim());
       }
     }
 
@@ -2048,12 +2482,6 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
       const existingLower = new Set(
         prevTags.map((t) => t.name.trim().toLowerCase())
       );
-      for (const pt of prevTags) {
-        for (const sub of pt.subTags || []) {
-          existingLower.add(sub.name.trim().toLowerCase());
-          existingLower.add(`${pt.name}: ${sub.name}`.toLowerCase());
-        }
-      }
       const newlyDiscovered: TagDefinition[] = [];
       let idx = prevTags.length;
 
@@ -2067,10 +2495,10 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
             id: `tag-auto-${Date.now()}-${idx}-${Math.random().toString(36).slice(2, 5)}`,
             name: rawName,
             color,
-            category: 'custom',
-            isNsfw: false,
-            subTags: [],
+            category: 'Custom',
+            isNsfw: lower.includes('nsfw') || lower.includes('18+'),
             aiContextDescription: `Incorporate thematic, tonal, and character elements consistent with "${rawName}".`,
+            aiDescription: `Incorporate thematic, tonal, and character elements consistent with "${rawName}".`,
           });
         }
       });
@@ -2084,19 +2512,10 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
   const ensureTagRegistered = useCallback(
     (
       rawTagName: string,
-      category: TagDefinition['category'] = 'custom'
+      category: TagDefinition['category'] = 'Custom'
     ): TagDefinition | null => {
       const clean = rawTagName.trim();
       if (!clean) return null;
-
-      // If it's a sub-tag reference ("Parent: Sub"), return the parent tag if found
-      if (clean.includes(':')) {
-        const parentPart = clean.split(':')[0].trim().toLowerCase();
-        const parentFound = tags.find(
-          (t) => t.name.trim().toLowerCase() === parentPart
-        );
-        if (parentFound) return parentFound;
-      }
 
       const found = tags.find(
         (t) => t.name.trim().toLowerCase() === clean.toLowerCase()
@@ -2105,16 +2524,19 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
 
       const color =
         AUTO_TAG_PALETTE[tags.length % AUTO_TAG_PALETTE.length] || '#a855f7';
+      const isNsfw =
+        category === 'NSFW & Kinks' ||
+        category === 'Extreme & Hentai Physics' ||
+        clean.toLowerCase().includes('nsfw') ||
+        clean.toLowerCase().includes('18+');
       const newTag: TagDefinition = {
         id: `tag-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
         name: clean,
         color,
         category,
-        isNsfw:
-          category === 'NSFW & Kinks' ||
-          category === 'Extreme & Hentai Physics',
-        subTags: [],
+        isNsfw,
         aiContextDescription: `Incorporate thematic, tonal, and character elements consistent with "${clean}".`,
+        aiDescription: `Incorporate thematic, tonal, and character elements consistent with "${clean}".`,
       };
       setTags((prev) => {
         if (
@@ -2129,39 +2551,101 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
     [tags]
   );
 
-  const addSubTagToTag = useCallback(
-    (parentTagId: string, subTagName: string, subTagAiDescription: string) => {
-      const cleanName = subTagName.trim();
-      if (!cleanName) return;
-      const cleanDesc =
-        subTagAiDescription.trim() ||
-        `Emphasize ${cleanName} details and nuances.`;
+  // Duplicate Character / Lorebook Name Conflict State & Handlers
+  const [nameConflictRequest, setNameConflictRequest] =
+    useState<NameConflictRequest | null>(null);
 
-      setTags((prev) =>
-        prev.map((t) => {
-          if (t.id !== parentTagId) return t;
-          const existingSubs = Array.isArray(t.subTags) ? t.subTags : [];
-          if (
-            existingSubs.some(
-              (s) => s.name.trim().toLowerCase() === cleanName.toLowerCase()
-            )
-          ) {
-            return t;
-          }
-          const newSub: SubTagDefinition = {
-            id: `sub-${Date.now()}-${Math.random().toString(36).slice(2, 5)}`,
-            name: cleanName,
-            aiDescription: cleanDesc,
-          };
-          return {
-            ...t,
-            subTags: [...existingSubs, newSub],
-          };
-        })
-      );
+  const checkAndTriggerNameConflict = useCallback(
+    (
+      kind: 'character' | 'lorebook',
+      itemId: string,
+      candidateName: string,
+      sourceAction: 'create' | 'rename' | 'save' | 'import' = 'rename'
+    ): boolean => {
+      const cleanName = (candidateName || '').trim();
+      if (!cleanName) return false;
+      const lowerCandidate = cleanName.toLowerCase();
+
+      if (kind === 'character') {
+        const hasDuplicate = characters.some(
+          (c) =>
+            c.id !== itemId &&
+            (c.name || '').trim().toLowerCase() === lowerCandidate
+        );
+        if (hasDuplicate) {
+          const allNames = characters.map((c) => c.name || 'Untitled');
+          setNameConflictRequest({
+            kind: 'character',
+            itemId,
+            conflictingName: cleanName,
+            suggestedNames: buildSuggestedUniqueNames(cleanName, allNames),
+            sourceAction,
+          });
+          return true;
+        }
+      } else {
+        const hasDuplicate = lorebooks.some(
+          (l) =>
+            l.id !== itemId &&
+            (l.name || '').trim().toLowerCase() === lowerCandidate
+        );
+        if (hasDuplicate) {
+          const allNames = lorebooks.map((l) => l.name || 'Untitled Lorebook');
+          setNameConflictRequest({
+            kind: 'lorebook',
+            itemId,
+            conflictingName: cleanName,
+            suggestedNames: buildSuggestedUniqueNames(cleanName, allNames),
+            sourceAction,
+          });
+          return true;
+        }
+      }
+      return false;
     },
-    []
+    [characters, lorebooks]
   );
+
+  const resolveNameConflict = useCallback(
+    (newUniqueName: string) => {
+      if (!nameConflictRequest) return;
+      const clean = newUniqueName.trim();
+      if (!clean) return;
+
+      const { kind, itemId } = nameConflictRequest;
+      if (kind === 'character') {
+        setCharacters((prev) =>
+          prev.map((c) =>
+            c.id === itemId
+              ? {
+                  ...c,
+                  name: clean,
+                  modification_date: Math.floor(Date.now() / 1000),
+                }
+              : c
+          )
+        );
+      } else {
+        setLorebooks((prev) =>
+          prev.map((l) =>
+            l.id === itemId
+              ? {
+                  ...l,
+                  name: clean,
+                  modification_date: Math.floor(Date.now() / 1000),
+                }
+              : l
+          )
+        );
+      }
+      setNameConflictRequest(null);
+    },
+    [nameConflictRequest]
+  );
+
+  const dismissNameConflict = useCallback(() => {
+    setNameConflictRequest(null);
+  }, []);
 
   const setCharacter: React.Dispatch<React.SetStateAction<CharacterCardData>> =
     useCallback(
@@ -2171,9 +2655,11 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
             const freshBase = createBlankCharacter();
             const next =
               typeof updater === 'function' ? updater(freshBase) : updater;
+            const autoNsfw = isCharacterNsfw(next, tags);
             const created: CharacterCardData = {
               ...next,
               id: freshBase.id,
+              isNsfw: autoNsfw,
               modification_date: Math.floor(Date.now() / 1000),
             };
             setActiveCharacterId(created.id!);
@@ -2182,15 +2668,17 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
           return prev.map((c) => {
             if (c.id !== character.id) return c;
             const next = typeof updater === 'function' ? updater(c) : updater;
+            const autoNsfw = isCharacterNsfw(next, tags);
             return {
               ...next,
               id: c.id,
+              isNsfw: autoNsfw,
               modification_date: Math.floor(Date.now() / 1000),
             };
           });
         });
       },
-      [character.id]
+      [character.id, tags]
     );
 
   const updateCharacterField = useCallback(
@@ -2198,13 +2686,17 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
       field: K,
       value: CharacterCardData[K]
     ) => {
-      setCharacter((prev) => ({
-        ...prev,
-        [field]: value,
-        modification_date: Math.floor(Date.now() / 1000),
-      }));
+      setCharacter((prev) => {
+        const updated = {
+          ...prev,
+          [field]: value,
+          modification_date: Math.floor(Date.now() / 1000),
+        };
+        updated.isNsfw = isCharacterNsfw(updated, tags);
+        return updated;
+      });
     },
-    [setCharacter]
+    [setCharacter, tags]
   );
 
   const setStatBlock: React.Dispatch<React.SetStateAction<StatBlockConfig>> =
@@ -2235,9 +2727,11 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
             const freshBase = createBlankLorebook();
             const next =
               typeof updater === 'function' ? updater(freshBase) : updater;
+            const autoNsfw = isLorebookNsfw(next, tags);
             const created: Lorebook = {
               ...next,
               id: freshBase.id,
+              isNsfw: autoNsfw,
               modification_date: Math.floor(Date.now() / 1000),
             };
             setActiveLorebookId(created.id!);
@@ -2246,25 +2740,48 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
           return prev.map((l) => {
             if (l.id !== lorebook.id) return l;
             const next = typeof updater === 'function' ? updater(l) : updater;
+            const autoNsfw = isLorebookNsfw(next, tags);
             return {
               ...next,
               id: l.id,
+              isNsfw: autoNsfw,
               modification_date: Math.floor(Date.now() / 1000),
             };
           });
         });
       },
-      [lorebook.id]
+      [lorebook.id, tags]
     );
 
   const createNewCharacter = useCallback(
     (partial?: Partial<CharacterCardData>) => {
       const fresh = createBlankCharacter(partial);
-      setCharacters((prev) => [fresh, ...prev]);
+      fresh.isNsfw = isCharacterNsfw(fresh, tags);
+      setCharacters((prev) => {
+        const conflict = prev.some(
+          (c) =>
+            c.id !== fresh.id &&
+            (c.name || '').trim().toLowerCase() ===
+              (fresh.name || '').trim().toLowerCase()
+        );
+        if (conflict) {
+          const allNames = prev.map((c) => c.name || 'Untitled');
+          window.setTimeout(() => {
+            setNameConflictRequest({
+              kind: 'character',
+              itemId: fresh.id!,
+              conflictingName: fresh.name,
+              suggestedNames: buildSuggestedUniqueNames(fresh.name, allNames),
+              sourceAction: 'create',
+            });
+          }, 0);
+        }
+        return [fresh, ...prev];
+      });
       setActiveCharacterId(fresh.id!);
       return fresh.id!;
     },
-    []
+    [tags]
   );
 
   const deleteCharacter = useCallback(
@@ -2284,12 +2801,36 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
     [activeCharacterId]
   );
 
-  const createNewLorebook = useCallback((partial?: Partial<Lorebook>) => {
-    const fresh = createBlankLorebook(partial);
-    setLorebooks((prev) => [fresh, ...prev]);
-    setActiveLorebookId(fresh.id!);
-    return fresh.id!;
-  }, []);
+  const createNewLorebook = useCallback(
+    (partial?: Partial<Lorebook>) => {
+      const fresh = createBlankLorebook(partial);
+      fresh.isNsfw = isLorebookNsfw(fresh, tags);
+      setLorebooks((prev) => {
+        const conflict = prev.some(
+          (l) =>
+            l.id !== fresh.id &&
+            (l.name || '').trim().toLowerCase() ===
+              (fresh.name || '').trim().toLowerCase()
+        );
+        if (conflict) {
+          const allNames = prev.map((l) => l.name || 'Untitled Lorebook');
+          window.setTimeout(() => {
+            setNameConflictRequest({
+              kind: 'lorebook',
+              itemId: fresh.id!,
+              conflictingName: fresh.name,
+              suggestedNames: buildSuggestedUniqueNames(fresh.name, allNames),
+              sourceAction: 'create',
+            });
+          }, 0);
+        }
+        return [fresh, ...prev];
+      });
+      setActiveLorebookId(fresh.id!);
+      return fresh.id!;
+    },
+    [tags]
+  );
 
   const deleteLorebook = useCallback(
     (id: string) => {
@@ -2331,6 +2872,9 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
 
         try {
           const file: File = await entryHandle.getFile();
+          const fileLastModSec = Math.floor(
+            (file.lastModified || Date.now()) / 1000
+          );
           const updatedIso = new Date(
             file.lastModified || Date.now()
           ).toISOString();
@@ -2360,12 +2904,18 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
 
           const parsedAsset = await importCardFromFile(file);
           if (parsedAsset.kind === 'character') {
+            parsedAsset.character.modification_date =
+              parsedAsset.character.modification_date || fileLastModSec;
             loadedCharacters.push(parsedAsset.character);
             if (parsedAsset.embeddedLorebook) {
+              parsedAsset.embeddedLorebook.modification_date =
+                parsedAsset.embeddedLorebook.modification_date || fileLastModSec;
               loadedLorebooks.push(parsedAsset.embeddedLorebook);
             }
             syncedFileNames.push(`${subfolderPrefix}${entryName}`);
           } else if (parsedAsset.kind === 'lorebook') {
+            parsedAsset.lorebook.modification_date =
+              parsedAsset.lorebook.modification_date || fileLastModSec;
             loadedLorebooks.push(parsedAsset.lorebook);
             syncedFileNames.push(`${subfolderPrefix}${entryName}`);
           }
@@ -2378,6 +2928,102 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
     }
   };
 
+  const writeFilesToNativeDirectory = useCallback(
+    async (
+      rootHandle: any,
+      charsToWrite: CharacterCardData[],
+      booksToWrite: Lorebook[],
+      fallbackBook: Lorebook,
+      themesToWrite: ContextTheme[],
+      tagsToWrite: TagDefinition[],
+      activeThemeIdToWrite: string,
+      specVersion: 'v2' | 'v3',
+      nowIso: string
+    ) => {
+      if (!rootHandle) return;
+      try {
+        const charsDirHandle = await rootHandle.getDirectoryHandle(
+          'Characters',
+          { create: true }
+        );
+        const loreDirHandle = await rootHandle.getDirectoryHandle(
+          'Lorebooks',
+          { create: true }
+        );
+
+        for (const c of charsToWrite) {
+          const cFileName = `${sanitizeFilename(c.name)}.json`;
+          const cContent = JSON.stringify(
+            serializeCharacterCard(
+              c,
+              specVersion,
+              c.character_book || fallbackBook
+            ),
+            null,
+            2
+          );
+          const cHandle = await charsDirHandle.getFileHandle(cFileName, {
+            create: true,
+          });
+          const cWritable = await cHandle.createWritable();
+          await cWritable.write(cContent);
+          await cWritable.close();
+        }
+
+        for (const lb of booksToWrite) {
+          const lFileName = `${sanitizeFilename(lb.name)}.json`;
+          const lContent = JSON.stringify(
+            {
+              id: lb.id,
+              name: lb.name,
+              description: lb.description,
+              scan_depth: lb.scan_depth,
+              token_budget: lb.token_budget,
+              recursive_scanning: lb.recursive_scanning,
+              modification_date: lb.modification_date,
+              isNsfw: Boolean(lb.isNsfw),
+              entries: lb.entries,
+              tags: lb.tags || [],
+            },
+            null,
+            2
+          );
+          const lHandle = await loreDirHandle.getFileHandle(lFileName, {
+            create: true,
+          });
+          const lWritable = await lHandle.createWritable();
+          await lWritable.write(lContent);
+          await lWritable.close();
+        }
+
+        const metaPayload: TavernSmithMetaPayload = {
+          schema: 'tavernsmith_meta_v1',
+          updatedAt: nowIso,
+          activeThemeId: activeThemeIdToWrite,
+          contextThemes: themesToWrite,
+          tags: extractCustomUserTags(tagsToWrite),
+        };
+        const metaSerialized = JSON.stringify(metaPayload, null, 2);
+        const mHandle = await rootHandle.getFileHandle(META_FILENAME, {
+          create: true,
+        });
+        const mWritable = await mHandle.createWritable();
+        await mWritable.write(metaSerialized);
+        await mWritable.close();
+      } catch {
+        // Ignore transient native permission loss
+      }
+    },
+    []
+  );
+
+  /**
+   * Scans the Save Folder and applies Smart Cache-to-Folder Sync (Newest Wins):
+   * - Compares `updatedAt` / `modification_date` of any cached item against the stored file in the Save Folder
+   *   ONLY if they share the exact same name.
+   * - If the cached version is newer than the folder file, overwrites the stored folder file with the newer cached version
+   *   and immediately clears the browser cache copy (`SAVE_FOLDER_FILES_STORAGE_KEY`) so old cached items never resurface.
+   */
   const scanAndLoadSaveFolder = useCallback(
     async (options?: {
       dirHandleOverride?: any;
@@ -2395,6 +3041,48 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
       const loadedLorebooks: Lorebook[] = [];
       let loadedMeta: TavernSmithMetaPayload | null = null;
       const syncedFileNames: string[] = [];
+
+      // Read any temporary browser cached items so we can compare timestamps (Newest Wins) when syncing with a Save Folder
+      let cachedCharacters: CharacterCardData[] = [];
+      let cachedLorebooks: Lorebook[] = [];
+      let cachedMeta: TavernSmithMetaPayload | null = null;
+      const rawCache = safeLocalStorageGet(SAVE_FOLDER_FILES_STORAGE_KEY);
+      if (rawCache) {
+        try {
+          const parsedCacheEntries = JSON.parse(rawCache) as SavedFileEntry[];
+          if (Array.isArray(parsedCacheEntries)) {
+            for (const entry of parsedCacheEntries) {
+              if (entry.kind === 'meta' || entry.fileName === META_FILENAME) {
+                cachedMeta = JSON.parse(entry.content) as TavernSmithMetaPayload;
+              } else {
+                const asset = parseImportedJsonString(
+                  entry.content,
+                  undefined,
+                  entry.fileName
+                );
+                const entrySec = entry.updatedAt
+                  ? Math.floor(new Date(entry.updatedAt).getTime() / 1000)
+                  : 0;
+                if (asset.kind === 'character') {
+                  asset.character.modification_date = Math.max(
+                    asset.character.modification_date || 0,
+                    entrySec
+                  );
+                  cachedCharacters.push(asset.character);
+                } else if (asset.kind === 'lorebook') {
+                  asset.lorebook.modification_date = Math.max(
+                    asset.lorebook.modification_date || 0,
+                    entrySec
+                  );
+                  cachedLorebooks.push(asset.lorebook);
+                }
+              }
+            }
+          }
+        } catch {
+          // Ignore malformed cache
+        }
+      }
 
       try {
         if (rootHandle && typeof rootHandle.entries === 'function') {
@@ -2462,6 +3150,85 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
                 }
               );
             }
+
+            // SMART CACHE-TO-FOLDER SYNC (NEWEST WINS):
+            // Compare cached items against stored folder files ONLY if they share the exact same name.
+            // If cached version is newer, overwrite folder file with newer cached version, then clear browser cache copy.
+            const newerCachedCharsToFlush: CharacterCardData[] = [];
+            for (const cachedChar of cachedCharacters) {
+              const cachedNameLower = (cachedChar.name || '').trim().toLowerCase();
+              const folderIdx = loadedCharacters.findIndex(
+                (fc) => (fc.name || '').trim().toLowerCase() === cachedNameLower
+              );
+              if (folderIdx !== -1) {
+                const folderChar = loadedCharacters[folderIdx];
+                const cachedTime = cachedChar.modification_date || 0;
+                const folderTime = folderChar.modification_date || 0;
+                if (cachedTime > folderTime) {
+                  loadedCharacters[folderIdx] = {
+                    ...folderChar,
+                    ...cachedChar,
+                    id: folderChar.id || cachedChar.id,
+                  };
+                  newerCachedCharsToFlush.push(loadedCharacters[folderIdx]);
+                }
+              }
+            }
+
+            const newerCachedBooksToFlush: Lorebook[] = [];
+            for (const cachedBook of cachedLorebooks) {
+              const cachedNameLower = (cachedBook.name || '').trim().toLowerCase();
+              const folderIdx = loadedLorebooks.findIndex(
+                (fb) => (fb.name || '').trim().toLowerCase() === cachedNameLower
+              );
+              if (folderIdx !== -1) {
+                const folderBook = loadedLorebooks[folderIdx];
+                const cachedTime = cachedBook.modification_date || 0;
+                const folderTime = folderBook.modification_date || 0;
+                if (cachedTime > folderTime) {
+                  loadedLorebooks[folderIdx] = {
+                    ...folderBook,
+                    ...cachedBook,
+                    id: folderBook.id || cachedBook.id,
+                  };
+                  newerCachedBooksToFlush.push(loadedLorebooks[folderIdx]);
+                }
+              }
+            }
+
+            if (loadedMeta && cachedMeta) {
+              const folderMetaTime = new Date(
+                (loadedMeta as TavernSmithMetaPayload).updatedAt || 0
+              ).getTime();
+              const cachedMetaTime = new Date(cachedMeta.updatedAt || 0).getTime();
+              if (cachedMetaTime > folderMetaTime) {
+                loadedMeta = cachedMeta;
+              }
+            } else if (!loadedMeta && cachedMeta) {
+              loadedMeta = cachedMeta;
+            }
+
+            if (
+              newerCachedCharsToFlush.length > 0 ||
+              newerCachedBooksToFlush.length > 0
+            ) {
+              const nowIso = new Date().toISOString();
+              const snap = latestWorkspaceRef.current;
+              await writeFilesToNativeDirectory(
+                rootHandle,
+                newerCachedCharsToFlush,
+                newerCachedBooksToFlush,
+                snap.lorebook,
+                snap.themes,
+                snap.tags,
+                snap.settings.activeThemeId,
+                snap.settings.cardSpecVersion,
+                nowIso
+              );
+            }
+
+            // Immediately clear the browser cache copy once synced with the Save Folder so stale cached items never resurface
+            safeLocalStorageRemove(SAVE_FOLDER_FILES_STORAGE_KEY);
           }
         } else {
           for (const entry of savedFilesRef.current) {
@@ -2515,6 +3282,10 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
           }
         }
 
+        let mergedTagsList = mergeWithDefaultTags(
+          extractCustomUserTags(latestWorkspaceRef.current.tags)
+        );
+
         if (loadedMeta) {
           const metaSnapshot: TavernSmithMetaPayload = loadedMeta;
           if (metaSnapshot.contextThemes.length > 0) {
@@ -2540,22 +3311,20 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
 
           if (metaSnapshot.tags.length > 0) {
             setTags((prevTags) => {
-              const mapByName = new Map<string, TagDefinition>();
-              for (const t of prevTags) {
-                mapByName.set(t.name.trim().toLowerCase(), t);
-              }
-              for (const incoming of metaSnapshot.tags) {
-                if (incoming && incoming.name) {
-                  const key = incoming.name.trim().toLowerCase();
-                  const existing = mapByName.get(key);
-                  mapByName.set(key, {
-                    ...existing,
-                    ...incoming,
-                    id: existing?.id || incoming.id || `tag-${Date.now()}`,
-                  });
-                }
-              }
-              return mergeWithDefaultTags(Array.from(mapByName.values()));
+              const customCurrent = extractCustomUserTags(prevTags);
+              const customIncoming = extractCustomUserTags(metaSnapshot.tags);
+              mergedTagsList = mergeWithDefaultTags([
+                ...customCurrent,
+                ...customIncoming,
+              ]);
+              return mergedTagsList;
+            });
+          } else {
+            setTags((prevTags) => {
+              mergedTagsList = mergeWithDefaultTags(
+                extractCustomUserTags(prevTags)
+              );
+              return mergedTagsList;
             });
           }
         }
@@ -2570,13 +3339,20 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
                   incoming.name.trim().toLowerCase()
               );
               if (idx !== -1) {
-                nextList[idx] = {
-                  ...nextList[idx],
-                  ...incoming,
-                  id: nextList[idx].id,
-                  avatar: incoming.avatar || nextList[idx].avatar,
+                const existing = nextList[idx];
+                const incomingMod = incoming.modification_date || 0;
+                const existingMod = existing.modification_date || 0;
+                const winner = incomingMod >= existingMod ? incoming : existing;
+                const merged: CharacterCardData = {
+                  ...existing,
+                  ...winner,
+                  id: existing.id,
+                  avatar: winner.avatar || existing.avatar,
                 };
+                merged.isNsfw = isCharacterNsfw(merged, mergedTagsList);
+                nextList[idx] = merged;
               } else {
+                incoming.isNsfw = isCharacterNsfw(incoming, mergedTagsList);
                 nextList.unshift(incoming);
               }
             }
@@ -2594,12 +3370,19 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
                   incoming.name.trim().toLowerCase()
               );
               if (idx !== -1) {
-                nextList[idx] = {
-                  ...nextList[idx],
-                  ...incoming,
-                  id: nextList[idx].id,
+                const existing = nextList[idx];
+                const incomingMod = incoming.modification_date || 0;
+                const existingMod = existing.modification_date || 0;
+                const winner = incomingMod >= existingMod ? incoming : existing;
+                const merged: Lorebook = {
+                  ...existing,
+                  ...winner,
+                  id: existing.id,
                 };
+                merged.isNsfw = isLorebookNsfw(merged, mergedTagsList);
+                nextList[idx] = merged;
               } else {
+                incoming.isNsfw = isLorebookNsfw(incoming, mergedTagsList);
                 nextList.unshift(incoming);
               }
             }
@@ -2634,7 +3417,7 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
         if (loadedMeta) {
           const m: TavernSmithMetaPayload = loadedMeta;
           summaryParts.push(
-            `${m.tags.length} tags & ${m.contextThemes.length} themes (${META_FILENAME})`
+            `${m.tags.length} custom tags & ${m.contextThemes.length} themes (${META_FILENAME})`
           );
         }
 
@@ -2654,14 +3437,20 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
         setIsSyncingFolder(false);
       }
     },
-    []
+    [writeFilesToNativeDirectory]
   );
 
-  // On App Launch: Safely check IndexedDB for persisted Local PC FileSystemDirectoryHandle
+  // On App Launch: Purge runtime caches, re-read Save Folder files (`Characters/`, `Lorebooks/`, `_tavernsmith_meta.json`),
+  // and check IndexedDB for a linked Local PC FileSystemDirectoryHandle.
   useEffect(() => {
     let cancelled = false;
+    purgeBrowserRuntimeCaches();
+
     (async () => {
       try {
+        await scanAndLoadSaveFolder({ silent: true });
+        if (cancelled) return;
+
         const storedRecord = await loadDirectoryHandleFromIndexedDB();
         if (cancelled) return;
 
@@ -2866,6 +3655,7 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
           file.fileName
         );
         if (parsed.kind === 'character') {
+          parsed.character.isNsfw = isCharacterNsfw(parsed.character, tags);
           const match = characters.find(
             (c) =>
               c.name.trim().toLowerCase() ===
@@ -2883,6 +3673,7 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
             message: `Loaded character "${parsed.character.name}" into Character Workbench.`,
           };
         } else if (parsed.kind === 'lorebook') {
+          parsed.lorebook.isNsfw = isLorebookNsfw(parsed.lorebook, tags);
           const match = lorebooks.find(
             (l) =>
               l.name.trim().toLowerCase() ===
@@ -2905,7 +3696,7 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
         return { ok: false, message: `Could not parse ${file.fileName}.` };
       }
     },
-    [characters, lorebooks]
+    [characters, lorebooks, tags]
   );
 
   const deleteSavedFile = useCallback(
@@ -3007,11 +3798,89 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
 
   const saveNow = useCallback(
     (mode: 'manual' | 'autosave' = 'manual') => {
+      // Check for duplicate Character or Lorebook names on manual save
+      if (mode === 'manual') {
+        const seenCharNames = new Map<string, string>();
+        for (const c of characters) {
+          const lower = (c.name || '').trim().toLowerCase();
+          if (!lower) continue;
+          const prevId = seenCharNames.get(lower);
+          if (prevId && prevId !== c.id) {
+            setNameConflictRequest({
+              kind: 'character',
+              itemId: c.id!,
+              conflictingName: c.name,
+              suggestedNames: buildSuggestedUniqueNames(
+                c.name,
+                characters.map((ch) => ch.name)
+              ),
+              sourceAction: 'save',
+            });
+            return;
+          }
+          seenCharNames.set(lower, c.id!);
+        }
+
+        const seenBookNames = new Map<string, string>();
+        for (const l of lorebooks) {
+          const lower = (l.name || '').trim().toLowerCase();
+          if (!lower) continue;
+          const prevId = seenBookNames.get(lower);
+          if (prevId && prevId !== l.id) {
+            setNameConflictRequest({
+              kind: 'lorebook',
+              itemId: l.id!,
+              conflictingName: l.name,
+              suggestedNames: buildSuggestedUniqueNames(
+                l.name,
+                lorebooks.map((lb) => lb.name)
+              ),
+              sourceAction: 'save',
+            });
+            return;
+          }
+          seenBookNames.set(lower, l.id!);
+        }
+      }
+
       const nowIso = new Date().toISOString();
       const displayTime = formatSafeTimestamp(nowIso);
       const rootFolderDisplay = nativeDirectoryName
         ? `/${nativeDirectoryName}/`
         : UNIFIED_INTERNAL_ROOT;
+
+      const latestFiles = buildUnifiedSavedFiles(
+        characters,
+        lorebooks,
+        themes,
+        tags,
+        settings.activeThemeId,
+        settings.cardSpecVersion,
+        nowIso
+      );
+      savedFilesRef.current = latestFiles;
+
+      // Only persist in browser fallback storage when NO Local PC Save Folder is connected
+      if (nativeDirHandleRef.current) {
+        void writeFilesToNativeDirectory(
+          nativeDirHandleRef.current,
+          characters,
+          lorebooks,
+          lorebook,
+          themes,
+          tags,
+          settings.activeThemeId,
+          settings.cardSpecVersion,
+          nowIso
+        ).then(() => {
+          safeLocalStorageRemove(SAVE_FOLDER_FILES_STORAGE_KEY);
+        });
+      } else {
+        safeLocalStorageSet(
+          SAVE_FOLDER_FILES_STORAGE_KEY,
+          JSON.stringify(latestFiles)
+        );
+      }
 
       const filesWrittenList: string[] = [];
       for (const c of characters) {
@@ -3031,81 +3900,25 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
         nativeSynced: Boolean(nativeDirHandleRef.current),
       };
 
-      setSaveLogs((prev) => [newLog, ...prev.slice(0, 19)]);
+      setSaveLogs((prev) => {
+        const updatedLogs = [newLog, ...prev.slice(0, 19)];
+        const prefsPayload: PersistedPreferencesState = {
+          activeCharacterId,
+          activeLorebookId,
+          aiConfig,
+          settings,
+          saveLogs: updatedLogs,
+          lastSavedAt: displayTime,
+        };
+        safeLocalStorageSet(
+          PREFERENCES_STORAGE_KEY,
+          JSON.stringify(prefsPayload)
+        );
+        return updatedLogs;
+      });
 
-      if (nativeDirHandleRef.current) {
-        const rootHandle = nativeDirHandleRef.current;
-        (async () => {
-          try {
-            const charsDirHandle = await rootHandle.getDirectoryHandle(
-              'Characters',
-              { create: true }
-            );
-            const loreDirHandle = await rootHandle.getDirectoryHandle(
-              'Lorebooks',
-              { create: true }
-            );
-
-            for (const c of characters) {
-              const cFileName = `${sanitizeFilename(c.name)}.json`;
-              const cContent = JSON.stringify(
-                serializeCharacterCard(
-                  c,
-                  settings.cardSpecVersion,
-                  c.character_book || lorebook
-                ),
-                null,
-                2
-              );
-              const cHandle = await charsDirHandle.getFileHandle(cFileName, {
-                create: true,
-              });
-              const cWritable = await cHandle.createWritable();
-              await cWritable.write(cContent);
-              await cWritable.close();
-            }
-
-            for (const lb of lorebooks) {
-              const lFileName = `${sanitizeFilename(lb.name)}.json`;
-              const lContent = JSON.stringify(
-                {
-                  name: lb.name,
-                  description: lb.description,
-                  scan_depth: lb.scan_depth,
-                  token_budget: lb.token_budget,
-                  recursive_scanning: lb.recursive_scanning,
-                  entries: lb.entries,
-                  tags: lb.tags || [],
-                },
-                null,
-                2
-              );
-              const lHandle = await loreDirHandle.getFileHandle(lFileName, {
-                create: true,
-              });
-              const lWritable = await lHandle.createWritable();
-              await lWritable.write(lContent);
-              await lWritable.close();
-            }
-
-            const metaPayload: TavernSmithMetaPayload = {
-              schema: 'tavernsmith_meta_v1',
-              updatedAt: nowIso,
-              activeThemeId: settings.activeThemeId,
-              contextThemes: themes,
-              tags,
-            };
-            const metaSerialized = JSON.stringify(metaPayload, null, 2);
-            const mHandle = await rootHandle.getFileHandle(META_FILENAME, {
-              create: true,
-            });
-            const mWritable = await mHandle.createWritable();
-            await mWritable.write(metaSerialized);
-            await mWritable.close();
-          } catch {
-            // Ignore transient native permission loss
-          }
-        })();
+      if (mode === 'manual') {
+        purgeBrowserRuntimeCaches();
       }
 
       setLastSavedAt(displayTime);
@@ -3113,46 +3926,214 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
     },
     [
       characters,
-      lorebooks,
-      lorebook,
-      themes,
-      tags,
-      nativeDirectoryName,
-      settings.activeThemeId,
-      settings.cardSpecVersion,
-    ]
-  );
-
-  // Sync full state snapshot to localStorage whenever state updates
-  useEffect(() => {
-    const payload: PersistedWorkspaceState = {
-      characters,
       activeCharacterId,
       lorebooks,
       activeLorebookId,
+      lorebook,
       themes,
       tags,
       aiConfig,
       settings,
-      savedFiles,
+      nativeDirectoryName,
+      writeFilesToNativeDirectory,
+    ]
+  );
+
+  const saveAndSyncNow = useCallback(async (): Promise<{
+    ok: boolean;
+    message: string;
+  }> => {
+    saveNow('manual');
+    if (nativeDirHandleRef.current) {
+      await scanAndLoadSaveFolder({
+        dirHandleOverride: nativeDirHandleRef.current,
+        silent: true,
+      });
+      safeLocalStorageRemove(SAVE_FOLDER_FILES_STORAGE_KEY);
+    }
+    purgeBrowserRuntimeCaches();
+    setIsDirty(false);
+    return {
+      ok: true,
+      message: nativeDirectoryName
+        ? `Saved & synced to Local PC Folder (${nativeDirectoryName}/) and cleared temporary browser cache.`
+        : `Saved & synced to Save Folder (${UNIFIED_INTERNAL_ROOT}) and cleared temporary runtime cache.`,
+    };
+  }, [saveNow, scanAndLoadSaveFolder, nativeDirectoryName]);
+
+  // Only persist user data in localStorage fallback when NO Local PC Save Folder is configured,
+  // and NEVER cache built-in DEFAULT_TAGS or UI code in localStorage.
+  useEffect(() => {
+    if (!nativeDirHandleRef.current) {
+      safeLocalStorageSet(
+        SAVE_FOLDER_FILES_STORAGE_KEY,
+        JSON.stringify(savedFiles)
+      );
+    } else {
+      safeLocalStorageRemove(SAVE_FOLDER_FILES_STORAGE_KEY);
+    }
+    const prefsPayload: PersistedPreferencesState = {
+      activeCharacterId,
+      activeLorebookId,
+      aiConfig,
+      settings,
       saveLogs,
       lastSavedAt,
     };
-
-    safeLocalStorageSet(STORAGE_KEY, JSON.stringify(payload));
+    safeLocalStorageSet(PREFERENCES_STORAGE_KEY, JSON.stringify(prefsPayload));
   }, [
-    characters,
     activeCharacterId,
-    lorebooks,
     activeLorebookId,
-    themes,
-    tags,
     aiConfig,
     settings,
     savedFiles,
     saveLogs,
     lastSavedAt,
   ]);
+
+  // Keep a live ref of all workspace state including `isDirty` for `beforeunload` / `pagehide`
+  const latestWorkspaceRef = useRef({
+    characters,
+    activeCharacterId,
+    lorebooks,
+    activeLorebookId,
+    lorebook,
+    themes,
+    tags,
+    aiConfig,
+    settings,
+    saveLogs,
+    lastSavedAt,
+    isDirty,
+  });
+
+  useEffect(() => {
+    latestWorkspaceRef.current = {
+      characters,
+      activeCharacterId,
+      lorebooks,
+      activeLorebookId,
+      lorebook,
+      themes,
+      tags,
+      aiConfig,
+      settings,
+      saveLogs,
+      lastSavedAt,
+      isDirty,
+    };
+  }, [
+    characters,
+    activeCharacterId,
+    lorebooks,
+    activeLorebookId,
+    lorebook,
+    themes,
+    tags,
+    aiConfig,
+    settings,
+    saveLogs,
+    lastSavedAt,
+    isDirty,
+  ]);
+
+  // Attach lifecycle listeners for `beforeunload`, `pagehide`, and `visibilitychange`:
+  // - Prompts the user before closing the tab/window if unsaved changes exist (`isDirty`)
+  // - Flushes data to Save Folder and wipes temporary browser cache
+  useEffect(() => {
+    const flushForceSaveOnClose = (purgeCache: boolean) => {
+      try {
+        const snap = latestWorkspaceRef.current;
+        const nowIso = new Date().toISOString();
+        const displayTime = formatSafeTimestamp(nowIso);
+
+        const latestFiles = buildUnifiedSavedFiles(
+          snap.characters,
+          snap.lorebooks,
+          snap.themes,
+          snap.tags,
+          snap.settings.activeThemeId,
+          snap.settings.cardSpecVersion,
+          nowIso
+        );
+        savedFilesRef.current = latestFiles;
+
+        if (nativeDirHandleRef.current) {
+          void writeFilesToNativeDirectory(
+            nativeDirHandleRef.current,
+            snap.characters,
+            snap.lorebooks,
+            snap.lorebook,
+            snap.themes,
+            snap.tags,
+            snap.settings.activeThemeId,
+            snap.settings.cardSpecVersion,
+            nowIso
+          );
+          safeLocalStorageRemove(SAVE_FOLDER_FILES_STORAGE_KEY);
+        } else {
+          safeLocalStorageSet(
+            SAVE_FOLDER_FILES_STORAGE_KEY,
+            JSON.stringify(latestFiles)
+          );
+        }
+
+        const prefsPayload: PersistedPreferencesState = {
+          activeCharacterId: snap.activeCharacterId,
+          activeLorebookId: snap.activeLorebookId,
+          aiConfig: snap.aiConfig,
+          settings: snap.settings,
+          saveLogs: snap.saveLogs,
+          lastSavedAt: displayTime,
+        };
+        safeLocalStorageSet(
+          PREFERENCES_STORAGE_KEY,
+          JSON.stringify(prefsPayload)
+        );
+        savePersistedProviderCredentials(
+          snap.aiConfig.savedProviderKeys || {},
+          snap.aiConfig.savedProviderModels || {}
+        );
+      } catch {
+        // Ignore storage errors during unload
+      }
+
+      if (purgeCache) {
+        purgeBrowserRuntimeCaches();
+      }
+    };
+
+    const handleBeforeUnload = (e: BeforeUnloadEvent) => {
+      const snap = latestWorkspaceRef.current;
+      flushForceSaveOnClose(true);
+      if (snap.isDirty) {
+        e.preventDefault();
+        e.returnValue =
+          'You have unsaved changes in TavernSmith. Save & Sync before exiting?';
+        return e.returnValue;
+      }
+    };
+
+    const handlePageHide = () => {
+      flushForceSaveOnClose(true);
+    };
+
+    const handleVisibilityChange = () => {
+      if (typeof document !== 'undefined' && document.visibilityState === 'hidden') {
+        flushForceSaveOnClose(false);
+      }
+    };
+
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    window.addEventListener('pagehide', handlePageHide);
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+
+    return () => {
+      window.removeEventListener('beforeunload', handleBeforeUnload);
+      window.removeEventListener('pagehide', handlePageHide);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
+  }, [writeFilesToNativeDirectory]);
 
   useEffect(() => {
     if (!settings.autoSaveEnabled) return;
@@ -3219,17 +4200,66 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
 
         const result = await importCardFromFile(file);
         if (result.kind === 'character') {
-          setCharacters((prev) => [result.character, ...prev]);
+          result.character.isNsfw = isCharacterNsfw(result.character, tags);
+          setCharacters((prev) => {
+            const conflict = prev.some(
+              (c) =>
+                c.id !== result.character.id &&
+                (c.name || '').trim().toLowerCase() ===
+                  (result.character.name || '').trim().toLowerCase()
+            );
+            if (conflict) {
+              const allNames = prev.map((c) => c.name || 'Untitled');
+              window.setTimeout(() => {
+                setNameConflictRequest({
+                  kind: 'character',
+                  itemId: result.character.id!,
+                  conflictingName: result.character.name,
+                  suggestedNames: buildSuggestedUniqueNames(
+                    result.character.name,
+                    allNames
+                  ),
+                  sourceAction: 'import',
+                });
+              }, 0);
+            }
+            return [result.character, ...prev];
+          });
           lastCharId = result.character.id!;
           importedChars++;
           if (result.embeddedLorebook) {
             const book = result.embeddedLorebook;
+            book.isNsfw = isLorebookNsfw(book, tags);
             setLorebooks((prev) => [book, ...prev]);
             lastBookId = book.id!;
             importedBooks++;
           }
         } else if (result.kind === 'lorebook') {
-          setLorebooks((prev) => [result.lorebook, ...prev]);
+          result.lorebook.isNsfw = isLorebookNsfw(result.lorebook, tags);
+          setLorebooks((prev) => {
+            const conflict = prev.some(
+              (l) =>
+                l.id !== result.lorebook.id &&
+                (l.name || '').trim().toLowerCase() ===
+                  (result.lorebook.name || '').trim().toLowerCase()
+            );
+            if (conflict) {
+              const allNames = prev.map((l) => l.name || 'Untitled Lorebook');
+              window.setTimeout(() => {
+                setNameConflictRequest({
+                  kind: 'lorebook',
+                  itemId: result.lorebook.id!,
+                  conflictingName: result.lorebook.name,
+                  suggestedNames: buildSuggestedUniqueNames(
+                    result.lorebook.name,
+                    allNames
+                  ),
+                  sourceAction: 'import',
+                });
+              }, 0);
+            }
+            return [result.lorebook, ...prev];
+          });
           lastBookId = result.lorebook.id!;
           importedBooks++;
         }
@@ -3261,7 +4291,7 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
             : 'Restored metadata or no new card files found.',
       };
     },
-    []
+    [tags]
   );
 
   const updateSettings = useCallback((partial: Partial<AppSettings>) => {
@@ -3286,10 +4316,12 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
   }, []);
 
   const resetWorkspaceToDefaults = useCallback(() => {
-    safeLocalStorageRemove(STORAGE_KEY);
+    safeLocalStorageRemove(PREFERENCES_STORAGE_KEY);
+    safeLocalStorageRemove(SAVE_FOLDER_FILES_STORAGE_KEY);
     for (const oldKey of LEGACY_STORAGE_KEYS) {
       safeLocalStorageRemove(oldKey);
     }
+    purgeBrowserRuntimeCaches();
     void clearDirectoryHandleFromIndexedDB();
     nativeDirHandleRef.current = null;
     pendingReconnectRecordRef.current = null;
@@ -3300,7 +4332,7 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
     setLorebooks([]);
     setActiveLorebookId('');
     setThemes(DEFAULT_CONTEXT_THEMES);
-    setTags(DEFAULT_TAGS);
+    setTags(mergeWithDefaultTags([]));
     // Preserve saved provider API keys across workspace resets so users never lose keys!
     const creds = loadPersistedProviderCredentials();
     setAiConfigState({
@@ -3326,8 +4358,9 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
 
   const storageBytesUsed = useMemo(() => {
     try {
-      const raw = safeLocalStorageGet(STORAGE_KEY) || '';
-      const localBytes = new Blob([raw]).size;
+      const rawPrefs = safeLocalStorageGet(PREFERENCES_STORAGE_KEY) || '';
+      const rawFiles = safeLocalStorageGet(SAVE_FOLDER_FILES_STORAGE_KEY) || '';
+      const localBytes = new Blob([rawPrefs, rawFiles]).size;
       const filesBytes = savedFiles.reduce((acc, f) => acc + f.sizeBytes, 0);
       return Math.max(localBytes, filesBytes);
     } catch {
@@ -3377,7 +4410,10 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
       tags,
       setTags,
       ensureTagRegistered,
-      addSubTagToTag,
+      nameConflictRequest,
+      checkAndTriggerNameConflict,
+      resolveNameConflict,
+      dismissNameConflict,
       aiConfig,
       setAiConfig,
       switchAIPreset,
@@ -3388,6 +4424,7 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
       lastSavedAt,
       isDirty,
       saveNow,
+      saveAndSyncNow,
       resetWorkspaceToDefaults,
       savedFiles,
       saveLogs,
@@ -3431,7 +4468,10 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
       setActiveThemeId,
       tags,
       ensureTagRegistered,
-      addSubTagToTag,
+      nameConflictRequest,
+      checkAndTriggerNameConflict,
+      resolveNameConflict,
+      dismissNameConflict,
       aiConfig,
       setAiConfig,
       switchAIPreset,
@@ -3441,6 +4481,7 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
       lastSavedAt,
       isDirty,
       saveNow,
+      saveAndSyncNow,
       resetWorkspaceToDefaults,
       savedFiles,
       saveLogs,

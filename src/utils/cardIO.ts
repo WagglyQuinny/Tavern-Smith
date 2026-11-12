@@ -425,6 +425,7 @@ export function serializeCharacterCard(
   const cleanBook = character.character_book || fallbackLorebook;
 
   const cleanData: CharacterCardData = {
+    id: character.id,
     name: character.name || 'Untitled Character',
     description: character.description || '',
     personality: character.personality || '',
@@ -441,14 +442,18 @@ export function serializeCharacterCard(
     creator: character.creator || 'TavernSmith Creator',
     character_version: character.character_version || '1.0.0',
     character_book: cleanBook,
+    avatar: character.avatar,
     nickname: character.nickname || '',
     creation_date: character.creation_date || Math.floor(Date.now() / 1000),
-    modification_date: Math.floor(Date.now() / 1000),
+    modification_date:
+      character.modification_date || Math.floor(Date.now() / 1000),
+    isNsfw: Boolean(character.isNsfw || character.extensions?.isNsfw),
     extensions: {
       talkativeness: character.extensions?.talkativeness || '0.5',
       fav: Boolean(character.extensions?.fav),
       world: cleanBook?.name || character.extensions?.world || '',
       statBlock: character.extensions?.statBlock || DEFAULT_STAT_BLOCK,
+      isNsfw: Boolean(character.isNsfw || character.extensions?.isNsfw),
     },
   };
 
@@ -560,6 +565,7 @@ function normalizeLorebookObject(
   }
 
   return createBlankLorebook({
+    id: typeof rawBook.id === 'string' && rawBook.id ? rawBook.id : undefined,
     name: String(rawBook.name || fallbackName),
     description: String(rawBook.description || 'Imported SillyTavern Lorebook'),
     scan_depth: Number(rawBook.scan_depth ?? rawBook.scanDepth ?? 4),
@@ -567,6 +573,11 @@ function normalizeLorebookObject(
     recursive_scanning: Boolean(
       rawBook.recursive_scanning ?? rawBook.recursiveScanning ?? true
     ),
+    tags: Array.isArray(rawBook.tags) ? rawBook.tags.map(String) : [],
+    modification_date: Number(
+      rawBook.modification_date ?? Math.floor(Date.now() / 1000)
+    ),
+    isNsfw: Boolean(rawBook.isNsfw),
     entries: entriesList,
   });
 }
@@ -609,7 +620,16 @@ export function parseImportedJsonString(
     );
   }
 
+  const importedIsNsfw = Boolean(
+    inner.isNsfw ||
+      parsed.isNsfw ||
+      (inner.extensions &&
+        typeof inner.extensions === 'object' &&
+        (inner.extensions as Record<string, unknown>).isNsfw)
+  );
+
   const character = createBlankCharacter({
+    id: typeof inner.id === 'string' && inner.id ? inner.id : undefined,
     name: String(inner.name || parsed.name || 'Imported Character'),
     nickname: String(inner.nickname || ''),
     description: String(inner.description || parsed.description || ''),
@@ -630,12 +650,20 @@ export function parseImportedJsonString(
     tags: Array.isArray(inner.tags) ? inner.tags.map(String) : [],
     creator: String(inner.creator || 'Imported Creator'),
     character_version: String(inner.character_version || '1.0.0'),
+    creation_date: Number(
+      inner.creation_date ?? Math.floor(Date.now() / 1000)
+    ),
+    modification_date: Number(
+      inner.modification_date ?? Math.floor(Date.now() / 1000)
+    ),
     avatar: avatarDataUrl || (typeof inner.avatar === 'string' ? inner.avatar : undefined),
     character_book: embeddedLorebook,
+    isNsfw: importedIsNsfw,
     extensions:
       inner.extensions && typeof inner.extensions === 'object'
         ? {
             ...(inner.extensions as Record<string, unknown>),
+            isNsfw: importedIsNsfw,
             statBlock:
               (inner.extensions as { statBlock?: typeof DEFAULT_STAT_BLOCK })
                 .statBlock || DEFAULT_STAT_BLOCK,
@@ -643,6 +671,7 @@ export function parseImportedJsonString(
         : {
             talkativeness: '0.5',
             fav: false,
+            isNsfw: importedIsNsfw,
             statBlock: DEFAULT_STAT_BLOCK,
           },
   });

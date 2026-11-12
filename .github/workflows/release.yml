@@ -58,6 +58,7 @@ jobs:
           setlocal
           title TavernSmith Standalone Launcher (Standard Non-Admin Mode)
           set PORT=4173
+          set URL=http://127.0.0.1:%PORT%/?nocache=%RANDOM%
 
           echo ===================================================
           echo   TavernSmith - SillyTavern V2/V3 Character IDE
@@ -67,37 +68,37 @@ jobs:
 
           where python >nul 2>nul
           if %ERRORLEVEL% EQU 0 (
-            echo Starting local TavernSmith server via Python on http://127.0.0.1:%PORT% ...
-            start "" msedge --app="http://127.0.0.1:%PORT%" 2>nul || start "" chrome --app="http://127.0.0.1:%PORT%" 2>nul || start "" "http://127.0.0.1:%PORT%"
+            echo Starting local TavernSmith server via Python on %URL% ...
+            start "" msedge --app="%URL%" 2>nul || start "" chrome --app="%URL%" 2>nul || start "" "%URL%"
             python -m http.server %PORT% --bind 127.0.0.1
             goto :eof
           )
 
           where py >nul 2>nul
           if %ERRORLEVEL% EQU 0 (
-            echo Starting local TavernSmith server via Python Launcher on http://127.0.0.1:%PORT% ...
-            start "" msedge --app="http://127.0.0.1:%PORT%" 2>nul || start "" chrome --app="http://127.0.0.1:%PORT%" 2>nul || start "" "http://127.0.0.1:%PORT%"
+            echo Starting local TavernSmith server via Python Launcher on %URL% ...
+            start "" msedge --app="%URL%" 2>nul || start "" chrome --app="%URL%" 2>nul || start "" "%URL%"
             py -3 -m http.server %PORT% --bind 127.0.0.1
             goto :eof
           )
 
           where npx >nul 2>nul
           if %ERRORLEVEL% EQU 0 (
-            echo Starting local TavernSmith server via Node.js on http://127.0.0.1:%PORT% ...
-            start "" msedge --app="http://127.0.0.1:%PORT%" 2>nul || start "" chrome --app="http://127.0.0.1:%PORT%" 2>nul || start "" "http://127.0.0.1:%PORT%"
+            echo Starting local TavernSmith server via Node.js on %URL% ...
+            start "" msedge --app="%URL%" 2>nul || start "" chrome --app="%URL%" 2>nul || start "" "%URL%"
             npx --yes serve -l tcp://127.0.0.1:%PORT%
             goto :eof
           )
 
           echo Opening TavernSmith directly in standalone app window (No Admin required)...
-          start "" msedge --app="file:///%~dp0index.html" --allow-file-access-from-files 2>nul || start "" chrome --app="file:///%~dp0index.html" --allow-file-access-from-files 2>nul || start "" "%~dp0index.html"
+          start "" msedge --app="file:///%~dp0index.html?nocache=%RANDOM%" --allow-file-access-from-files 2>nul || start "" chrome --app="file:///%~dp0index.html?nocache=%RANDOM%" --allow-file-access-from-files 2>nul || start "" "%~dp0index.html"
           EOF
 
           cat << 'EOF' > dist/Launch-TavernSmith-Mac-Linux.command
           #!/usr/bin/env bash
           cd "$(dirname "$0")" || exit 1
           PORT=4173
-          URL="http://127.0.0.1:${PORT}"
+          URL="http://127.0.0.1:${PORT}/?nocache=$(date +%s)"
 
           echo "==================================================="
           echo "  TavernSmith — SillyTavern V2/V3 Character IDE"
@@ -146,9 +147,9 @@ jobs:
              (or run `./Launch-TavernSmith-Mac-Linux.command` in Terminal).
 
           3. INSTALL AS NATIVE-LIKE PWA (Desktop, Android, iOS/iPadOS):
-             When opened in Chrome, Edge, Brave, or Safari, click "Install App" in the top bar
+             When opened in Chrome, Edge, Brave, or Safari, click "Install App" in the address bar
              (or Share -> "Add to Home Screen" on iOS/iPadOS) to run TavernSmith in its own
-             dedicated standalone application window with full offline support.
+             dedicated standalone application window.
           EOF
 
       - name: Package ONLY Compiled Production App (dist/) into TavernSmith-App-Portable.zip

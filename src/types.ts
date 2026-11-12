@@ -1,34 +1,60 @@
-export type LorebookPosition = 'before_char' | 'after_char' | 'an_top' | 'an_bottom' | 'at_depth';
+export type WorkspaceTab =
+  | 'character'
+  | 'lorebook'
+  | 'themes'
+  | 'themes_tags'
+  | 'inspector'
+  | 'json_inspector'
+  | 'options';
 
-export interface LorebookEntry {
-  id: number | string;
-  comment?: string;
-  keys: string[];
-  secondary_keys: string[];
-  content: string;
-  enabled: boolean;
-  insertion_order: number;
-  case_sensitive: boolean;
-  constant: boolean;
-  selective: boolean;
-  position: LorebookPosition;
-  priority?: number;
-  depth?: number;
-  probability?: number;
-  tags: string[];
+export type RosterSortOption =
+  | 'modified_desc'
+  | 'name_asc'
+  | 'name_desc'
+  | 'tokens_desc'
+  | 'tokens_asc';
+
+export type TagCategory =
+  | 'Rating'
+  | 'Genre & Setting'
+  | 'Personality & Archetype'
+  | 'Relationship & Role'
+  | 'Tone & Style'
+  | 'NSFW & Kinks'
+  | 'Extreme & Hentai Physics'
+  | 'Genre'
+  | 'Personality'
+  | 'Tone'
+  | 'Appearance'
+  | 'Roleplay Mechanics'
+  | 'Setting'
+  | 'Custom'
+  | 'genre'
+  | 'personality'
+  | 'tone'
+  | 'nsfw_rating'
+  | 'world_lore'
+  | 'custom'
+  | string;
+
+export interface TagDefinition {
+  id: string;
+  name: string;
+  color: string;
+  category: TagCategory;
+  isNsfw?: boolean;
+  aiContextDescription: string;
+  aiDescription?: string;
+  description?: string;
 }
 
-export interface Lorebook {
-  id?: string;
+export interface ContextTheme {
+  id: string;
   name: string;
-  description: string;
-  scan_depth: number;
-  token_budget: number;
-  recursive_scanning: boolean;
-  entries: LorebookEntry[];
-  tags?: string[];
-  modification_date?: number;
-  extensions?: Record<string, unknown>;
+  color: string;
+  aiContextPrompt: string;
+  associatedTags: string[];
+  isBuiltIn?: boolean;
 }
 
 export type StatItemType = 'number' | 'bar' | 'text' | 'list';
@@ -44,28 +70,60 @@ export interface StatItem {
   changeRules: string;
 }
 
-export type StatTemplatePresetId = 'compact_rpg_bar' | 'markdown_table' | 'collapsible_block';
+export type StatTemplatePresetId =
+  | 'collapsible_block'
+  | 'compact_rpg_bar'
+  | 'markdown_table';
 
 export interface StatBlockConfig {
   enableDMTracker: boolean;
+  injectionPosition: 'post_history_instructions' | 'system_prompt' | 'depth_0';
   stats: StatItem[];
   formatTemplate: string;
-  injectionPosition: 'system_prompt' | 'post_history_instructions' | 'author_note';
 }
 
-export interface CharacterCardAsset {
-  type: 'icon' | 'background' | 'emotion' | 'user_icon';
-  uri: string;
+export type LorebookPosition =
+  | 'before_char'
+  | 'after_char'
+  | 'an_top'
+  | 'an_bottom'
+  | 'at_depth';
+
+export interface LorebookEntry {
+  id: string | number;
+  comment: string;
+  keys: string[];
+  secondary_keys: string[];
+  content: string;
+  enabled: boolean;
+  insertion_order: number;
+  case_sensitive: boolean;
+  constant: boolean;
+  selective: boolean;
+  position: LorebookPosition;
+  priority: number;
+  depth: number;
+  probability: number;
+  tags?: string[];
+}
+
+export interface Lorebook {
+  id?: string;
   name: string;
-  ext: string;
+  description: string;
+  scan_depth: number;
+  token_budget: number;
+  recursive_scanning: boolean;
+  tags?: string[];
+  modification_date?: number;
+  entries: LorebookEntry[];
+  isNsfw?: boolean;
 }
 
-/**
- * Unified SillyTavern Character Card V2 & V3 Data Structure
- */
 export interface CharacterCardData {
   id?: string;
   name: string;
+  nickname?: string;
   description: string;
   personality: string;
   scenario: string;
@@ -79,25 +137,16 @@ export interface CharacterCardData {
   creator: string;
   character_version: string;
   character_book?: Lorebook;
-  // V3 Extended Fields
   avatar?: string;
-  nickname?: string;
-  creator_notes_multilingual?: Record<string, string>;
-  source?: string[];
-  group_only_greetings?: string[];
   creation_date?: number;
   modification_date?: number;
-  assets?: CharacterCardAsset[];
+  isNsfw?: boolean;
   extensions: {
     talkativeness?: string;
     fav?: boolean;
     world?: string;
-    depth_prompt?: {
-      prompt: string;
-      depth: number;
-      role: 'system' | 'user' | 'assistant';
-    };
     statBlock?: StatBlockConfig;
+    isNsfw?: boolean;
     [key: string]: unknown;
   };
 }
@@ -114,47 +163,18 @@ export interface SillyTavernV3Wrapper {
   data: CharacterCardData;
 }
 
-export type TagCategory =
-  | 'Rating'
-  | 'Archetype'
-  | 'Body & Attire'
-  | 'NSFW & Kinks'
-  | 'Extreme & Hentai Physics'
-  | 'Custom'
-  | 'genre'
-  | 'archetype'
-  | 'tone'
-  | 'mechanic'
-  | 'world'
+export type AIPresetId =
+  | 'lmstudio'
+  | 'ollama'
+  | 'koboldcpp'
+  | 'gemini'
+  | 'xai_grok'
+  | 'openrouter_llama'
+  | 'groq_llama'
+  | 'meta_direct'
+  | 'openai_compatible'
+  | 'anthropic'
   | 'custom';
-
-export interface SubTagDefinition {
-  id: string;
-  name: string;
-  aiDescription: string;
-}
-
-export interface TagDefinition {
-  id: string;
-  name: string;
-  color: string;
-  category: TagCategory;
-  isNsfw?: boolean;
-  subTags?: SubTagDefinition[];
-  parentTagId?: string;
-  aiContextDescription: string;
-  aiDescription?: string;
-  description?: string;
-}
-
-export interface ContextTheme {
-  id: string;
-  name: string;
-  color: string;
-  aiContextPrompt: string;
-  associatedTags: string[];
-  isBuiltIn?: boolean;
-}
 
 export type ProviderKeyId =
   | 'google'
@@ -169,27 +189,14 @@ export type ProviderKeyId =
   | 'kobold'
   | 'custom';
 
-export type AIPresetId =
-  | 'lmstudio'
-  | 'ollama'
-  | 'koboldcpp'
-  | 'gemini'
-  | 'xai_grok'
-  | 'openrouter_llama'
-  | 'groq_llama'
-  | 'meta_direct'
-  | 'openai_compatible'
-  | 'anthropic'
-  | 'custom';
-
 export type ModelCompatibilityFormat =
   | 'auto'
   | 'gemma'
-  | 'llama_3_4'
   | 'deepseek_qwen_think'
-  | 'gemini_thinking'
-  | 'xai_grok_reasoning'
+  | 'llama_3_4'
   | 'mistral'
+  | 'xai_grok_reasoning'
+  | 'gemini_thinking'
   | 'claude_chatml'
   | 'kobold_raw';
 
@@ -203,52 +210,14 @@ export interface AIBackendConfig {
   maxTokens: number;
   ghostTextEnabled: boolean;
   debounceMs: number;
-  availableModels?: string[];
+  availableModels: string[];
   savedProviderKeys?: Record<string, string>;
   savedProviderModels?: Record<string, string>;
 }
 
-export type AppearanceMode = 'dark' | 'light';
-export type EditorMode = 'sandbox' | 'wizard';
-export type WorkspaceTab = 'character' | 'lorebook' | 'themes_tags' | 'json_inspector' | 'options';
-
-export type RosterSortOption =
-  | 'modified_desc'
-  | 'name_asc'
-  | 'name_desc'
-  | 'tokens_desc'
-  | 'tokens_asc';
-
-export interface SavedFileEntry {
-  id: string;
-  folderPath: string;
-  fileName: string;
-  kind: 'character' | 'lorebook' | 'meta';
-  sizeBytes: number;
-  updatedAt: string;
-  content: string;
-}
-
-export interface TavernSmithMetaPayload {
-  schema: 'tavernsmith_meta_v1';
-  updatedAt: string;
-  activeThemeId: string;
-  contextThemes: ContextTheme[];
-  tags: TagDefinition[];
-}
-
-export interface SaveLogEntry {
-  id: string;
-  timestamp: string;
-  mode: 'manual' | 'autosave' | 'sync';
-  folderPath: string;
-  filesWritten: string[];
-  nativeSynced: boolean;
-}
-
 export interface AppSettings {
-  appearance: AppearanceMode;
-  editorMode: EditorMode;
+  appearance: 'dark' | 'light';
+  editorMode: 'sandbox' | 'wizard';
   autoSaveEnabled: boolean;
   autoSaveIntervalSec: number;
   activeThemeId: string;
@@ -276,4 +245,39 @@ export interface TokenBreakdown {
   permanentTokens: number;
   temporaryTokens: number;
   totalCardTokens: number;
+}
+
+export interface SavedFileEntry {
+  id: string;
+  folderPath: string;
+  fileName: string;
+  kind: 'character' | 'lorebook' | 'meta';
+  sizeBytes: number;
+  updatedAt: string;
+  content: string;
+}
+
+export interface SaveLogEntry {
+  id: string;
+  timestamp: string;
+  mode: 'manual' | 'autosave' | 'sync';
+  folderPath: string;
+  filesWritten: string[];
+  nativeSynced: boolean;
+}
+
+export interface TavernSmithMetaPayload {
+  schema: 'tavernsmith_meta_v1';
+  updatedAt: string;
+  activeThemeId: string;
+  contextThemes: ContextTheme[];
+  tags: TagDefinition[];
+}
+
+export interface NameConflictRequest {
+  kind: 'character' | 'lorebook';
+  itemId: string;
+  conflictingName: string;
+  suggestedNames: string[];
+  sourceAction: 'create' | 'rename' | 'save' | 'import';
 }
