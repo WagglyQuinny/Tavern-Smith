@@ -82,7 +82,6 @@ jobs:
             }
           }
 
-          const rangeSpec = lastTag ? `${lastTag}..HEAD` : '-n 40';
           const rawCommits = runGit(
             lastTag
               ? `git log "${lastTag}..HEAD" --no-merges --pretty=format:"%h|%s"`
@@ -107,7 +106,6 @@ jobs:
               : `git show --shortstat --pretty="" HEAD`
           );
 
-          // Parse commit subjects into Highlights vs Fixes/Improvements
           const highlights = [];
           const fixes = [];
 
@@ -135,7 +133,6 @@ jobs:
             }
           }
 
-          // Parse file diffs & numstat to describe modified components, services, and workflows
           const numStatMap = new Map();
           for (const line of rawNumStat.split('\n').filter(Boolean)) {
             const parts = line.split(/\s+/);
@@ -212,7 +209,6 @@ jobs:
             fileChanges.push('package.json & CHANGELOG.md — Version bump and release metadata sync');
           }
 
-          // 1. Prepend structured multi-section entry to CHANGELOG.md
           const changelogPath = 'CHANGELOG.md';
           let existingChangelog = fs.existsSync(changelogPath)
             ? fs.readFileSync(changelogPath, 'utf8')
@@ -247,7 +243,6 @@ jobs:
           fs.writeFileSync(changelogPath, updatedChangelog, 'utf8');
           console.log(`Updated CHANGELOG.md with ${tagName}`);
 
-          // 2. Write synced src/versionInfo.json
           fs.writeFileSync(
             'src/versionInfo.json',
             JSON.stringify(
@@ -262,7 +257,6 @@ jobs:
             'utf8'
           );
 
-          // 3. Update src/utils/changelogData.ts so in-app About & Changelog modal is 100% synced
           const changelogDataPath = 'src/utils/changelogData.ts';
           let existingReleases = [];
           if (fs.existsSync(changelogDataPath)) {
@@ -291,19 +285,21 @@ jobs:
             ...existingReleases.filter((r) => r && r.version !== tagName),
           ].slice(0, 15);
 
-          const tsOutput = `export interface ChangelogReleaseEntry {
-  version: string;
-  date: string;
-  title: string;
-  highlights: string[];
-  fixes: string[];
-  fileChanges: string[];
-}
-
-export const APP_VERSION = ${JSON.stringify(newVersion)};
-
-export const CHANGELOG_RELEASES: ChangelogReleaseEntry[] = ${JSON.stringify(mergedReleases, null, 2)};
-`;
+          const tsOutput = [
+            'export interface ChangelogReleaseEntry {',
+            '  version: string;',
+            '  date: string;',
+            '  title: string;',
+            '  highlights: string[];',
+            '  fixes: string[];',
+            '  fileChanges: string[];',
+            '}',
+            '',
+            `export const APP_VERSION = ${JSON.stringify(newVersion)};`,
+            '',
+            `export const CHANGELOG_RELEASES: ChangelogReleaseEntry[] = ${JSON.stringify(mergedReleases, null, 2)};`,
+            ''
+          ].join('\n');
 
           fs.writeFileSync(changelogDataPath, tsOutput, 'utf8');
           console.log(`Synced src/utils/changelogData.ts and src/versionInfo.json to v${newVersion}`);
