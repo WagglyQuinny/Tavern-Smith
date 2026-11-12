@@ -2,6 +2,18 @@
 
 All notable changes to **TavernSmith** are documented in this file. This file is synced with the in-app **About & Changelog** modal (`src/utils/changelogData.ts`) and the automated GitHub Release workflows (`.github/workflows/version-update.yml` & `.github/workflows/release.yml`).
 
+## [v2.1.1] - 2026-11-12
+
+### 🚀 Highlights & Feature Additions
+- Automated release v2.1.1 incorporating 1 updated module(s) (1 file changed, 16 insertions(+), 20 deletions(-)).
+
+### 🛠️ Bug Fixes, AI & Stability Improvements
+- Clean up version-update script logic (04ad2dc)
+
+### 📂 Detailed Component & File Changes
+- **Repository Diff Summary**: 1 file changed, 16 insertions(+), 20 deletions(-)
+- `.github/workflows/version-update.yml — Updated GitHub Actions CI/CD & Standalone Release Workflow (+16 / -20 lines)`
+
 ## [v2.1.0] - 2026-11-12
 
 ### 🚀 Highlights & Feature Additions
