@@ -41,6 +41,7 @@ import {
   COMPATIBILITY_FORMAT_LABELS,
   ConnectionTestResult,
   detectModelCompatibilityFormat,
+  getProviderKeyId,
   resolveEffectiveFormat,
   testBackendConnection,
 } from '../services/aiService';
@@ -48,6 +49,7 @@ import { AIPresetId, ModelCompatibilityFormat, SavedFileEntry } from '../types';
 import { Tooltip } from '../components/Tooltip';
 import { AppLogo } from '../components/AppLogo';
 import { triggerBrowserDownload } from '../utils/cardIO';
+import { APP_VERSION, CHANGELOG_RELEASES } from '../utils/changelogData';
 
 export const OptionsView: React.FC = () => {
   const {
@@ -59,6 +61,7 @@ export const OptionsView: React.FC = () => {
     updateSettings,
     aiConfig,
     setAiConfig,
+    switchAIPreset,
     saveNow,
     resetWorkspaceToDefaults,
     lastSavedAt,
@@ -156,16 +159,7 @@ export const OptionsView: React.FC = () => {
   );
 
   const handleSelectPreset = (presetId: AIPresetId) => {
-    const found = AI_BACKEND_PRESETS.find((p) => p.id === presetId);
-    if (!found) return;
-    setAiConfig((prev) => ({
-      ...prev,
-      preset: presetId,
-      url: found.defaultUrl,
-      modelName: found.defaultModel,
-      compatibilityFormat: 'auto',
-      availableModels: found.suggestedModels,
-    }));
+    switchAIPreset(presetId);
     setTestResult(null);
   };
 
@@ -277,7 +271,7 @@ export const OptionsView: React.FC = () => {
               className="h-3.5 w-3.5"
               style={{ color: 'var(--theme-accent)' }}
             />
-            <span>About &amp; Changelog (v1.0.1)</span>
+            <span>About &amp; Changelog (v{APP_VERSION})</span>
           </button>
         </div>
       </div>
@@ -1150,6 +1144,14 @@ export const OptionsView: React.FC = () => {
             >
               {AI_BACKEND_PRESETS.map((preset) => {
                 const isSelected = aiConfig.preset === preset.id;
+                const providerKey = getProviderKeyId(preset.id);
+                const hasSavedKey = Boolean(
+                  (
+                    aiConfig.savedProviderKeys?.[preset.id] ||
+                    aiConfig.savedProviderKeys?.[providerKey] ||
+                    ''
+                  ).trim()
+                );
                 return (
                   <button
                     key={preset.id}
@@ -1170,10 +1172,17 @@ export const OptionsView: React.FC = () => {
                       <span className="text-xs font-semibold text-slate-900 dark:text-white truncate">
                         {preset.label}
                       </span>
+                      {hasSavedKey && (
+                        <span className="rounded bg-emerald-500/15 px-1.5 py-0.5 font-mono text-[9px] font-bold text-emerald-700 dark:text-emerald-300 shrink-0">
+                          Key Saved ✓
+                        </span>
+                      )}
                     </div>
                     <div className="mt-0.5 font-mono text-[10px] text-slate-500 dark:text-slate-400 truncate">
                       {preset.requiresKey
-                        ? 'Auth Token Required'
+                        ? hasSavedKey
+                          ? 'Saved Key Auto-Loaded'
+                          : 'Auth Token Required'
                         : 'Local · No Key'}
                     </div>
                   </button>
@@ -1528,7 +1537,7 @@ export const OptionsView: React.FC = () => {
         >
           <div
             style={{ borderColor: 'var(--theme-accent)' }}
-            className="w-full max-w-xl rounded-xl border bg-white dark:bg-slate-900 p-6 shadow-2xl space-y-5"
+            className="w-full max-w-2xl rounded-xl border bg-white dark:bg-slate-900 p-6 shadow-2xl space-y-5"
           >
             <div className="flex items-center justify-between border-b border-slate-200 dark:border-slate-800 pb-3">
               <div className="flex items-center gap-2.5">
@@ -1538,10 +1547,10 @@ export const OptionsView: React.FC = () => {
                     id="about-modal-title"
                     className="text-base font-bold text-slate-900 dark:text-white"
                   >
-                    TavernSmith IDE · Release v1.0.1
+                    TavernSmith IDE · Release v{APP_VERSION}
                   </h2>
                   <p className="text-xs text-slate-500 dark:text-slate-400">
-                    SillyTavern V2 &amp; V3 Character Card &amp; Lorebook Workbench
+                    SillyTavern V2 &amp; V3 Character Card &amp; Lorebook Workbench (Synced with CHANGELOG.md)
                   </p>
                 </div>
               </div>
@@ -1554,44 +1563,98 @@ export const OptionsView: React.FC = () => {
               </button>
             </div>
 
-            <div className="space-y-4 text-xs leading-relaxed text-slate-600 dark:text-slate-300 max-h-[65vh] overflow-y-auto pr-1">
-              <div className="space-y-1.5">
-                <div className="font-semibold text-slate-900 dark:text-white">
-                  v1.0.1 Release Notes (Synced with CHANGELOG.md)
+            <div className="space-y-5 text-xs leading-relaxed text-slate-600 dark:text-slate-300 max-h-[65vh] overflow-y-auto pr-1">
+              {CHANGELOG_RELEASES.map((rel, idx) => (
+                <div
+                  key={rel.version}
+                  style={
+                    idx === 0
+                      ? {
+                          borderColor:
+                            'color-mix(in srgb, var(--theme-accent) 45%, transparent)',
+                        }
+                      : undefined
+                  }
+                  className={`rounded-lg border p-4 space-y-3 ${
+                    idx === 0
+                      ? 'bg-slate-50/80 dark:bg-slate-950/80'
+                      : 'border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900/50'
+                  }`}
+                >
+                  <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 dark:border-slate-800 pb-2">
+                    <div className="flex items-center gap-2">
+                      <span
+                        style={
+                          idx === 0
+                            ? {
+                                borderColor: 'var(--theme-accent)',
+                                color: 'var(--theme-accent)',
+                              }
+                            : undefined
+                        }
+                        className="rounded border border-slate-300 dark:border-slate-700 px-2 py-0.5 font-mono text-xs font-bold text-slate-900 dark:text-white"
+                      >
+                        {rel.version}
+                      </span>
+                      <span className="font-semibold text-slate-900 dark:text-white">
+                        {rel.title}
+                      </span>
+                    </div>
+                    <span className="font-mono text-[11px] text-slate-400">
+                      {rel.date}
+                    </span>
+                  </div>
+
+                  {rel.highlights.length > 0 && (
+                    <div className="space-y-1">
+                      <div className="font-semibold text-slate-900 dark:text-white">
+                        🚀 Highlights &amp; Feature Additions
+                      </div>
+                      <ul className="list-disc pl-4 space-y-1">
+                        {rel.highlights.map((item, i) => (
+                          <li key={i}>{item}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+
+                  {rel.fixes.length > 0 && (
+                    <div className="space-y-1">
+                      <div className="font-semibold text-slate-900 dark:text-white">
+                        🛠️ Bug Fixes, AI &amp; Stability Improvements
+                      </div>
+                      <ul className="list-disc pl-4 space-y-1">
+                        {rel.fixes.map((item, i) => (
+                          <li key={i}>{item}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+
+                  {rel.fileChanges.length > 0 && (
+                    <div className="space-y-1">
+                      <div className="font-semibold text-slate-900 dark:text-white">
+                        📂 Detailed Component &amp; File Changes
+                      </div>
+                      <ul className="list-disc pl-4 space-y-0.5 font-mono text-[11px] text-slate-500 dark:text-slate-400">
+                        {rel.fileChanges.map((item, i) => (
+                          <li key={i}>{item}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
                 </div>
-                <ul className="list-disc pl-4 space-y-1">
-                  <li>
-                    <strong>Unified Root Save Folder &amp; Subfolders:</strong>{' '}
-                    Refactored storage into a single unified Root Save Folder with automatic <code className="font-mono">Characters/</code> and <code className="font-mono">Lorebooks/</code> subdirectories plus root <code className="font-mono">{META_FILENAME}</code>.
-                  </li>
-                  <li>
-                    <strong>Two-Way Live Directory Sync:</strong>{' '}
-                    Persists Local PC <code className="font-mono">FileSystemDirectoryHandle</code> in <code className="font-mono">IndexedDB</code> and automatically scans <code className="font-mono">Characters/</code>, <code className="font-mono">Lorebooks/</code>, and <code className="font-mono">{META_FILENAME}</code> on launch.
-                  </li>
-                  <li>
-                    <strong>Cross-Platform Standalone PWA &amp; CI/CD:</strong>{' '}
-                    Added standalone desktop launchers (<code className="font-mono">.bat</code> &amp; <code className="font-mono">.command</code>), PWA manifest/service worker, and Node 24 GitHub Actions release workflows.
-                  </li>
-                  <li>
-                    <strong>Interactive SillyTavern 2:3 Portrait Cropper:</strong>{' '}
-                    Automatically verifies uploaded/dropped character portraits against SillyTavern&apos;s <code className="font-mono">2:3</code> aspect ratio (<code className="font-mono">512×768</code> / <code className="font-mono">400×600</code>) and opens an interactive HTML5 <code className="font-mono">&lt;canvas&gt;</code> pan &amp; zoom cropper modal.
-                  </li>
-                  <li>
-                    <strong>Full Drag-and-Drop Import &amp; Reordering:</strong>{' '}
-                    Drop <code className="font-mono">.png</code> cards, <code className="font-mono">.json</code> files, or portrait images directly onto the workbenches, and drag-and-drop to reorder Lorebook Entries, DM Stat-Block attributes, and Alternate Greetings.
-                  </li>
-                </ul>
-              </div>
+              ))}
 
               <div className="rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 p-3 space-y-1">
                 <div className="flex items-center gap-1.5 font-semibold text-slate-900 dark:text-white">
                   <ShieldCheck className="h-3.5 w-3.5 text-emerald-500" />
-                  <span>Zero-Crash Sandbox &amp; Credential Hygiene</span>
+                  <span>Zero-Crash Sandbox &amp; Per-Provider Credential Vault</span>
                 </div>
                 <p className="text-[11px] text-slate-500 dark:text-slate-400">
                   Pure browser binary APIs (<code className="font-mono">ArrayBuffer</code>,{' '}
                   <code className="font-mono">DataView</code>,{' '}
-                  <code className="font-mono">Uint8Array</code>). API keys and bearer tokens are never included in exported <code className="font-mono">.png</code> or <code className="font-mono">.json</code> files.
+                  <code className="font-mono">Uint8Array</code>). Provider API keys are persisted per provider in local browser storage and never included in exported <code className="font-mono">.png</code> or <code className="font-mono">.json</code> files.
                 </p>
               </div>
             </div>

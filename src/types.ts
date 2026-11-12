@@ -128,11 +128,20 @@ export type TagCategory =
   | 'world'
   | 'custom';
 
+export interface SubTagDefinition {
+  id: string;
+  name: string;
+  aiDescription: string;
+}
+
 export interface TagDefinition {
   id: string;
   name: string;
   color: string;
   category: TagCategory;
+  isNsfw?: boolean;
+  subTags?: SubTagDefinition[];
+  parentTagId?: string;
   aiContextDescription: string;
   aiDescription?: string;
   description?: string;
@@ -147,6 +156,19 @@ export interface ContextTheme {
   isBuiltIn?: boolean;
 }
 
+export type ProviderKeyId =
+  | 'google'
+  | 'xai'
+  | 'openrouter'
+  | 'groq'
+  | 'meta'
+  | 'openai'
+  | 'anthropic'
+  | 'lmstudio'
+  | 'ollama'
+  | 'kobold'
+  | 'custom';
+
 export type AIPresetId =
   | 'lmstudio'
   | 'ollama'
@@ -156,10 +178,13 @@ export type AIPresetId =
   | 'openrouter_llama'
   | 'groq_llama'
   | 'meta_direct'
-  | 'openai_compatible';
+  | 'openai_compatible'
+  | 'anthropic'
+  | 'custom';
 
 export type ModelCompatibilityFormat =
   | 'auto'
+  | 'gemma'
   | 'llama_3_4'
   | 'deepseek_qwen_think'
   | 'gemini_thinking'
@@ -179,6 +204,8 @@ export interface AIBackendConfig {
   ghostTextEnabled: boolean;
   debounceMs: number;
   availableModels?: string[];
+  savedProviderKeys?: Record<string, string>;
+  savedProviderModels?: Record<string, string>;
 }
 
 export type AppearanceMode = 'dark' | 'light';
@@ -229,6 +256,7 @@ export interface AppSettings {
   activeSaveFolder: string;
   availableSaveFolders: string[];
   mainSidebarOpen?: boolean;
+  hideNsfwTags?: boolean;
 }
 
 export interface TokenBreakdown {

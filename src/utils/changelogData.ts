@@ -1,0 +1,84 @@
+export interface ChangelogReleaseEntry {
+  version: string;
+  date: string;
+  title: string;
+  highlights: string[];
+  fixes: string[];
+  fileChanges: string[];
+}
+
+export const APP_VERSION = '2.1.0';
+
+export const CHANGELOG_RELEASES: ChangelogReleaseEntry[] = [
+  {
+    version: 'v2.1.0',
+    date: '2026-11-12',
+    title:
+      'Per-Provider API Key Persistence, Gemma 4 System-Merged Engine, Sub-Tags & NSFW Filter, Non-Admin Launchers & Automated Git Changelog Analyzer',
+    highlights: [
+      'Persistent Per-Provider AI Credentials & Models: Added savedProviderKeys and savedProviderModels keyed by provider ID (google, xai, openrouter, groq, meta, openai, anthropic, lmstudio, ollama, kobold, custom) so switching AI backend presets automatically restores your saved API key and last-used model without retyping.',
+      'Model-Driven Auto-Formatting & Gemma 4 Compatibility: Refactored AI compatibility detection to inspect the active model name directly (Gemma 4/3/2, DeepSeek R1/Qwen QwQ, Llama 3/4, Mistral/Mixtral/Pixtral, Grok, Gemini, Claude) regardless of host endpoint.',
+      'Hierarchical Sub-Tags & 🔞 Hide NSFW Tags Toggle: Added sub-tag definitions and inline sub-tag creation under parent tags (e.g., Big Breasts, Bondage / Restraints, Excessive Fluids, MILF, Monster Girl) plus a 1-click "🔞 Hide NSFW Tags" UI filter that hides adult tags visually while preserving 100% of attached NSFW tags and sub-tags in AI generation prompts.',
+      'In-Depth Automated Git Version & Changelog Generator: Upgraded .github/workflows/version-update.yml to automatically analyze git log, git diff --name-status, and line diff stats since the previous tag, generating multi-section release notes into CHANGELOG.md, src/versionInfo.json, and src/utils/changelogData.ts.',
+    ],
+    fixes: [
+      'Fixed LM Studio + Gemma 4 HTTP 400 Bad Request errors by merging system instructions into the user prompt ([SYSTEM INSTRUCTIONS] + [USER REQUEST]), sending strictly universal OpenAI payload fields, and stripping <|thought|>...<|/thought|> and <think>...</think> blocks.',
+      'Fixed white screen on normal launch & removed Administrator privilege requirements by wrapping IndexedDB, localStorage, and FileSystemDirectoryHandle startup calls in defensive try/catch blocks and adding a top-level React AppErrorBoundary with 1-click Safe Recovery.',
+      'Updated Launch-TavernSmith-Windows.bat and release.yml build steps to strip crossorigin attributes for direct file:// compatibility and run strictly in user-space (127.0.0.1:4173 or Edge/Chrome --app mode) with zero elevation prompts.',
+    ],
+    fileChanges: [
+      'src/services/aiService.ts — Model-ID format detector, Gemma system-merged payload builder, HTTP 400 auto-retry fallback & <|thought|> parser',
+      'src/context/StoreContext.tsx — Per-provider API key & model vault, safe localStorage wrappers, NSFW flags & seeded Sub-Tags',
+      'src/components/TagSelector.tsx & src/views/ThemesAndTagsView.tsx — Sub-Tag drawers, custom sub-tag creator & 🔞 Hide NSFW Tags toggle',
+      'src/App.tsx & src/utils/folderDb.ts — Top-level React Error Boundary & zero-crash IndexedDB / FileSystemDirectoryHandle guards',
+      '.github/workflows/release.yml & .github/workflows/version-update.yml — Non-admin Windows launcher & automated git diff changelog generator',
+    ],
+  },
+  {
+    version: 'v2.0.0',
+    date: '2026-11-11',
+    title: 'Branding Redesign, Expanded Tag Library & Roster UX',
+    highlights: [
+      'Redesigned application branding and enhanced Character & Lorebook Roster filtering and sorting.',
+      'Expanded built-in genre, trope, anatomy, and dynamic roleplay tag definitions.',
+    ],
+    fixes: [
+      'Improved character card import/export handling and roster state synchronization.',
+    ],
+    fileChanges: [
+      'src/components/CharacterEditor.tsx & src/components/LorebookEditor.tsx — Roster UX & tag filtering',
+      'src/context/StoreContext.tsx — Expanded default tag definitions',
+    ],
+  },
+  {
+    version: 'v1.0.3',
+    date: '2026-11-11',
+    title: 'Unified Root Save Directory Structure',
+    highlights: [
+      'Unified storage into a single Root Save Folder with automatic Characters/ and Lorebooks/ subdirectories plus root _tavernsmith_meta.json.',
+    ],
+    fixes: [
+      'Fixed two-way directory synchronization and local storage fallback handling.',
+    ],
+    fileChanges: [
+      'src/context/StoreContext.tsx & src/views/OptionsView.tsx — Unified Save Folder tree & live sync logs',
+    ],
+  },
+  {
+    version: 'v1.0.0',
+    date: '2026-11-10',
+    title: 'Initial Production Release',
+    highlights: [
+      'Interactive SillyTavern 2:3 Portrait Uploader & HTML5 Canvas Cropper Modal.',
+      'Pure-browser PNG steganography (chara V2 & ccv3 V3 tEXt chunks) and JSON I/O.',
+      'Synchronized <SmartEditor /> with {{macro}} highlighting, autocomplete, and inline AI Ghost Text.',
+      'Modular DM/GM Stat-Block Builder and 5-Step Character & Lorebook Creation Wizards.',
+    ],
+    fixes: [
+      'Added multi-provider AI scanner and automatic <think> / <reasoning> block stripper.',
+    ],
+    fileChanges: [
+      'src/ — Initial TavernSmith V2/V3 Character & Lorebook IDE architecture',
+    ],
+  },
+];

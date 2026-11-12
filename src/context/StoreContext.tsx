@@ -10,12 +10,14 @@ import React, {
 import {
   AppSettings,
   AIBackendConfig,
+  AIPresetId,
   CharacterCardData,
   ContextTheme,
   Lorebook,
   SavedFileEntry,
   SaveLogEntry,
   StatBlockConfig,
+  SubTagDefinition,
   TagDefinition,
   TavernSmithMetaPayload,
   TokenBreakdown,
@@ -37,8 +39,10 @@ import {
   saveDirectoryHandleToIndexedDB,
   StoredDirectoryRecord,
 } from '../utils/folderDb';
+import { AI_BACKEND_PRESETS, getProviderKeyId } from '../services/aiService';
 
 const STORAGE_KEY = 'tavernsmith_store_v2';
+const PROVIDER_CREDENTIALS_STORAGE_KEY = 'tavernsmith_provider_credentials_v1';
 const LEGACY_STORAGE_KEYS = [
   'tavernsmith_ide_state_v2',
   'tavernsmith_ide_state_v1',
@@ -46,6 +50,37 @@ const LEGACY_STORAGE_KEYS = [
 ];
 export const META_FILENAME = '_tavernsmith_meta.json';
 export const UNIFIED_INTERNAL_ROOT = '/TavernSmith_Saves/';
+
+/**
+ * Safe localStorage wrappers that never throw on `file://` origins, strict privacy modes,
+ * or non-admin standard user accounts.
+ */
+function safeLocalStorageGet(key: string): string | null {
+  try {
+    if (typeof window === 'undefined' || !window.localStorage) return null;
+    return window.localStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+
+function safeLocalStorageSet(key: string, value: string): void {
+  try {
+    if (typeof window === 'undefined' || !window.localStorage) return;
+    window.localStorage.setItem(key, value);
+  } catch {
+    // Ignore quota or SecurityError in restricted origins
+  }
+}
+
+function safeLocalStorageRemove(key: string): void {
+  try {
+    if (typeof window === 'undefined' || !window.localStorage) return;
+    window.localStorage.removeItem(key);
+  } catch {
+    // Ignore SecurityError in restricted origins
+  }
+}
 
 const AUTO_TAG_PALETTE = [
   '#a855f7',
@@ -75,13 +110,17 @@ function createBuiltInTag(
   name: string,
   color: string,
   category: TagDefinition['category'],
-  description: string
+  description: string,
+  isNsfw: boolean,
+  subTags?: SubTagDefinition[]
 ): TagDefinition {
   return {
     id,
     name,
     color,
     category,
+    isNsfw,
+    subTags: subTags || [],
     aiContextDescription: description,
     aiDescription: description,
     description,
@@ -91,232 +130,468 @@ function createBuiltInTag(
 export const DEFAULT_TAGS: TagDefinition[] = [
   // A. Core Rating & Format Tags
   createBuiltInTag(
-    'tag-nsfw-explicit-18',
-    'NSFW / Explicit 18+',
-    '#ef4444',
+    'tag-sfw-all-ages',
+    'SFW / All-Ages',
+    '#10b981',
     'Rating',
-    'Explicit 18+ adult content enabled. Do not censor or fade-to-black; use visceral, anatomically descriptive, and sensual language for intimate scenes.'
-  ),
-  createBuiltInTag(
-    'tag-smut-erp',
-    'Smut / ERP Focused',
-    '#f43f5e',
-    'Rating',
-    'Prioritize erotic roleplay tension, physical intimacy, sensory descriptions, and suggestive dialogue triggers.'
+    'Strictly Safe-For-Work narrative tone focusing on character drama, adventure, emotion, and clean romance without explicit adult content.',
+    false,
+    [
+      {
+        id: 'sub-sfw-wholesome',
+        name: 'Wholesome & Cozy',
+        aiDescription:
+          'Warm, comforting, low-stakes slice-of-life atmosphere with gentle humor and emotional support.',
+      },
+      {
+        id: 'sub-sfw-cinematic',
+        name: 'Cinematic Action / Drama',
+        aiDescription:
+          'High-stakes narrative tension, vivid choreography, and dramatic dialogue.',
+      },
+    ]
   ),
   createBuiltInTag(
     'tag-slow-burn',
     'Slow Burn',
     '#8b5cf6',
     'Rating',
-    'Build romantic and sexual tension gradually through lingering touches, subtext, and emotional escalation.'
+    'Build romantic and intimate tension gradually through lingering touches, subtext, stolen glances, and emotional escalation.',
+    false,
+    [
+      {
+        id: 'sub-slowburn-pining',
+        name: 'Mutual Pining',
+        aiDescription:
+          'Unspoken longing, hesitation, and electric closeness where neither side admits their feelings right away.',
+      },
+      {
+        id: 'sub-slowburn-rivals',
+        name: 'Rivals to Partners',
+        aiDescription:
+          'Competitive banter and reluctant respect slowly giving way to deep trust and attraction.',
+      },
+    ]
+  ),
+  createBuiltInTag(
+    'tag-nsfw-explicit-18',
+    'NSFW / Explicit 18+',
+    '#ef4444',
+    'Rating',
+    'Explicit 18+ adult content enabled. Do not censor or fade-to-black; use visceral, anatomically descriptive, and sensual language for intimate scenes.',
+    true,
+    [
+      {
+        id: 'sub-nsfw-uncensored',
+        name: 'Uncensored Anatomy',
+        aiDescription:
+          'Use direct, explicit anatomical terminology and vivid sensory descriptions without euphemisms.',
+      },
+      {
+        id: 'sub-nsfw-passionate',
+        name: 'Sensual & Erotic',
+        aiDescription:
+          'Focus on heat, breath, skin-on-skin friction, and vocal reactions.',
+      },
+    ]
+  ),
+  createBuiltInTag(
+    'tag-smut-erp',
+    'Smut / ERP Focused',
+    '#f43f5e',
+    'Rating',
+    'Prioritize erotic roleplay tension, physical intimacy, sensory descriptions, and suggestive dialogue triggers.',
+    true
   ),
   createBuiltInTag(
     'tag-vanilla-wholesome-nsfw',
     'Vanilla / Wholesome NSFW',
     '#ec4899',
     'Rating',
-    'Passionate, affectionate, consensual intimacy focused on mutual pleasure, romance, and emotional connection.'
+    'Passionate, affectionate, consensual intimacy focused on mutual pleasure, romance, and emotional connection.',
+    true,
+    [
+      {
+        id: 'sub-vanilla-handholding',
+        name: 'Eye Contact & Kissing',
+        aiDescription:
+          'Deep kissing, intertwined fingers, whispered reassurances, and loving eye contact throughout intimacy.',
+      },
+    ]
   ),
 
-  // B. Adult Archetypes & Personalities
-  createBuiltInTag(
-    'tag-milf',
-    'MILF',
-    '#d946ef',
-    'Archetype',
-    'Mature, voluptuous, experienced older woman with confident, maternal, or Ara-Ara seductive energy.'
-  ),
-  createBuiltInTag(
-    'tag-onee-san',
-    'Onee-san',
-    '#c084fc',
-    'Archetype',
-    'Dotingly affectionate, teasing older-sister archetype who pampers and seduces {{user}}.'
-  ),
-  createBuiltInTag(
-    'tag-gyaru',
-    'Gyaru',
-    '#f472b6',
-    'Archetype',
-    'Trendy, outgoing, fashion-forward gyaru with bold, teasing slang, high confidence, and playful promiscuity.'
-  ),
+  // B. Archetypes & Personalities (SFW & NSFW)
   createBuiltInTag(
     'tag-tsundere',
     'Tsundere',
     '#fb7185',
     'Archetype',
-    'Prickly, flustered, and defensive on the outside, becoming needy, vocal, and submissive during intimacy.'
-  ),
-  createBuiltInTag(
-    'tag-yandere',
-    'Yandere',
-    '#e11d48',
-    'Archetype',
-    'Obsessively devoted, possessive, and unhinged lover who worships {{user}} and tolerates no rivals.'
+    'Prickly, flustered, and defensive on the outside, hiding deep affection and sensitivity underneath.',
+    false,
+    [
+      {
+        id: 'sub-tsun-classic',
+        name: 'Baka / Blushing Denial',
+        aiDescription:
+          'Stammers, crosses arms, and denies obvious affection while blushing furiously.',
+      },
+      {
+        id: 'sub-tsun-melted',
+        name: 'Melted & Needy',
+        aiDescription:
+          'Drops the tough facade when alone with {{user}}, becoming clingy and soft.',
+      },
+    ]
   ),
   createBuiltInTag(
     'tag-kuudere',
     'Kuudere',
     '#38bdf8',
     'Archetype',
-    'Stoic, cool, and deadpan demeanor that cracks into quiet, intense sensitivity when aroused.'
+    'Stoic, cool, and deadpan demeanor that cracks into quiet, intense devotion for {{user}}.',
+    false,
+    [
+      {
+        id: 'sub-kuu-deadpan',
+        name: 'Deadpan Snarker',
+        aiDescription:
+          'Dry, monotone wit delivered with a completely straight face.',
+      },
+      {
+        id: 'sub-kuu-clingy',
+        name: 'Quietly Clingy',
+        aiDescription:
+          'Silently holds onto {{user}}’s sleeve or sits pressed against them without saying a word.',
+      },
+    ]
   ),
   createBuiltInTag(
     'tag-tomboy',
     'Tomboy',
     '#fb923c',
     'Archetype',
-    'Athletic, casual, rough-around-the-edges girl with competitive energy who gets flustered when treated femininely.'
+    'Athletic, casual, rough-around-the-edges girl with competitive energy who gets flustered when treated femininely.',
+    false
   ),
   createBuiltInTag(
     'tag-ojou-sama',
     'Ojou-sama',
     '#facc15',
     'Archetype',
-    'Haughty, aristocratic noblewoman whose refined pride melts into desperate pleasure.'
-  ),
-  createBuiltInTag(
-    'tag-succubus',
-    'Succubus',
-    '#a855f7',
-    'Archetype',
-    'Insatiable demonic seductress who feeds on lust, arousal, and sexual energy.'
-  ),
-  createBuiltInTag(
-    'tag-monster-girl',
-    'Monster Girl',
-    '#10b981',
-    'Archetype',
-    'Non-human hybrid anatomy with unique biological instincts, mating cycles, and sensory traits.'
+    'Haughty, aristocratic noblewoman with refined manners whose pride melts around {{user}}.',
+    false
   ),
   createBuiltInTag(
     'tag-dark-elf',
     'Dark Elf / Elf',
     '#84cc16',
     'Archetype',
-    'Long-eared elven beauty blending regal mystique or dusky, hedonistic sensuality.'
+    'Long-eared elven beauty blending regal mystique, expressive ears, and ancient grace.',
+    false,
+    [
+      {
+        id: 'sub-elf-ears',
+        name: 'Sensitive Ears',
+        aiDescription:
+          'Long pointed ears that twitch, droop, or flush bright red when touched or teased.',
+      },
+    ]
   ),
   createBuiltInTag(
     'tag-kemonomimi-catgirl',
     'Kemonomimi / Catgirl',
     '#f59e0b',
     'Archetype',
-    'Animal ears and tail that involuntarily twitch, fluff, or wrap around {{user}} to betray her arousal and mood.'
+    'Animal ears and tail that involuntarily twitch, fluff, or wrap around {{user}} to betray her mood.',
+    false,
+    [
+      {
+        id: 'sub-kemo-purring',
+        name: 'Purring & Headbutts',
+        aiDescription:
+          'Instinctively purrs and nuzzles against {{user}}’s hand or neck when petted.',
+      },
+      {
+        id: 'sub-kemo-tail',
+        name: 'Expressive Tail',
+        aiDescription:
+          'Tail swishes, puffs up when startled, or coils around {{user}}’s wrist.',
+      },
+    ]
   ),
   createBuiltInTag(
     'tag-maid',
     'Maid',
     '#64748b',
     'Archetype',
-    'Devoted domestic servant in a classic or French maid outfit dedicated to obeying and servicing her master.'
+    'Devoted domestic servant in a classic or French maid outfit dedicated to obeying and caring for her master.',
+    false
+  ),
+  createBuiltInTag(
+    'tag-knight-warrior',
+    'Knight / Paladin',
+    '#0ea5e9',
+    'Archetype',
+    'Chivalrous, battle-hardened protector bound by oaths of loyalty, honor, and duty.',
+    false
+  ),
+  createBuiltInTag(
+    'tag-milf',
+    'MILF',
+    '#d946ef',
+    'Archetype',
+    'Mature, voluptuous, experienced older woman with confident, maternal, or Ara-Ara seductive energy.',
+    true,
+    [
+      {
+        id: 'sub-milf-ara',
+        name: 'Ara-Ara Seductress',
+        aiDescription:
+          'Teasing, confident older woman who takes the lead with purring "Ara, ara~" dominance.',
+      },
+      {
+        id: 'sub-milf-doting',
+        name: 'Doting Maternal',
+        aiDescription:
+          'Warm, pampering, overly affectionate caretaker who spoils {{user}} rotten.',
+      },
+    ]
+  ),
+  createBuiltInTag(
+    'tag-onee-san',
+    'Onee-san',
+    '#c084fc',
+    'Archetype',
+    'Dotingly affectionate, teasing older-sister archetype who pampers and seduces {{user}}.',
+    true
+  ),
+  createBuiltInTag(
+    'tag-gyaru',
+    'Gyaru',
+    '#f472b6',
+    'Archetype',
+    'Trendy, outgoing, fashion-forward gyaru with bold, teasing slang, high confidence, and playful promiscuity.',
+    true
+  ),
+  createBuiltInTag(
+    'tag-yandere',
+    'Yandere',
+    '#e11d48',
+    'Archetype',
+    'Obsessively devoted, possessive, and unhinged lover who worships {{user}} and tolerates no rivals.',
+    true
+  ),
+  createBuiltInTag(
+    'tag-succubus',
+    'Succubus',
+    '#a855f7',
+    'Archetype',
+    'Insatiable demonic seductress who feeds on lust, arousal, and sexual energy.',
+    true
+  ),
+  createBuiltInTag(
+    'tag-monster-girl',
+    'Monster Girl',
+    '#10b981',
+    'Archetype',
+    'Non-human hybrid anatomy with unique biological instincts, mating cycles, and sensory traits.',
+    true,
+    [
+      {
+        id: 'sub-monstergirl-tail',
+        name: 'Coiling Tail / Appendages',
+        aiDescription:
+          'Prehensile tail or non-human appendages that coil possessively around {{user}}.',
+      },
+      {
+        id: 'sub-monstergirl-instinct',
+        name: 'Mating Instinct',
+        aiDescription:
+          'Heightened biological scent-marking and primal devotion toward her chosen mate.',
+      },
+    ]
   ),
   createBuiltInTag(
     'tag-nurse',
     'Nurse',
     '#14b8a6',
     'Archetype',
-    'Clinical yet seductive caretaker focused on physical examinations, hands-on relief, and bedside service.'
+    'Clinical yet seductive caretaker focused on physical examinations, hands-on relief, and bedside service.',
+    true
   ),
   createBuiltInTag(
     'tag-office-lady',
     'Office Lady (OL)',
     '#6366f1',
     'Archetype',
-    'Professional businesswoman in a tight pencil skirt, blouse, and pantyhose hiding pent-up workplace lust.'
+    'Professional businesswoman in a tight pencil skirt, blouse, and pantyhose hiding pent-up workplace lust.',
+    true
   ),
   createBuiltInTag(
     'tag-bratty-tease',
     'Bratty / Tease',
     '#f43f5e',
     'Archetype',
-    "Smug, provocative adult tease who mocks {{user}}'s stamina until thoroughly put in her place."
+    "Smug, provocative adult tease who mocks {{user}}'s stamina until thoroughly put in her place.",
+    true
   ),
 
   // C. Body Types, Attire & Physical Fetish Tags
   createBuiltInTag(
-    'tag-big-breasts',
-    'Big Breasts',
-    '#ec4899',
+    'tag-glasses-megane',
+    'Glasses / Megane',
+    '#3b82f6',
     'Body & Attire',
-    'Full, heavy, supple breasts that bounce, press against clothing, and draw constant visual and tactile focus.'
-  ),
-  createBuiltInTag(
-    'tag-huge-breasts-hyper',
-    'Huge Breasts / Hyper',
-    '#db2777',
-    'Body & Attire',
-    'Massively proportioned, overflowing bust that strains fabric and dominates physical contact.'
-  ),
-  createBuiltInTag(
-    'tag-petite-slender-adult',
-    'Petite / Slender (Adult)',
-    '#f472b6',
-    'Body & Attire',
-    'Lithe, compact adult frame emphasizing size contrast and delicate proportions.'
-  ),
-  createBuiltInTag(
-    'tag-thick-thighs-wide-hips',
-    'Thick Thighs / Wide Hips',
-    '#d946ef',
-    'Body & Attire',
-    'Plush, curvy lower body with soft, squeezing thighs, wide childbearing hips, and a prominent rear.'
-  ),
-  createBuiltInTag(
-    'tag-shortstack',
-    'Shortstack',
-    '#a855f7',
-    'Body & Attire',
-    'Short adult stature paired with exaggerated curves, heavy bust, and thick hips.'
+    'Wears glasses that frame expressive eyes and slip askew or fog up during emotional or intimate moments.',
+    false
   ),
   createBuiltInTag(
     'tag-muscular-fit-female',
     'Muscular / Fit Female',
     '#f97316',
     'Body & Attire',
-    'Toned abs, defined athletic musculature, physical strength, and sweat-glistening skin.'
+    'Toned abs, defined athletic musculature, physical strength, and sweat-glistening skin.',
+    false
   ),
   createBuiltInTag(
     'tag-tanlines-dark-skin',
     'Tanlines / Dark Skin',
     '#d97706',
     'Body & Attire',
-    'Sun-kissed or rich dark skin with contrasting pale tanlines that highlight exposed erogenous zones.'
+    'Sun-kissed or rich dark skin with contrasting pale tanlines.',
+    false
   ),
   createBuiltInTag(
-    'tag-glasses-megane',
-    'Glasses / Megane',
-    '#3b82f6',
+    'tag-petite-slender-adult',
+    'Petite / Slender (Adult)',
+    '#f472b6',
     'Body & Attire',
-    'Wears glasses that fog up or slip askew during intense intimate moments.'
+    'Lithe, compact adult frame emphasizing size contrast and delicate proportions.',
+    false
+  ),
+  createBuiltInTag(
+    'tag-big-breasts',
+    'Big Breasts',
+    '#ec4899',
+    'Body & Attire',
+    'Full, heavy, supple breasts that bounce, press against clothing, and draw constant visual and tactile focus.',
+    true,
+    [
+      {
+        id: 'sub-breasts-huge-hyper',
+        name: 'Huge / Hyper',
+        aiDescription:
+          'Massively proportioned, overflowing hyper-bust that strains fabric and dominates physical contact.',
+      },
+      {
+        id: 'sub-breasts-perky',
+        name: 'Perky',
+        aiDescription:
+          'Firm, uplifted, gravity-defying full breasts with prominent, sensitive peaks.',
+      },
+      {
+        id: 'sub-breasts-natural-sag',
+        name: 'Natural Sag',
+        aiDescription:
+          'Heavy, natural teardrop weight and realistic pendulous sway when unrestrained.',
+      },
+      {
+        id: 'sub-breasts-cleavage',
+        name: 'Cleavage Window',
+        aiDescription:
+          'Attire features a plunging neckline or keyhole cutout framing deep, plush cleavage.',
+      },
+    ]
+  ),
+  createBuiltInTag(
+    'tag-huge-breasts-hyper',
+    'Huge Breasts / Hyper',
+    '#db2777',
+    'Body & Attire',
+    'Massively proportioned, overflowing bust that strains fabric and dominates physical contact.',
+    true
+  ),
+  createBuiltInTag(
+    'tag-thick-thighs-wide-hips',
+    'Thick Thighs / Wide Hips',
+    '#d946ef',
+    'Body & Attire',
+    'Plush, curvy lower body with soft, squeezing thighs, wide childbearing hips, and a prominent rear.',
+    true,
+    [
+      {
+        id: 'sub-thighs-plush',
+        name: 'Thigh Squeeze',
+        aiDescription:
+          'Soft, heavy inner thighs that cushion and grip {{user}} warmly.',
+      },
+      {
+        id: 'sub-hips-hourglass',
+        name: 'Extreme Hourglass',
+        aiDescription:
+          'Narrow waist flaring dramatically into wide, curvaceous hips and a full rear.',
+      },
+    ]
+  ),
+  createBuiltInTag(
+    'tag-shortstack',
+    'Shortstack',
+    '#a855f7',
+    'Body & Attire',
+    'Short adult stature paired with exaggerated curves, heavy bust, and thick hips.',
+    true
   ),
   createBuiltInTag(
     'tag-stockings-thighhighs',
     'Stockings / Thighhighs',
     '#8b5cf6',
     'Body & Attire',
-    'Sheer nylon stockings, garter belts, or thigh-highs accentuating the absolute territory of the thighs.'
+    'Sheer nylon stockings, garter belts, or thigh-highs accentuating the absolute territory of the thighs.',
+    true,
+    [
+      {
+        id: 'sub-stockings-zettai',
+        name: 'Zettai Ryouiki',
+        aiDescription:
+          'Tantalizing strip of bare, soft thigh skin framed between skirt hem and thigh-high stockings.',
+      },
+      {
+        id: 'sub-stockings-garters',
+        name: 'Garter Belt',
+        aiDescription:
+          'Lace garter straps biting softly into plush thighs.',
+      },
+      {
+        id: 'sub-stockings-torn',
+        name: 'Torn Nylon',
+        aiDescription:
+          'Ripped or parted nylon stockings exposing bare skin during heated intimacy.',
+      },
+    ]
   ),
   createBuiltInTag(
     'tag-lingerie-babydoll',
     'Lingerie / Babydoll',
     '#ec4899',
     'Body & Attire',
-    'Lace, sheer fabric, or provocative straps designed to frame and expose the body.'
+    'Lace, sheer fabric, or provocative straps designed to frame and expose the body.',
+    true
   ),
   createBuiltInTag(
     'tag-latex-bodysuit',
     'Latex / Bodysuit',
     '#3f3f46',
     'Body & Attire',
-    'Skin-tight, glossy latex or spandex bodysuit that clings to every contour.'
+    'Skin-tight, glossy latex or spandex bodysuit that clings to every contour.',
+    true
   ),
   createBuiltInTag(
     'tag-collar-leash',
     'Collar / Leash',
     '#ef4444',
     'Body & Attire',
-    'Wears a collar symbolizing ownership, submission, or pet-play devotion.'
+    'Wears a collar symbolizing ownership, submission, or pet-play devotion.',
+    true
   ),
 
   // D. Popular NSFW Kinks, Acts & Dynamics
@@ -325,366 +600,500 @@ export const DEFAULT_TAGS: TagDefinition[] = [
     'Femdom',
     '#9333ea',
     'NSFW & Kinks',
-    'Female dominance: the character takes full control, commands {{user}}, and dictates the pace of pleasure.'
+    'Female dominance: the character takes full control, commands {{user}}, and dictates the pace of pleasure.',
+    true,
+    [
+      {
+        id: 'sub-femdom-gentle',
+        name: 'Gentle Femdom',
+        aiDescription:
+          'Soft, praising, affectionate female dominance with warm encouragement and pampering.',
+      },
+      {
+        id: 'sub-femdom-strict',
+        name: 'Strict Mistress',
+        aiDescription:
+          'Commanding, imperious authority demanding obedience, kneeling, and verbal reverence.',
+      },
+    ]
   ),
   createBuiltInTag(
     'tag-maledom-submissive',
     'Maledom / Submissive Character',
     '#2563eb',
     'NSFW & Kinks',
-    'The character craves being pinned, commanded, manhandled, and dominated by {{user}}.'
+    'The character craves being pinned, commanded, manhandled, and dominated by {{user}}.',
+    true,
+    [
+      {
+        id: 'sub-maledom-needy',
+        name: 'Needy & Vocal Sub',
+        aiDescription:
+          'Openly begs, clings, and whimpers for {{user}}’s touch and command.',
+      },
+      {
+        id: 'sub-maledom-pinned',
+        name: 'Pinned & Manhandled',
+        aiDescription:
+          'Aroused by firm grip, being lifted or pinned against surfaces, and physical strength.',
+      },
+    ]
   ),
   createBuiltInTag(
     'tag-brat-taming',
     'Brat Taming / Correction',
     '#e11d48',
     'NSFW & Kinks',
-    'Smug defiance that breaks down into whining, obedient submission under firm physical dominance.'
+    'Smug defiance that breaks down into whining, obedient submission under firm physical dominance.',
+    true
   ),
   createBuiltInTag(
     'tag-bondage-restraints',
     'Bondage / Restraints',
     '#7c3aed',
     'NSFW & Kinks',
-    'Ropes, shibari, cuffs, or physical restraint heightening helplessness and sensory focus.'
+    'Ropes, shibari, cuffs, or physical restraint heightening helplessness and sensory focus.',
+    true,
+    [
+      {
+        id: 'sub-bondage-shibari',
+        name: 'Shibari Rope',
+        aiDescription:
+          'Intricate Japanese rope bondage tying wrists, torso, and thighs in tight, decorative knots that emphasize curves.',
+      },
+      {
+        id: 'sub-bondage-cuffs',
+        name: 'Cuffs & Chains',
+        aiDescription:
+          'Steel handcuffs, padded leather restraints, or clinking chains securing limbs to the bedpost or wall.',
+      },
+      {
+        id: 'sub-bondage-spreader',
+        name: 'Spreader Bar',
+        aiDescription:
+          'Rigid metal spreader bar keeping ankles or thighs locked wide apart and completely exposed.',
+      },
+      {
+        id: 'sub-bondage-blindfold',
+        name: 'Blindfold & Gag',
+        aiDescription:
+          'Sensory deprivation blindfold or gag muffling vocalizations into desperate, heightened whimpers.',
+      },
+    ]
   ),
   createBuiltInTag(
     'tag-bdsm-sadomasochism',
     'BDSM / Sadomasochism',
     '#991b1b',
     'NSFW & Kinks',
-    'Intense power exchange, impact play, pain-pleasure overlap, and psychological dominance.'
+    'Intense power exchange, impact play, pain-pleasure overlap, and psychological dominance.',
+    true
   ),
   createBuiltInTag(
     'tag-breeding-impregnation',
     'Breeding / Impregnation',
     '#db2777',
     'NSFW & Kinks',
-    'Primal biological urge to be bred, begging for internal finishes and risky, unprotected intimacy.'
+    'Primal biological urge to be bred, begging for internal finishes and risky, unprotected intimacy.',
+    true
   ),
   createBuiltInTag(
     'tag-creampie',
     'Creampie',
     '#ec4899',
     'NSFW & Kinks',
-    'Focus on internal climax, warmth, overflowing aftermath, and intimate physical lock.'
+    'Focus on internal climax, warmth, overflowing aftermath, and intimate physical lock.',
+    true,
+    [
+      {
+        id: 'sub-creampie-leglock',
+        name: 'Leg-Lock',
+        aiDescription:
+          'Wraps legs tightly around {{user}}’s waist at climax to pull them deeper inside.',
+      },
+    ]
   ),
   createBuiltInTag(
     'tag-oral-blowjob-deepthroat',
     'Oral / Blowjob / Deepthroat',
     '#f43f5e',
     'NSFW & Kinks',
-    'Enthusiastic oral service, eye contact, messy saliva, and deep throat devotion.'
+    'Enthusiastic oral service, eye contact, messy saliva, and deep throat devotion.',
+    true
   ),
   createBuiltInTag(
     'tag-paizuri-titjob',
     'Paizuri / Titjob',
     '#d946ef',
     'NSFW & Kinks',
-    'Using soft, oiled, or heavy cleavage to envelop and pleasure {{user}}.'
+    'Using soft, oiled, or heavy cleavage to envelop and pleasure {{user}}.',
+    true
   ),
   createBuiltInTag(
     'tag-thighjob-footjob',
     'Thighjob / Footjob',
     '#a855f7',
     'NSFW & Kinks',
-    'Teasing friction using plush inner thighs or arches of the feet.'
+    'Teasing friction using plush inner thighs or arches of the feet.',
+    true
   ),
   createBuiltInTag(
     'tag-anal',
     'Anal',
     '#be123c',
     'NSFW & Kinks',
-    'Taboo, tight backdoor intimacy with heightened vocal reactions and physical intensity.'
+    'Taboo, tight backdoor intimacy with heightened vocal reactions and physical intensity.',
+    true
   ),
   createBuiltInTag(
     'tag-ahegao-mind-break',
     'Ahegao / Mind Break (Pleasure)',
     '#c026d3',
     'NSFW & Kinks',
-    'Overwhelming, eyes-rolling-back ecstasy, incoherent moaning, and total surrender to sensory overload.'
+    'Overwhelming, eyes-rolling-back ecstasy, incoherent moaning, and total surrender to sensory overload.',
+    true
   ),
   createBuiltInTag(
     'tag-overstimulation-multi-orgasm',
     'Overstimulation / Multi-Orgasm',
     '#e879f9',
     'NSFW & Kinks',
-    'Relentless pleasure pushed past climax until trembling, hypersensitive, and begging for mercy.'
+    'Relentless pleasure pushed past climax until trembling, hypersensitive, and begging for mercy.',
+    true
   ),
   createBuiltInTag(
     'tag-aphrodisiac-in-heat',
     'Aphrodisiac / In Heat',
     '#f43f5e',
     'NSFW & Kinks',
-    'Heightened, feverish biological estrus or potion-induced arousal that strips away inhibitions.'
+    'Heightened, feverish biological estrus or potion-induced arousal that strips away inhibitions.',
+    true
   ),
   createBuiltInTag(
     'tag-exhibitionism-public-risk',
     'Exhibitionism / Public Risk',
     '#f59e0b',
     'NSFW & Kinks',
-    'Thrill of being seen, semi-public intimacy, muffled moans, and the danger of getting caught.'
+    'Thrill of being seen, semi-public intimacy, muffled moans, and the danger of getting caught.',
+    true
   ),
   createBuiltInTag(
     'tag-voyeurism',
     'Voyeurism',
     '#eab308',
     'NSFW & Kinks',
-    'Watching or being watched from the shadows during private, explicit moments.'
+    'Watching or being watched from the shadows during private, explicit moments.',
+    true
   ),
   createBuiltInTag(
     'tag-hypnosis-mind-control',
     'Hypnosis / Mind Control',
     '#6366f1',
     'NSFW & Kinks',
-    'Trance-like obedience, altered perception, or magical suggestion removing all hesitation.'
+    'Trance-like obedience, altered perception, or magical suggestion removing all hesitation.',
+    true
   ),
   createBuiltInTag(
     'tag-tentacles-monster',
     'Tentacles / Monster',
     '#10b981',
     'NSFW & Kinks',
-    'Exotic non-human appendages, multiple points of stimulation, and overwhelming physical entanglement.'
+    'Exotic non-human appendages, multiple points of stimulation, and overwhelming physical entanglement.',
+    true
   ),
   createBuiltInTag(
     'tag-size-difference',
     'Size Difference',
     '#0ea5e9',
     'NSFW & Kinks',
-    'Stark physical contrast in height, build, and anatomy emphasizing intensity and fullness.'
+    'Stark physical contrast in height, build, and anatomy emphasizing intensity and fullness.',
+    true
   ),
   createBuiltInTag(
     'tag-futanari',
     'Futanari',
     '#a855f7',
     'NSFW & Kinks',
-    'Dual-anatomy character possessing both female curves/breasts and male genitalia.'
+    'Dual-anatomy character possessing both female curves/breasts and male genitalia.',
+    true
   ),
   createBuiltInTag(
     'tag-yuri-ff',
     'Yuri / F/F',
     '#ec4899',
     'NSFW & Kinks',
-    'Sapphic female-on-female romance and explicit sensual intimacy.'
+    'Sapphic female-on-female romance and explicit sensual intimacy.',
+    true
   ),
   createBuiltInTag(
     'tag-yaoi-mm',
     'Yaoi / M/M',
     '#3b82f6',
     'NSFW & Kinks',
-    'Male-on-male romance and explicit physical passion.'
+    'Male-on-male romance and explicit physical passion.',
+    true
   ),
   createBuiltInTag(
     'tag-harem-group-threesome',
     'Harem / Group / Threesome',
     '#8b5cf6',
     'NSFW & Kinks',
-    'Multi-partner dynamics, competitive servicing, and shared simultaneous pleasure.'
+    'Multi-partner dynamics, competitive servicing, and shared simultaneous pleasure.',
+    true
   ),
   createBuiltInTag(
     'tag-ntr-netorare',
     'NTR / Netorare',
     '#dc2626',
     'NSFW & Kinks',
-    'Infidelity, corruption, and the illicit thrill of stealing or losing a partner to overwhelming lust.'
+    'Infidelity, corruption, and the illicit thrill of stealing or losing a partner to overwhelming lust.',
+    true
   ),
   createBuiltInTag(
     'tag-netori',
     'Netori',
     '#ea580c',
     'NSFW & Kinks',
-    "Actively seducing and winning over someone else's partner through superior charm and pleasure."
+    "Actively seducing and winning over someone else's partner through superior charm and pleasure.",
+    true
   ),
   createBuiltInTag(
     'tag-cheating-secret-affair',
     'Cheating / Secret Affair',
     '#b91c1c',
     'NSFW & Kinks',
-    'Forbidden behind-closed-doors passion fueled by guilt and secrecy.'
+    'Forbidden behind-closed-doors passion fueled by guilt and secrecy.',
+    true
   ),
   createBuiltInTag(
     'tag-friends-with-benefits',
     'Friends with Benefits',
     '#06b6d4',
     'NSFW & Kinks',
-    'Casual, no-strings-attached physical arrangement that blurs the line between friendship and lust.'
+    'Casual, no-strings-attached physical arrangement that blurs the line between friendship and lust.',
+    true
   ),
   createBuiltInTag(
     'tag-enemies-to-lovers-hate-sex',
     'Enemies to Lovers / Hate Sex',
     '#ef4444',
     'NSFW & Kinks',
-    'Aggressive, high-friction hostility boiling over into rough, desperate physical passion.'
+    'Aggressive, high-friction hostility boiling over into rough, desperate physical passion.',
+    true
   ),
   createBuiltInTag(
     'tag-praise-kink',
     'Praise Kink',
     '#14b8a6',
     'NSFW & Kinks',
-    "Melts into needy obedience when called a 'good girl/boy' and rewarded with warm verbal affirmation."
+    "Melts into needy obedience when called a 'good girl/boy' and rewarded with warm verbal affirmation.",
+    true
   ),
   createBuiltInTag(
     'tag-degradation-humiliation',
     'Degradation / Humiliation',
     '#9f1239',
     'NSFW & Kinks',
-    'Aroused by dirty talk, teasing insults, and being verbally put in a lower position.'
+    'Aroused by dirty talk, teasing insults, and being verbally put in a lower position.',
+    true
   ),
   createBuiltInTag(
     'tag-lactation',
     'Lactation',
     '#f9a8d4',
     'NSFW & Kinks',
-    'Sensitive, milk-producing breasts adding warmth and nursing kink elements to intimacy.'
+    'Sensitive, milk-producing breasts adding warmth and nursing kink elements to intimacy.',
+    true
   ),
   createBuiltInTag(
     'tag-aftercare',
     'Aftercare',
     '#34d399',
     'NSFW & Kinks',
-    'Post-intimacy tenderness, cuddling, cleaning up, and gentle emotional reassurance.'
+    'Post-intimacy tenderness, cuddling, cleaning up, and gentle emotional reassurance.',
+    true
   ),
 
-  // E. Extreme / Hentai Physics & Niche Fetishes (Tags 65–84)
+  // E. Extreme / Hentai Physics & Niche Fetishes
   createBuiltInTag(
     'tag-excessive-fluids-hyper-messy',
     'Excessive Fluids / Hyper Messy',
     '#06b6d4',
     'Extreme & Hentai Physics',
-    'Hentai-level fluid volume: overflowing climaxes, drenched sheets, dripping thighs, messy saliva strings, and constant visceral wetness.'
+    'Hentai-level fluid volume: overflowing climaxes, drenched sheets, dripping thighs, messy saliva strings, and constant visceral wetness.',
+    true,
+    [
+      {
+        id: 'sub-fluids-overflowing',
+        name: 'Overflowing',
+        aiDescription:
+          'Continuous, hentai-volume fluid overflow dripping down thighs and pooling beneath the body.',
+      },
+      {
+        id: 'sub-fluids-messy-sheets',
+        name: 'Messy Sheets',
+        aiDescription:
+          'Soaked bedding, glistening skin, and thoroughly drenched clothing from relentless climax.',
+      },
+      {
+        id: 'sub-fluids-saliva-strings',
+        name: 'Saliva Strings',
+        aiDescription:
+          'Thick, glistening strands of saliva connecting lips and tongue during deep kisses or oral play.',
+      },
+    ]
   ),
   createBuiltInTag(
     'tag-cum-inflation-stomach-bulge',
     'Cum Inflation / Stomach Bulge',
     '#ec4899',
     'Extreme & Hentai Physics',
-    'Massive internal finishes causing a visibly rounded, distended lower belly, heavy fullness sensations, and overflowing leakage.'
+    'Massive internal finishes causing a visibly rounded, distended lower belly, heavy fullness sensations, and overflowing leakage.',
+    true
   ),
   createBuiltInTag(
     'tag-squirting-gushing',
     'Squirting / Gushing',
     '#38bdf8',
     'Extreme & Hentai Physics',
-    'Intense, uncontrollable gushes of fluid during peak orgasm and overstimulation.'
+    'Intense, uncontrollable gushes of fluid during peak orgasm and overstimulation.',
+    true
   ),
   createBuiltInTag(
     'tag-internal-bulge-anatomy-contour',
     'Internal Bulge / Anatomy Contour',
     '#f43f5e',
     'Extreme & Hentai Physics',
-    'Hentai-physics size contrast where large anatomy visibly presses and outlines against the lower abdomen during deep penetration.'
+    'Hentai-physics size contrast where large anatomy visibly presses and outlines against the lower abdomen during deep penetration.',
+    true
   ),
   createBuiltInTag(
     'tag-deep-cervix-penetration',
     'Deep / Cervix Penetration',
     '#be123c',
     'Extreme & Hentai Physics',
-    'Extreme depth reaching the deepest internal limits (womb/cervix), triggering full-body spasms and breathless vocal reactions.'
+    'Extreme depth reaching the deepest internal limits (womb/cervix), triggering full-body spasms and breathless vocal reactions.',
+    true
   ),
   createBuiltInTag(
     'tag-womb-tattoo-lewd-crest',
     'Womb Tattoo / Lewd Crest (Inmon)',
     '#d946ef',
     'Extreme & Hentai Physics',
-    'A glowing magical crest on the lower abdomen that pulses brightest when aroused and amplifies sensitivity and lust.'
+    'A glowing magical crest on the lower abdomen that pulses brightest when aroused and amplifies sensitivity and lust.',
+    true
   ),
   createBuiltInTag(
     'tag-body-writing-tally-marks',
     'Body Writing / Tally Marks',
     '#e11d48',
     'Extreme & Hentai Physics',
-    'Possessive phrases, degrading labels, or partner tally marks written directly onto the skin, thighs, and stomach.'
+    'Possessive phrases, degrading labels, or partner tally marks written directly onto the skin, thighs, and stomach.',
+    true
   ),
   createBuiltInTag(
     'tag-oviposition-egg-laying',
     'Oviposition / Egg Laying (Fantasy)',
     '#10b981',
     'Extreme & Hentai Physics',
-    'Exotic monster/alien kink involving internal egg implantation, rhythmic fullness, and a swollen abdomen.'
+    'Exotic monster/alien kink involving internal egg implantation, rhythmic fullness, and a swollen abdomen.',
+    true
   ),
   createBuiltInTag(
     'tag-slime-living-suit-symbiote',
     'Slime / Living Suit / Symbiote',
     '#14b8a6',
     'Extreme & Hentai Physics',
-    'Sentient slime or living bodysuit that clings to skin, seeps into crevices, and provides nonstop teasing stimulation.'
+    'Sentient slime or living bodysuit that clings to skin, seeps into crevices, and provides nonstop teasing stimulation.',
+    true
   ),
   createBuiltInTag(
     'tag-moral-degeneration-corruption',
     'Moral Degeneration / Corruption',
     '#9333ea',
     'Extreme & Hentai Physics',
-    "The gradual breakdown of a proud, noble, or uptight character's inhibitions into shameless, pleasure-addicted hedonism."
+    "The gradual breakdown of a proud, noble, or uptight character's inhibitions into shameless, pleasure-addicted hedonism.",
+    true
   ),
   createBuiltInTag(
     'tag-bimbofication-slut-conditioning',
     'Bimbofication / Slut Conditioning',
     '#f472b6',
     'Extreme & Hentai Physics',
-    'Mental or magical conditioning that heightens libido, ditzy eagerness, and an obsession with physical servicing.'
+    'Mental or magical conditioning that heightens libido, ditzy eagerness, and an obsession with physical servicing.',
+    true
   ),
   createBuiltInTag(
     'tag-free-use',
     'Free Use',
     '#f59e0b',
     'Extreme & Hentai Physics',
-    'A setting or dynamic where casual, on-demand intimate access is treated as completely normal and routine at any time.'
+    'A setting or dynamic where casual, on-demand intimate access is treated as completely normal and routine at any time.',
+    true
   ),
   createBuiltInTag(
     'tag-public-use-stuck-in-wall',
     'Public Use / Stuck in Wall',
     '#ea580c',
     'Extreme & Hentai Physics',
-    'Helpless or immobilized exhibitionist servicing where the character is exposed and used openly.'
+    'Helpless or immobilized exhibitionist servicing where the character is exposed and used openly.',
+    true
   ),
   createBuiltInTag(
     'tag-gangbang-bukkake',
     'Gangbang / Bukkake',
     '#8b5cf6',
     'Extreme & Hentai Physics',
-    'Stamina-draining multi-partner intimacy leaving the character exhausted, trembling, and thoroughly covered in fluids.'
+    'Stamina-draining multi-partner intimacy leaving the character exhausted, trembling, and thoroughly covered in fluids.',
+    true
   ),
   createBuiltInTag(
     'tag-musk-sweat-heavy-pheromones',
     'Musk / Sweat / Heavy Pheromones',
     '#d97706',
     'Extreme & Hentai Physics',
-    'Intense olfactory focus: thick arousal scent, steamy post-exertion sweat, intoxicating pheromones, and skin-licking.'
+    'Intense olfactory focus: thick arousal scent, steamy post-exertion sweat, intoxicating pheromones, and skin-licking.',
+    true
   ),
   createBuiltInTag(
     'tag-watersports-omorashi',
     'Watersports / Omorashi',
     '#eab308',
     'Extreme & Hentai Physics',
-    'Loss of bladder control from overwhelming overstimulation, desperation, or explicit watersports kink.'
+    'Loss of bladder control from overwhelming overstimulation, desperation, or explicit watersports kink.',
+    true
   ),
   createBuiltInTag(
     'tag-somnophilia-drowsy-intimacy',
     'Somnophilia / Drowsy Intimacy',
     '#6366f1',
     'Extreme & Hentai Physics',
-    'Consensual half-asleep, lazy morning, or heavy-lidded intimacy while one partner is drowsy and pliant.'
+    'Consensual half-asleep, lazy morning, or heavy-lidded intimacy while one partner is drowsy and pliant.',
+    true
   ),
   createBuiltInTag(
     'tag-choking-breath-play',
     'Choking / Breath Play',
     '#dc2626',
     'Extreme & Hentai Physics',
-    'Rough, passionate hands-on-throat intensity heightening lightheadedness and submission during climax.'
+    'Rough, passionate hands-on-throat intensity heightening lightheadedness and submission during climax.',
+    true
   ),
   createBuiltInTag(
     'tag-piercings-nipple-intimate',
     'Piercings (Nipple / Intimate)',
     '#94a3b8',
     'Extreme & Hentai Physics',
-    'Erotic metal barbells, rings, or chains on nipples or intimate anatomy that heighten sensitivity and tug during play.'
+    'Erotic metal barbells, rings, or chains on nipples or intimate anatomy that heighten sensitivity and tug during play.',
+    true
   ),
   createBuiltInTag(
     'tag-foot-armpit-worship',
     'Foot / Armpit Worship',
     '#fb923c',
     'Extreme & Hentai Physics',
-    'Dedicated focus on kissing, licking, smelling, and servicing bare soles, toes, or glistening underarms.'
+    'Dedicated focus on kissing, licking, smelling, and servicing bare soles, toes, or glistening underarms.',
+    true
   ),
 ];
 
@@ -692,8 +1101,8 @@ export const DEFAULT_TAG_LIBRARY: TagDefinition[] = DEFAULT_TAGS;
 
 /**
  * Merges any missing built-in tags from `DEFAULT_TAGS` by `name` (case-insensitive)
- * into an existing persisted tag array so newly added built-in tags appear automatically
- * without wiping custom user-created tags or user edits.
+ * into an existing persisted tag array AND backfills `isNsfw` and `subTags` on built-in tags
+ * so newly added sub-tags and NSFW classifications appear automatically without wiping user edits.
  */
 export function mergeWithDefaultTags(
   existingTags?: TagDefinition[] | null
@@ -701,12 +1110,39 @@ export function mergeWithDefaultTags(
   if (!Array.isArray(existingTags) || existingTags.length === 0) {
     return DEFAULT_TAGS;
   }
-  const merged = [...existingTags];
-  const seenNames = new Set(
-    existingTags
-      .filter((t) => t && typeof t.name === 'string')
-      .map((t) => t.name.trim().toLowerCase())
+
+  const builtInByName = new Map(
+    DEFAULT_TAGS.map((b) => [b.name.trim().toLowerCase(), b])
   );
+
+  const merged: TagDefinition[] = existingTags
+    .filter((t) => t && typeof t.name === 'string')
+    .map((existing) => {
+      const key = existing.name.trim().toLowerCase();
+      const builtIn = builtInByName.get(key);
+      if (!builtIn) {
+        return {
+          ...existing,
+          isNsfw:
+            existing.isNsfw !== undefined
+              ? existing.isNsfw
+              : existing.category === 'NSFW & Kinks' ||
+                existing.category === 'Extreme & Hentai Physics',
+          subTags: Array.isArray(existing.subTags) ? existing.subTags : [],
+        };
+      }
+      return {
+        ...existing,
+        isNsfw:
+          existing.isNsfw !== undefined ? existing.isNsfw : builtIn.isNsfw,
+        subTags:
+          Array.isArray(existing.subTags) && existing.subTags.length > 0
+            ? existing.subTags
+            : builtIn.subTags || [],
+      };
+    });
+
+  const seenNames = new Set(merged.map((t) => t.name.trim().toLowerCase()));
   for (const builtIn of DEFAULT_TAGS) {
     const key = builtIn.name.trim().toLowerCase();
     if (!seenNames.has(key)) {
@@ -785,13 +1221,15 @@ export const DEFAULT_AI_CONFIG: AIBackendConfig = {
   preset: 'lmstudio',
   url: 'http://localhost:1234/v1',
   apiKey: '',
-  modelName: 'llama-3.3-70b-instruct',
+  modelName: 'gemma-4-27b-it',
   compatibilityFormat: 'auto',
   temperature: 0.78,
   maxTokens: 512,
   ghostTextEnabled: true,
   debounceMs: 650,
   availableModels: [],
+  savedProviderKeys: {},
+  savedProviderModels: {},
 };
 
 export const DEFAULT_SAVE_FOLDERS = [UNIFIED_INTERNAL_ROOT];
@@ -806,7 +1244,122 @@ export const DEFAULT_SETTINGS: AppSettings = {
   activeSaveFolder: UNIFIED_INTERNAL_ROOT,
   availableSaveFolders: DEFAULT_SAVE_FOLDERS,
   mainSidebarOpen: true,
+  hideNsfwTags: false,
 };
+
+/**
+ * Loads and merges per-provider credentials (`savedProviderKeys` and `savedProviderModels`)
+ * from dedicated `localStorage` so switching between providers never loses an API key.
+ */
+function loadPersistedProviderCredentials(): {
+  savedProviderKeys: Record<string, string>;
+  savedProviderModels: Record<string, string>;
+} {
+  try {
+    const raw = safeLocalStorageGet(PROVIDER_CREDENTIALS_STORAGE_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      return {
+        savedProviderKeys:
+          parsed && typeof parsed.savedProviderKeys === 'object'
+            ? { ...parsed.savedProviderKeys }
+            : {},
+        savedProviderModels:
+          parsed && typeof parsed.savedProviderModels === 'object'
+            ? { ...parsed.savedProviderModels }
+            : {},
+      };
+    }
+  } catch {
+    // Ignore parse errors
+  }
+  return { savedProviderKeys: {}, savedProviderModels: {} };
+}
+
+function savePersistedProviderCredentials(
+  savedProviderKeys: Record<string, string>,
+  savedProviderModels: Record<string, string>
+): void {
+  safeLocalStorageSet(
+    PROVIDER_CREDENTIALS_STORAGE_KEY,
+    JSON.stringify({ savedProviderKeys, savedProviderModels })
+  );
+}
+
+/**
+ * Synchronizes `savedProviderKeys` and `savedProviderModels` whenever `AIBackendConfig` updates.
+ * - When `preset` changes, saves the previous provider's key/model and loads the newly selected provider's saved key/model.
+ * - When `apiKey` or `modelName` changes on the active preset, updates the map for both `preset` and `getProviderKeyId(preset)`.
+ */
+export function syncAIConfigProviderCredentials(
+  prev: AIBackendConfig,
+  next: AIBackendConfig
+): AIBackendConfig {
+  const keysMap: Record<string, string> = {
+    ...(prev.savedProviderKeys || {}),
+    ...(next.savedProviderKeys || {}),
+  };
+  const modelsMap: Record<string, string> = {
+    ...(prev.savedProviderModels || {}),
+    ...(next.savedProviderModels || {}),
+  };
+
+  // Always record previous preset's state before switching
+  const prevProviderId = getProviderKeyId(prev.preset);
+  if (prev.apiKey !== undefined) {
+    keysMap[prevProviderId] = prev.apiKey;
+    keysMap[prev.preset] = prev.apiKey;
+  }
+  if (prev.modelName) {
+    modelsMap[prevProviderId] = prev.modelName;
+    modelsMap[prev.preset] = prev.modelName;
+  }
+
+  const nextProviderId = getProviderKeyId(next.preset);
+  const presetMeta = AI_BACKEND_PRESETS.find((p) => p.id === next.preset);
+
+  if (next.preset !== prev.preset) {
+    // Switching between AI backends -> automatically restore saved key & model for target provider!
+    const restoredKey =
+      keysMap[nextProviderId] ?? keysMap[next.preset] ?? '';
+    const restoredModel =
+      modelsMap[nextProviderId] ??
+      modelsMap[next.preset] ??
+      presetMeta?.defaultModel ??
+      next.modelName;
+
+    keysMap[nextProviderId] = restoredKey;
+    keysMap[next.preset] = restoredKey;
+    modelsMap[nextProviderId] = restoredModel;
+    modelsMap[next.preset] = restoredModel;
+
+    savePersistedProviderCredentials(keysMap, modelsMap);
+
+    return {
+      ...next,
+      apiKey: restoredKey,
+      modelName: restoredModel,
+      savedProviderKeys: keysMap,
+      savedProviderModels: modelsMap,
+    };
+  }
+
+  // Updating apiKey or modelName on the same preset -> persist immediately
+  keysMap[nextProviderId] = next.apiKey;
+  keysMap[next.preset] = next.apiKey;
+  if (next.modelName) {
+    modelsMap[nextProviderId] = next.modelName;
+    modelsMap[next.preset] = next.modelName;
+  }
+
+  savePersistedProviderCredentials(keysMap, modelsMap);
+
+  return {
+    ...next,
+    savedProviderKeys: keysMap,
+    savedProviderModels: modelsMap,
+  };
+}
 
 /**
  * Safely formats any ISO string, Unix timestamp, or legacy time string into a clean
@@ -1023,9 +1576,15 @@ interface StoreContextValue {
     tagName: string,
     category?: TagDefinition['category']
   ) => TagDefinition | null;
+  addSubTagToTag: (
+    parentTagId: string,
+    subTagName: string,
+    subTagAiDescription: string
+  ) => void;
   // AI Config & Settings
   aiConfig: AIBackendConfig;
   setAiConfig: React.Dispatch<React.SetStateAction<AIBackendConfig>>;
+  switchAIPreset: (presetId: AIPresetId) => void;
   settings: AppSettings;
   setSettings: React.Dispatch<React.SetStateAction<AppSettings>>;
   updateSettings: (partial: Partial<AppSettings>) => void;
@@ -1141,14 +1700,14 @@ export function createBlankLorebook(partial?: Partial<Lorebook>): Lorebook {
 function loadInitialState(): PersistedWorkspaceState {
   const nowIso = new Date().toISOString();
   const nowDisplay = formatSafeTimestamp(nowIso);
+  const dedicatedCreds = loadPersistedProviderCredentials();
 
   try {
-    // Purge any legacy pre-v2 keys that held seeded demo characters/lorebooks/themes
     for (const oldKey of LEGACY_STORAGE_KEYS) {
-      window.localStorage.removeItem(oldKey);
+      safeLocalStorageRemove(oldKey);
     }
 
-    const raw = window.localStorage.getItem(STORAGE_KEY);
+    const raw = safeLocalStorageGet(STORAGE_KEY);
     if (raw) {
       const parsed = JSON.parse(raw) as Partial<PersistedWorkspaceState>;
       const characters = Array.isArray(parsed.characters)
@@ -1170,6 +1729,7 @@ function loadInitialState(): PersistedWorkspaceState {
           parsed.settings?.mainSidebarOpen !== undefined
             ? parsed.settings.mainSidebarOpen
             : true,
+        hideNsfwTags: Boolean(parsed.settings?.hideNsfwTags),
       };
       if (!themes.some((t) => t.id === settings.activeThemeId)) {
         settings.activeThemeId = themes[0].id;
@@ -1186,6 +1746,46 @@ function loadInitialState(): PersistedWorkspaceState {
         lorebooks.some((l) => l.id === parsed.activeLorebookId)
           ? parsed.activeLorebookId
           : lorebooks[0]?.id || '';
+
+      const mergedProviderKeys: Record<string, string> = {
+        ...dedicatedCreds.savedProviderKeys,
+        ...(parsed.aiConfig?.savedProviderKeys || {}),
+      };
+      const mergedProviderModels: Record<string, string> = {
+        ...dedicatedCreds.savedProviderModels,
+        ...(parsed.aiConfig?.savedProviderModels || {}),
+      };
+
+      const activePreset = parsed.aiConfig?.preset || DEFAULT_AI_CONFIG.preset;
+      const activeProviderKey = getProviderKeyId(activePreset);
+      const currentApiKey =
+        parsed.aiConfig?.apiKey ||
+        mergedProviderKeys[activeProviderKey] ||
+        mergedProviderKeys[activePreset] ||
+        '';
+      const currentModelName =
+        parsed.aiConfig?.modelName ||
+        mergedProviderModels[activeProviderKey] ||
+        mergedProviderModels[activePreset] ||
+        DEFAULT_AI_CONFIG.modelName;
+
+      if (currentApiKey) {
+        mergedProviderKeys[activeProviderKey] = currentApiKey;
+        mergedProviderKeys[activePreset] = currentApiKey;
+      }
+      if (currentModelName) {
+        mergedProviderModels[activeProviderKey] = currentModelName;
+        mergedProviderModels[activePreset] = currentModelName;
+      }
+
+      const hydratedAiConfig: AIBackendConfig = {
+        ...DEFAULT_AI_CONFIG,
+        ...(parsed.aiConfig || {}),
+        apiKey: currentApiKey,
+        modelName: currentModelName,
+        savedProviderKeys: mergedProviderKeys,
+        savedProviderModels: mergedProviderModels,
+      };
 
       const unifiedFiles = buildUnifiedSavedFiles(
         characters,
@@ -1204,7 +1804,7 @@ function loadInitialState(): PersistedWorkspaceState {
         activeLorebookId,
         themes,
         tags,
-        aiConfig: { ...DEFAULT_AI_CONFIG, ...(parsed.aiConfig || {}) },
+        aiConfig: hydratedAiConfig,
         settings,
         savedFiles: unifiedFiles,
         saveLogs: Array.isArray(parsed.saveLogs) ? parsed.saveLogs : [],
@@ -1212,7 +1812,7 @@ function loadInitialState(): PersistedWorkspaceState {
       };
     }
   } catch {
-    // Fallback to clean defaults
+    // Fallback to clean defaults if storage is corrupted or blocked
   }
 
   const initialFiles = buildUnifiedSavedFiles(
@@ -1225,6 +1825,7 @@ function loadInitialState(): PersistedWorkspaceState {
     nowIso
   );
 
+  const defaultProviderKey = getProviderKeyId(DEFAULT_AI_CONFIG.preset);
   return {
     characters: [],
     activeCharacterId: '',
@@ -1232,7 +1833,19 @@ function loadInitialState(): PersistedWorkspaceState {
     activeLorebookId: '',
     themes: DEFAULT_CONTEXT_THEMES,
     tags: DEFAULT_TAGS,
-    aiConfig: DEFAULT_AI_CONFIG,
+    aiConfig: {
+      ...DEFAULT_AI_CONFIG,
+      apiKey:
+        dedicatedCreds.savedProviderKeys[defaultProviderKey] ||
+        dedicatedCreds.savedProviderKeys[DEFAULT_AI_CONFIG.preset] ||
+        '',
+      modelName:
+        dedicatedCreds.savedProviderModels[defaultProviderKey] ||
+        dedicatedCreds.savedProviderModels[DEFAULT_AI_CONFIG.preset] ||
+        DEFAULT_AI_CONFIG.modelName,
+      savedProviderKeys: dedicatedCreds.savedProviderKeys,
+      savedProviderModels: dedicatedCreds.savedProviderModels,
+    },
     settings: DEFAULT_SETTINGS,
     savedFiles: initialFiles,
     saveLogs: [
@@ -1267,13 +1880,42 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
   );
   const [themes, setThemes] = useState<ContextTheme[]>(initial.themes);
   const [tags, setTags] = useState<TagDefinition[]>(initial.tags);
-  const [aiConfig, setAiConfig] = useState<AIBackendConfig>(initial.aiConfig);
+  const [aiConfigState, setAiConfigState] = useState<AIBackendConfig>(
+    initial.aiConfig
+  );
   const [settings, setSettings] = useState<AppSettings>(initial.settings);
   const [saveLogs, setSaveLogs] = useState<SaveLogEntry[]>(initial.saveLogs);
   const [lastSavedAt, setLastSavedAt] = useState<string | null>(
     initial.lastSavedAt
   );
   const [isDirty, setIsDirty] = useState<boolean>(false);
+
+  // Wrapped setAiConfig that automatically persists & restores per-provider API keys and models
+  const setAiConfig: React.Dispatch<React.SetStateAction<AIBackendConfig>> =
+    useCallback((updater) => {
+      setAiConfigState((prev) => {
+        const rawNext =
+          typeof updater === 'function' ? updater(prev) : updater;
+        return syncAIConfigProviderCredentials(prev, rawNext);
+      });
+    }, []);
+
+  const switchAIPreset = useCallback((presetId: AIPresetId) => {
+    const found = AI_BACKEND_PRESETS.find((p) => p.id === presetId);
+    if (!found) return;
+    setAiConfigState((prev) =>
+      syncAIConfigProviderCredentials(prev, {
+        ...prev,
+        preset: presetId,
+        url: found.defaultUrl,
+        modelName: found.defaultModel,
+        compatibilityFormat: 'auto',
+        availableModels: found.suggestedModels,
+      })
+    );
+  }, []);
+
+  const aiConfig = aiConfigState;
 
   // Native FileSystemDirectoryHandle & IndexedDB Two-Way Sync State
   const nativeDirHandleRef = useRef<any>(null);
@@ -1286,8 +1928,6 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
   >(null);
   const [isSyncingFolder, setIsSyncingFolder] = useState<boolean>(false);
 
-  // Always derive the unified savedFiles tree (`Characters/`, `Lorebooks/`, and `_tavernsmith_meta.json`)
-  // so the Storage Manager never displays "0 saved files" and always stays in lockstep with the workspace.
   const savedFiles = useMemo<SavedFileEntry[]>(
     () =>
       buildUnifiedSavedFiles(
@@ -1341,21 +1981,29 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
     );
   }, [themes, settings.activeThemeId]);
 
-  // Lock in Dual-Layer Theme System on <html> and <body>
+  // Lock in Dual-Layer Theme System on <html>
   useEffect(() => {
-    const root = document.documentElement;
-    if (settings.appearance === 'dark') {
-      root.classList.add('dark');
-      root.classList.remove('light');
-    } else {
-      root.classList.remove('dark');
-      root.classList.add('light');
+    try {
+      const root = document.documentElement;
+      if (settings.appearance === 'dark') {
+        root.classList.add('dark');
+        root.classList.remove('light');
+      } else {
+        root.classList.remove('dark');
+        root.classList.add('light');
+      }
+    } catch {
+      // Ignore DOM errors
     }
   }, [settings.appearance]);
 
   useEffect(() => {
-    const root = document.documentElement;
-    root.style.setProperty('--theme-accent', activeTheme.color);
+    try {
+      const root = document.documentElement;
+      root.style.setProperty('--theme-accent', activeTheme.color);
+    } catch {
+      // Ignore DOM errors
+    }
   }, [activeTheme.color]);
 
   useEffect(() => {
@@ -1371,28 +2019,28 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
     settings,
   ]);
 
-  // Automatically register any new tag attached to a Character, Lorebook, LorebookEntry, or ContextTheme
-  // into the Global Tag Library so custom tags are always persisted.
+  // Automatically register any new top-level tag attached to a Character, Lorebook, LorebookEntry, or ContextTheme
   useEffect(() => {
     const referencedTagNames = new Set<string>();
     for (const c of characters) {
       for (const t of c.tags || []) {
-        if (t && t.trim()) referencedTagNames.add(t.trim());
+        if (t && t.trim() && !t.includes(':')) referencedTagNames.add(t.trim());
       }
     }
     for (const lb of lorebooks) {
       for (const t of lb.tags || []) {
-        if (t && t.trim()) referencedTagNames.add(t.trim());
+        if (t && t.trim() && !t.includes(':')) referencedTagNames.add(t.trim());
       }
       for (const entry of lb.entries || []) {
         for (const t of entry.tags || []) {
-          if (t && t.trim()) referencedTagNames.add(t.trim());
+          if (t && t.trim() && !t.includes(':'))
+            referencedTagNames.add(t.trim());
         }
       }
     }
     for (const theme of themes) {
       for (const t of theme.associatedTags || []) {
-        if (t && t.trim()) referencedTagNames.add(t.trim());
+        if (t && t.trim() && !t.includes(':')) referencedTagNames.add(t.trim());
       }
     }
 
@@ -1400,6 +2048,12 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
       const existingLower = new Set(
         prevTags.map((t) => t.name.trim().toLowerCase())
       );
+      for (const pt of prevTags) {
+        for (const sub of pt.subTags || []) {
+          existingLower.add(sub.name.trim().toLowerCase());
+          existingLower.add(`${pt.name}: ${sub.name}`.toLowerCase());
+        }
+      }
       const newlyDiscovered: TagDefinition[] = [];
       let idx = prevTags.length;
 
@@ -1414,6 +2068,8 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
             name: rawName,
             color,
             category: 'custom',
+            isNsfw: false,
+            subTags: [],
             aiContextDescription: `Incorporate thematic, tonal, and character elements consistent with "${rawName}".`,
           });
         }
@@ -1433,6 +2089,15 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
       const clean = rawTagName.trim();
       if (!clean) return null;
 
+      // If it's a sub-tag reference ("Parent: Sub"), return the parent tag if found
+      if (clean.includes(':')) {
+        const parentPart = clean.split(':')[0].trim().toLowerCase();
+        const parentFound = tags.find(
+          (t) => t.name.trim().toLowerCase() === parentPart
+        );
+        if (parentFound) return parentFound;
+      }
+
       const found = tags.find(
         (t) => t.name.trim().toLowerCase() === clean.toLowerCase()
       );
@@ -1445,6 +2110,10 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
         name: clean,
         color,
         category,
+        isNsfw:
+          category === 'NSFW & Kinks' ||
+          category === 'Extreme & Hentai Physics',
+        subTags: [],
         aiContextDescription: `Incorporate thematic, tonal, and character elements consistent with "${clean}".`,
       };
       setTags((prev) => {
@@ -1458,6 +2127,40 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
       return newTag;
     },
     [tags]
+  );
+
+  const addSubTagToTag = useCallback(
+    (parentTagId: string, subTagName: string, subTagAiDescription: string) => {
+      const cleanName = subTagName.trim();
+      if (!cleanName) return;
+      const cleanDesc =
+        subTagAiDescription.trim() ||
+        `Emphasize ${cleanName} details and nuances.`;
+
+      setTags((prev) =>
+        prev.map((t) => {
+          if (t.id !== parentTagId) return t;
+          const existingSubs = Array.isArray(t.subTags) ? t.subTags : [];
+          if (
+            existingSubs.some(
+              (s) => s.name.trim().toLowerCase() === cleanName.toLowerCase()
+            )
+          ) {
+            return t;
+          }
+          const newSub: SubTagDefinition = {
+            id: `sub-${Date.now()}-${Math.random().toString(36).slice(2, 5)}`,
+            name: cleanName,
+            aiDescription: cleanDesc,
+          };
+          return {
+            ...t,
+            subTags: [...existingSubs, newSub],
+          };
+        })
+      );
+    },
+    []
   );
 
   const setCharacter: React.Dispatch<React.SetStateAction<CharacterCardData>> =
@@ -1605,10 +2308,6 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
     [activeLorebookId]
   );
 
-  /**
-   * Helper to scan a single `FileSystemDirectoryHandle` (root, `Characters/`, or `Lorebooks/`)
-   * and collect any Character Cards, Lorebooks, or `_tavernsmith_meta.json`.
-   */
   const scanNativeDirectoryHandle = async (
     dirHandle: any,
     subfolderPrefix: '' | 'Characters/' | 'Lorebooks/',
@@ -1619,68 +2318,66 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
   ) => {
     if (!dirHandle || typeof dirHandle.entries !== 'function') return;
 
-    for await (const [entryName, entryHandle] of dirHandle.entries()) {
-      if (!entryHandle || entryHandle.kind !== 'file') continue;
-      const lowerName = String(entryName).toLowerCase();
-      if (!lowerName.endsWith('.json') && !lowerName.endsWith('.png')) {
-        continue;
-      }
-      if (lowerName.endsWith('_backupbundle.json')) {
-        continue;
-      }
-
-      try {
-        const file: File = await entryHandle.getFile();
-        const updatedIso = new Date(
-          file.lastModified || Date.now()
-        ).toISOString();
-
-        if (entryName === META_FILENAME) {
-          const text = await file.text();
-          const parsedMeta = JSON.parse(text) as Partial<TavernSmithMetaPayload>;
-          if (
-            parsedMeta &&
-            (Array.isArray(parsedMeta.tags) ||
-              Array.isArray(parsedMeta.contextThemes))
-          ) {
-            onMetaLoaded({
-              schema: 'tavernsmith_meta_v1',
-              updatedAt: parsedMeta.updatedAt || updatedIso,
-              activeThemeId:
-                parsedMeta.activeThemeId || DEFAULT_SETTINGS.activeThemeId,
-              contextThemes: Array.isArray(parsedMeta.contextThemes)
-                ? parsedMeta.contextThemes
-                : [],
-              tags: Array.isArray(parsedMeta.tags) ? parsedMeta.tags : [],
-            });
-            syncedFileNames.push(`${subfolderPrefix}${META_FILENAME}`);
-          }
+    try {
+      for await (const [entryName, entryHandle] of dirHandle.entries()) {
+        if (!entryHandle || entryHandle.kind !== 'file') continue;
+        const lowerName = String(entryName).toLowerCase();
+        if (!lowerName.endsWith('.json') && !lowerName.endsWith('.png')) {
+          continue;
+        }
+        if (lowerName.endsWith('_backupbundle.json')) {
           continue;
         }
 
-        const parsedAsset = await importCardFromFile(file);
-        if (parsedAsset.kind === 'character') {
-          loadedCharacters.push(parsedAsset.character);
-          if (parsedAsset.embeddedLorebook) {
-            loadedLorebooks.push(parsedAsset.embeddedLorebook);
+        try {
+          const file: File = await entryHandle.getFile();
+          const updatedIso = new Date(
+            file.lastModified || Date.now()
+          ).toISOString();
+
+          if (entryName === META_FILENAME) {
+            const text = await file.text();
+            const parsedMeta = JSON.parse(text) as Partial<TavernSmithMetaPayload>;
+            if (
+              parsedMeta &&
+              (Array.isArray(parsedMeta.tags) ||
+                Array.isArray(parsedMeta.contextThemes))
+            ) {
+              onMetaLoaded({
+                schema: 'tavernsmith_meta_v1',
+                updatedAt: parsedMeta.updatedAt || updatedIso,
+                activeThemeId:
+                  parsedMeta.activeThemeId || DEFAULT_SETTINGS.activeThemeId,
+                contextThemes: Array.isArray(parsedMeta.contextThemes)
+                  ? parsedMeta.contextThemes
+                  : [],
+                tags: Array.isArray(parsedMeta.tags) ? parsedMeta.tags : [],
+              });
+              syncedFileNames.push(`${subfolderPrefix}${META_FILENAME}`);
+            }
+            continue;
           }
-          syncedFileNames.push(`${subfolderPrefix}${entryName}`);
-        } else if (parsedAsset.kind === 'lorebook') {
-          loadedLorebooks.push(parsedAsset.lorebook);
-          syncedFileNames.push(`${subfolderPrefix}${entryName}`);
+
+          const parsedAsset = await importCardFromFile(file);
+          if (parsedAsset.kind === 'character') {
+            loadedCharacters.push(parsedAsset.character);
+            if (parsedAsset.embeddedLorebook) {
+              loadedLorebooks.push(parsedAsset.embeddedLorebook);
+            }
+            syncedFileNames.push(`${subfolderPrefix}${entryName}`);
+          } else if (parsedAsset.kind === 'lorebook') {
+            loadedLorebooks.push(parsedAsset.lorebook);
+            syncedFileNames.push(`${subfolderPrefix}${entryName}`);
+          }
+        } catch {
+          // Ignore non-card PNGs or unrelated JSON files
         }
-      } catch {
-        // Ignore non-card PNGs or unrelated JSON files
       }
+    } catch {
+      // Ignore directory iteration permission errors
     }
   };
 
-  /**
-   * Scans the unified Root Save Folder (`Characters/`, `Lorebooks/`, and root `_tavernsmith_meta.json`):
-   * - When linked to a Local PC folder, automatically ensures `Characters/` and `Lorebooks/` subdirectories
-   *   exist on disk and scans root + `Characters/` + `Lorebooks/`.
-   * - When in Browser Internal Storage mode, scans all saved files in internal storage.
-   */
   const scanAndLoadSaveFolder = useCallback(
     async (options?: {
       dirHandleOverride?: any;
@@ -1703,7 +2400,6 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
         if (rootHandle && typeof rootHandle.entries === 'function') {
           const perm = await queryDirectoryHandlePermission(rootHandle, 'read');
           if (perm === 'granted') {
-            // Ensure real Characters/ and Lorebooks/ subdirectories exist on the user's hard drive
             let charsDirHandle: any = null;
             let loreDirHandle: any = null;
             try {
@@ -1716,22 +2412,20 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
                 { create: true }
               );
             } catch {
-              // If read-only permission, try without create: true
               try {
                 charsDirHandle =
                   await rootHandle.getDirectoryHandle('Characters');
               } catch {
-                // Ignore if not yet created
+                // Ignore
               }
               try {
                 loreDirHandle =
                   await rootHandle.getDirectoryHandle('Lorebooks');
               } catch {
-                // Ignore if not yet created
+                // Ignore
               }
             }
 
-            // 1. Scan root folder (for _tavernsmith_meta.json and any top-level cards)
             await scanNativeDirectoryHandle(
               rootHandle,
               '',
@@ -1743,7 +2437,6 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
               }
             );
 
-            // 2. Scan Characters/ subfolder
             if (charsDirHandle) {
               await scanNativeDirectoryHandle(
                 charsDirHandle,
@@ -1757,7 +2450,6 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
               );
             }
 
-            // 3. Scan Lorebooks/ subfolder
             if (loreDirHandle) {
               await scanNativeDirectoryHandle(
                 loreDirHandle,
@@ -1772,7 +2464,6 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
             }
           }
         } else {
-          // Browser Internal Storage Scan
           for (const entry of savedFilesRef.current) {
             try {
               if (
@@ -1824,7 +2515,6 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
           }
         }
 
-        // Apply loaded _tavernsmith_meta.json (Context Themes & Tags)
         if (loadedMeta) {
           const metaSnapshot: TavernSmithMetaPayload = loadedMeta;
           if (metaSnapshot.contextThemes.length > 0) {
@@ -1865,12 +2555,11 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
                   });
                 }
               }
-              return Array.from(mapByName.values());
+              return mergeWithDefaultTags(Array.from(mapByName.values()));
             });
           }
         }
 
-        // Merge loaded Characters into Character Roster
         if (loadedCharacters.length > 0) {
           setCharacters((prevChars) => {
             const nextList = [...prevChars];
@@ -1895,7 +2584,6 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
           });
         }
 
-        // Merge loaded Lorebooks into Lorebook Roster
         if (loadedLorebooks.length > 0) {
           setLorebooks((prevBooks) => {
             const nextList = [...prevBooks];
@@ -1957,6 +2645,11 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
               ? `Synced ${summaryParts.join(', ')} from ${folderDisplay}`
               : `Scanned ${folderDisplay} (all subfolders up to date).`,
         };
+      } catch {
+        return {
+          ok: false,
+          summary: `Could not scan ${folderDisplay} in this environment.`,
+        };
       } finally {
         setIsSyncingFolder(false);
       }
@@ -1964,40 +2657,44 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
     []
   );
 
-  // On App Launch: Check IndexedDB for persisted Local PC FileSystemDirectoryHandle and run Two-Way Sync
+  // On App Launch: Safely check IndexedDB for persisted Local PC FileSystemDirectoryHandle
   useEffect(() => {
     let cancelled = false;
     (async () => {
-      const storedRecord = await loadDirectoryHandleFromIndexedDB();
-      if (cancelled) return;
-
-      if (storedRecord && storedRecord.handle) {
-        const perm = await queryDirectoryHandlePermission(
-          storedRecord.handle,
-          'readwrite'
-        );
+      try {
+        const storedRecord = await loadDirectoryHandleFromIndexedDB();
         if (cancelled) return;
 
-        if (perm === 'granted') {
-          nativeDirHandleRef.current = storedRecord.handle;
-          const folderPath = `/${storedRecord.folderName}/`;
-          setNativeDirectoryName(storedRecord.folderName);
-          setPendingReconnectFolderName(null);
-          setSettings((prev) => ({
-            ...prev,
-            activeSaveFolder: folderPath,
-            availableSaveFolders: [folderPath],
-          }));
-          await scanAndLoadSaveFolder({
-            dirHandleOverride: storedRecord.handle,
-            folderPathOverride: folderPath,
-            silent: true,
-          });
-          return;
-        } else {
-          pendingReconnectRecordRef.current = storedRecord;
-          setPendingReconnectFolderName(storedRecord.folderName);
+        if (storedRecord && storedRecord.handle) {
+          const perm = await queryDirectoryHandlePermission(
+            storedRecord.handle,
+            'readwrite'
+          );
+          if (cancelled) return;
+
+          if (perm === 'granted') {
+            nativeDirHandleRef.current = storedRecord.handle;
+            const folderPath = `/${storedRecord.folderName}/`;
+            setNativeDirectoryName(storedRecord.folderName);
+            setPendingReconnectFolderName(null);
+            setSettings((prev) => ({
+              ...prev,
+              activeSaveFolder: folderPath,
+              availableSaveFolders: [folderPath],
+            }));
+            await scanAndLoadSaveFolder({
+              dirHandleOverride: storedRecord.handle,
+              folderPathOverride: folderPath,
+              silent: true,
+            });
+            return;
+          } else {
+            pendingReconnectRecordRef.current = storedRecord;
+            setPendingReconnectFolderName(storedRecord.folderName);
+          }
         }
+      } catch {
+        // Ignore any startup IndexedDB/FileSystem error in restricted environments
       }
     })();
 
@@ -2006,56 +2703,60 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
     };
   }, [scanAndLoadSaveFolder]);
 
-  // 1-Click Reconnect Save Folder handler (grants read/write permission on stored IndexedDB handle)
   const reconnectNativeSaveFolder = useCallback(async (): Promise<{
     ok: boolean;
     message: string;
   }> => {
-    const record = pendingReconnectRecordRef.current;
-    if (!record || !record.handle) {
+    try {
+      const record = pendingReconnectRecordRef.current;
+      if (!record || !record.handle) {
+        return {
+          ok: false,
+          message: 'No stored local directory handle found. Please select a folder.',
+        };
+      }
+
+      const perm = await requestDirectoryHandlePermission(
+        record.handle,
+        'readwrite'
+      );
+      if (perm !== 'granted') {
+        return {
+          ok: false,
+          message: `Permission to access "${record.folderName}" was not granted.`,
+        };
+      }
+
+      nativeDirHandleRef.current = record.handle;
+      const folderPath = `/${record.folderName}/`;
+      setNativeDirectoryName(record.folderName);
+      setPendingReconnectFolderName(null);
+      pendingReconnectRecordRef.current = null;
+
+      setSettings((prev) => ({
+        ...prev,
+        activeSaveFolder: folderPath,
+        availableSaveFolders: [folderPath],
+      }));
+
+      const syncRes = await scanAndLoadSaveFolder({
+        dirHandleOverride: record.handle,
+        folderPathOverride: folderPath,
+        silent: false,
+      });
+
+      return {
+        ok: true,
+        message: `Reconnected Local PC Hard Drive Folder "${record.folderName}/". ${syncRes.summary}`,
+      };
+    } catch {
       return {
         ok: false,
-        message: 'No stored local directory handle found. Please select a folder.',
+        message: 'Could not reconnect local folder in this browser context.',
       };
     }
-
-    const perm = await requestDirectoryHandlePermission(
-      record.handle,
-      'readwrite'
-    );
-    if (perm !== 'granted') {
-      return {
-        ok: false,
-        message: `Permission to access "${record.folderName}" was not granted.`,
-      };
-    }
-
-    nativeDirHandleRef.current = record.handle;
-    const folderPath = `/${record.folderName}/`;
-    setNativeDirectoryName(record.folderName);
-    setPendingReconnectFolderName(null);
-    pendingReconnectRecordRef.current = null;
-
-    setSettings((prev) => ({
-      ...prev,
-      activeSaveFolder: folderPath,
-      availableSaveFolders: [folderPath],
-    }));
-
-    const syncRes = await scanAndLoadSaveFolder({
-      dirHandleOverride: record.handle,
-      folderPathOverride: folderPath,
-      silent: false,
-    });
-
-    return {
-      ok: true,
-      message: `Reconnected Local PC Hard Drive Folder "${record.folderName}/". ${syncRes.summary}`,
-    };
   }, [scanAndLoadSaveFolder]);
 
-  // Select Native Save Folder via File System Access API (`window.showDirectoryPicker`)
-  // Automatically creates `Characters/` and `Lorebooks/` subdirectories on the user's hard drive!
   const selectNativeSaveFolder = useCallback(async (): Promise<{
     ok: boolean;
     message: string;
@@ -2081,7 +2782,6 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
       setPendingReconnectFolderName(null);
       pendingReconnectRecordRef.current = null;
 
-      // Create real Characters/ and Lorebooks/ subdirectories on the user's hard drive immediately
       await rootHandle.getDirectoryHandle('Characters', { create: true });
       await rootHandle.getDirectoryHandle('Lorebooks', { create: true });
 
@@ -2138,7 +2838,6 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
     [scanAndLoadSaveFolder]
   );
 
-  // Load any saved file from the Storage Manager directly into the active Character/Lorebook workbench
   const loadSavedFileIntoWorkspace = useCallback(
     (file: SavedFileEntry): { ok: boolean; message: string } => {
       try {
@@ -2147,7 +2846,7 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
             file.content
           ) as Partial<TavernSmithMetaPayload>;
           if (Array.isArray(parsedMeta.tags) && parsedMeta.tags.length > 0) {
-            setTags(parsedMeta.tags);
+            setTags(mergeWithDefaultTags(parsedMeta.tags));
           }
           if (
             Array.isArray(parsedMeta.contextThemes) &&
@@ -2260,7 +2959,7 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
       ? `/${nativeDirectoryName}/`
       : UNIFIED_INTERNAL_ROOT;
     const bundle = {
-      bundleVersion: '1.0.1',
+      bundleVersion: '2.0.0',
       exportedAt: new Date().toISOString(),
       saveFolderRoot: rootLabel,
       structure: {
@@ -2281,7 +2980,9 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
     const blob = new Blob([JSON.stringify(bundle, null, 2)], {
       type: 'application/json',
     });
-    const folderSlug = sanitizeFilename(nativeDirectoryName || 'TavernSmith_Saves');
+    const folderSlug = sanitizeFilename(
+      nativeDirectoryName || 'TavernSmith_Saves'
+    );
     triggerBrowserDownload(
       blob,
       `TavernSmith_${folderSlug}_BackupBundle.json`
@@ -2304,9 +3005,6 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
     []
   );
 
-  // Unified Manual Save & Auto-Save Target:
-  // Saves ALL Characters into `Characters/[Name].json`, ALL Lorebooks into `Lorebooks/[Title].json`,
-  // and `_tavernsmith_meta.json` into the Root Save Folder!
   const saveNow = useCallback(
     (mode: 'manual' | 'autosave' = 'manual') => {
       const nowIso = new Date().toISOString();
@@ -2335,8 +3033,6 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
 
       setSaveLogs((prev) => [newLog, ...prev.slice(0, 19)]);
 
-      // If linked to a Local PC Hard Drive folder, create `Characters/` and `Lorebooks/` subdirectories
-      // and write all Character files, Lorebook files, and root `_tavernsmith_meta.json` directly to disk!
       if (nativeDirHandleRef.current) {
         const rootHandle = nativeDirHandleRef.current;
         (async () => {
@@ -2443,11 +3139,7 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
       lastSavedAt,
     };
 
-    try {
-      window.localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
-    } catch {
-      // Quota fallback ignored
-    }
+    safeLocalStorageSet(STORAGE_KEY, JSON.stringify(payload));
   }, [
     characters,
     activeCharacterId,
@@ -2462,7 +3154,6 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
     lastSavedAt,
   ]);
 
-  // Automatic Save Interval Loop writing to the unified Root Save Folder (`Characters/`, `Lorebooks/`, `_tavernsmith_meta.json`)
   useEffect(() => {
     if (!settings.autoSaveEnabled) return;
     const intervalMs = Math.max(5, settings.autoSaveIntervalSec) * 1000;
@@ -2501,7 +3192,7 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
                     byName.set(incoming.name.toLowerCase(), incoming);
                   }
                 }
-                return Array.from(byName.values());
+                return mergeWithDefaultTags(Array.from(byName.values()));
               });
             }
             if (
@@ -2595,9 +3286,9 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
   }, []);
 
   const resetWorkspaceToDefaults = useCallback(() => {
-    window.localStorage.removeItem(STORAGE_KEY);
+    safeLocalStorageRemove(STORAGE_KEY);
     for (const oldKey of LEGACY_STORAGE_KEYS) {
-      window.localStorage.removeItem(oldKey);
+      safeLocalStorageRemove(oldKey);
     }
     void clearDirectoryHandleFromIndexedDB();
     nativeDirHandleRef.current = null;
@@ -2610,7 +3301,13 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
     setActiveLorebookId('');
     setThemes(DEFAULT_CONTEXT_THEMES);
     setTags(DEFAULT_TAGS);
-    setAiConfig(DEFAULT_AI_CONFIG);
+    // Preserve saved provider API keys across workspace resets so users never lose keys!
+    const creds = loadPersistedProviderCredentials();
+    setAiConfigState({
+      ...DEFAULT_AI_CONFIG,
+      savedProviderKeys: creds.savedProviderKeys,
+      savedProviderModels: creds.savedProviderModels,
+    });
     setSettings(DEFAULT_SETTINGS);
     const nowDisplay = formatSafeTimestamp(new Date().toISOString());
     setSaveLogs([
@@ -2629,7 +3326,7 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
 
   const storageBytesUsed = useMemo(() => {
     try {
-      const raw = window.localStorage.getItem(STORAGE_KEY) || '';
+      const raw = safeLocalStorageGet(STORAGE_KEY) || '';
       const localBytes = new Blob([raw]).size;
       const filesBytes = savedFiles.reduce((acc, f) => acc + f.sizeBytes, 0);
       return Math.max(localBytes, filesBytes);
@@ -2680,8 +3377,10 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
       tags,
       setTags,
       ensureTagRegistered,
+      addSubTagToTag,
       aiConfig,
       setAiConfig,
+      switchAIPreset,
       settings,
       setSettings,
       updateSettings,
@@ -2732,7 +3431,10 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
       setActiveThemeId,
       tags,
       ensureTagRegistered,
+      addSubTagToTag,
       aiConfig,
+      setAiConfig,
+      switchAIPreset,
       settings,
       updateSettings,
       tokenBreakdown,

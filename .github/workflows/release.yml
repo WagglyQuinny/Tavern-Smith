@@ -36,20 +36,32 @@ jobs:
       - name: Run TypeScript Verification
         run: npm run lint
 
-      - name: Build Production Standalone Bundle
-        run: npm run build
+      - name: Build Production Standalone Bundle & Strip crossorigin for Direct file:// Support
+        run: |
+          npm run build
+          node -e '
+            const fs = require("fs");
+            const indexPath = "dist/index.html";
+            if (fs.existsSync(indexPath)) {
+              let html = fs.readFileSync(indexPath, "utf8");
+              html = html.replace(/\s+crossorigin(?:="[^"]*")?/gi, "");
+              fs.writeFileSync(indexPath, html, "utf8");
+              console.log("Stripped crossorigin attributes from dist/index.html for direct file:// compatibility.");
+            }
+          '
 
-      - name: Generate Standalone Desktop Launchers (Windows, macOS x64/ARM, Linux)
+      - name: Generate Non-Admin Standalone Desktop Launchers (Windows, macOS x64/ARM, Linux)
         run: |
           cat << 'EOF' > dist/Launch-TavernSmith-Windows.bat
           @echo off
-          setlocal
-          title TavernSmith Standalone Launcher
           cd /d "%~dp0"
+          setlocal
+          title TavernSmith Standalone Launcher (Standard Non-Admin Mode)
           set PORT=4173
 
           echo ===================================================
           echo   TavernSmith - SillyTavern V2/V3 Character IDE
+          echo   Standard User Launcher (No Admin Required)
           echo ===================================================
           echo.
 
@@ -61,16 +73,24 @@ jobs:
             goto :eof
           )
 
+          where py >nul 2>nul
+          if %ERRORLEVEL% EQU 0 (
+            echo Starting local TavernSmith server via Python Launcher on http://127.0.0.1:%PORT% ...
+            start "" msedge --app="http://127.0.0.1:%PORT%" 2>nul || start "" chrome --app="http://127.0.0.1:%PORT%" 2>nul || start "" "http://127.0.0.1:%PORT%"
+            py -3 -m http.server %PORT% --bind 127.0.0.1
+            goto :eof
+          )
+
           where npx >nul 2>nul
           if %ERRORLEVEL% EQU 0 (
             echo Starting local TavernSmith server via Node.js on http://127.0.0.1:%PORT% ...
             start "" msedge --app="http://127.0.0.1:%PORT%" 2>nul || start "" chrome --app="http://127.0.0.1:%PORT%" 2>nul || start "" "http://127.0.0.1:%PORT%"
-            npx --yes serve -s . -l tcp://127.0.0.1:%PORT%
+            npx --yes serve -l tcp://127.0.0.1:%PORT%
             goto :eof
           )
 
-          echo Opening TavernSmith directly in standalone app window...
-          start "" msedge --app="file:///%~dp0index.html" 2>nul || start "" chrome --app="file:///%~dp0index.html" 2>nul || start "" "%~dp0index.html"
+          echo Opening TavernSmith directly in standalone app window (No Admin required)...
+          start "" msedge --app="file:///%~dp0index.html" --allow-file-access-from-files 2>nul || start "" chrome --app="file:///%~dp0index.html" --allow-file-access-from-files 2>nul || start "" "%~dp0index.html"
           EOF
 
           cat << 'EOF' > dist/Launch-TavernSmith-Mac-Linux.command
@@ -99,11 +119,11 @@ jobs:
           elif command -v python >/dev/null 2>&1; then
             echo "Starting local TavernSmith server on ${URL} (Press Ctrl+C to stop)..."
             (sleep 1 && open_url "${URL}") &
-            python -m SimpleHTTPServer "${PORT}"
+            python -m http.server "${PORT}" --bind 127.0.0.1
           elif command -v npx >/dev/null 2>&1; then
             echo "Starting local TavernSmith server via Node on ${URL} (Press Ctrl+C to stop)..."
             (sleep 2 && open_url "${URL}") &
-            npx --yes serve -s . -l "tcp://127.0.0.1:${PORT}"
+            npx --yes serve -l "tcp://127.0.0.1:${PORT}"
           else
             echo "Opening index.html directly in your default browser..."
             open_url "./index.html"
@@ -116,10 +136,10 @@ jobs:
           TavernSmith — Universal Standalone Distribution
           ===============================================
           Compatible with Windows (x64/ARM64), macOS (Intel x64 & Apple Silicon M1/M2/M3/M4),
-          Linux, iOS/iPadOS, and Android.
+          Linux, iOS/iPadOS, and Android. Runs as a standard user with ZERO Administrator requirements.
 
           1. WINDOWS:
-             Double-click "Launch-TavernSmith-Windows.bat".
+             Double-click "Launch-TavernSmith-Windows.bat" (No Administrator privileges required).
 
           2. macOS (Intel & Apple Silicon ARM) / LINUX:
              Double-click "Launch-TavernSmith-Mac-Linux.command"

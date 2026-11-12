@@ -3,11 +3,13 @@ import {
   AIPresetId,
   ContextTheme,
   ModelCompatibilityFormat,
+  ProviderKeyId,
   TagDefinition,
 } from '../types';
 
 export interface AIPresetMeta {
   id: AIPresetId;
+  providerKey: ProviderKeyId;
   label: string;
   group: string;
   defaultUrl: string;
@@ -20,13 +22,18 @@ export interface AIPresetMeta {
 export const AI_BACKEND_PRESETS: AIPresetMeta[] = [
   {
     id: 'lmstudio',
+    providerKey: 'lmstudio',
     label: 'LM Studio (Local)',
     group: 'Local Server',
     defaultUrl: 'http://localhost:1234/v1',
-    defaultModel: 'llama-3.3-70b-instruct',
-    description: 'Local OpenAI-compatible server running via LM Studio on port 1234 (No key needed).',
+    defaultModel: 'gemma-4-27b-it',
+    description:
+      'Local OpenAI-compatible server running via LM Studio on port 1234 (Supports Gemma 4, Llama 3/4, Qwen, DeepSeek).',
     requiresKey: false,
     suggestedModels: [
+      'gemma-4-27b-it',
+      'gemma-4-12b-it',
+      'gemma-3-27b-it',
       'llama-3.3-70b-instruct',
       'qwen2.5-32b-instruct',
       'deepseek-r1-distill-llama-8b',
@@ -35,13 +42,17 @@ export const AI_BACKEND_PRESETS: AIPresetMeta[] = [
   },
   {
     id: 'ollama',
+    providerKey: 'ollama',
     label: 'Ollama (Local)',
     group: 'Local Server',
     defaultUrl: 'http://localhost:11434/v1',
-    defaultModel: 'llama3.3:latest',
-    description: 'Local Ollama daemon with /v1 and /api/tags support on port 11434 (No key needed).',
+    defaultModel: 'gemma4:latest',
+    description:
+      'Local Ollama daemon with /v1 and /api/tags support on port 11434 (No key needed).',
     requiresKey: false,
     suggestedModels: [
+      'gemma4:latest',
+      'gemma3:27b',
       'llama3.3:latest',
       'llama3.2:latest',
       'deepseek-r1:14b',
@@ -51,30 +62,36 @@ export const AI_BACKEND_PRESETS: AIPresetMeta[] = [
   },
   {
     id: 'koboldcpp',
+    providerKey: 'kobold',
     label: 'KoboldCPP / TextGenWebUI (Local)',
     group: 'Local Server',
     defaultUrl: 'http://localhost:5001/v1',
     defaultModel: 'koboldcpp-model',
-    description: 'Local GGUF server exposing /v1/chat/completions and /api/v1/generate fallback.',
+    description:
+      'Local GGUF server exposing /v1/chat/completions and /api/v1/generate fallback.',
     requiresKey: false,
-    suggestedModels: ['koboldcpp-model', 'text-generation-webui'],
+    suggestedModels: ['koboldcpp-model', 'gemma-4-gguf', 'text-generation-webui'],
   },
   {
     id: 'gemini',
+    providerKey: 'google',
     label: 'Google Gemini',
     group: 'Cloud API',
     defaultUrl: 'https://generativelanguage.googleapis.com/v1beta/openai',
     defaultModel: 'gemini-2.5-flash',
-    description: 'Google Gemini OpenAI-compatible endpoint & native v1beta/models scanner.',
+    description:
+      'Google Gemini OpenAI-compatible endpoint & native v1beta/models scanner.',
     requiresKey: true,
     suggestedModels: [
       'gemini-2.5-flash',
       'gemini-2.5-pro',
       'gemini-2.0-flash-thinking-exp',
+      'gemma-3-27b-it',
     ],
   },
   {
     id: 'xai_grok',
+    providerKey: 'xai',
     label: 'X / xAI Grok',
     group: 'Cloud API',
     defaultUrl: 'https://api.x.ai/v1',
@@ -85,15 +102,19 @@ export const AI_BACKEND_PRESETS: AIPresetMeta[] = [
   },
   {
     id: 'openrouter_llama',
-    label: 'Meta Llama 4 / Muse (OpenRouter)',
+    providerKey: 'openrouter',
+    label: 'OpenRouter (Llama 4 / Gemma 4 / DeepSeek)',
     group: 'Meta Llama & Cloud',
     defaultUrl: 'https://openrouter.ai/api/v1',
     defaultModel: 'meta-llama/llama-4-maverick',
-    description: 'OpenRouter unified gateway for Meta Llama 4 Maverick/Scout, DeepSeek, and Claude.',
+    description:
+      'OpenRouter unified gateway for Meta Llama 4, Google Gemma 4, DeepSeek R1, and Claude.',
     requiresKey: true,
     suggestedModels: [
       'meta-llama/llama-4-maverick',
       'meta-llama/llama-4-scout',
+      'google/gemma-4-27b-it',
+      'google/gemma-3-27b-it',
       'meta-llama/llama-3.3-70b-instruct',
       'deepseek/deepseek-r1',
       'anthropic/claude-3.7-sonnet',
@@ -101,21 +122,25 @@ export const AI_BACKEND_PRESETS: AIPresetMeta[] = [
   },
   {
     id: 'groq_llama',
-    label: 'Meta Llama 4 / Muse (Groq)',
+    providerKey: 'groq',
+    label: 'Groq LPU (Llama 4 / Gemma / DeepSeek)',
     group: 'Meta Llama & Cloud',
     defaultUrl: 'https://api.groq.com/openai/v1',
     defaultModel: 'meta-llama/llama-4-scout-17b-16e-instruct',
-    description: 'Ultra-low-latency LPU inference for Meta Llama 4, Llama 3.3, and DeepSeek R1.',
+    description:
+      'Ultra-low-latency LPU inference for Meta Llama 4, Gemma, and DeepSeek R1.',
     requiresKey: true,
     suggestedModels: [
       'meta-llama/llama-4-scout-17b-16e-instruct',
       'meta-llama/llama-4-maverick-17b-128e-instruct',
+      'gemma2-9b-it',
       'llama-3.3-70b-versatile',
       'deepseek-r1-distill-llama-70b',
     ],
   },
   {
     id: 'meta_direct',
+    providerKey: 'meta',
     label: 'Meta Llama Direct API',
     group: 'Meta Llama & Cloud',
     defaultUrl: 'https://api.llama.com/compat/v1',
@@ -130,41 +155,112 @@ export const AI_BACKEND_PRESETS: AIPresetMeta[] = [
   },
   {
     id: 'openai_compatible',
-    label: 'OpenAI / Anthropic / Custom Compatible',
+    providerKey: 'openai',
+    label: 'OpenAI API',
     group: 'Cloud API',
     defaultUrl: 'https://api.openai.com/v1',
     defaultModel: 'gpt-4o',
-    description: 'Any OpenAI-compatible v1 chat/completions endpoint or custom proxy.',
+    description: 'Official OpenAI chat/completions endpoint.',
     requiresKey: true,
-    suggestedModels: ['gpt-4o', 'gpt-4o-mini', 'claude-3-7-sonnet-latest'],
+    suggestedModels: ['gpt-4o', 'gpt-4o-mini', 'o3-mini'],
+  },
+  {
+    id: 'anthropic',
+    providerKey: 'anthropic',
+    label: 'Anthropic Claude (Compatible)',
+    group: 'Cloud API',
+    defaultUrl: 'https://api.anthropic.com/v1',
+    defaultModel: 'claude-3-7-sonnet-latest',
+    description: 'Anthropic Claude OpenAI-compatible endpoint or proxy.',
+    requiresKey: true,
+    suggestedModels: [
+      'claude-3-7-sonnet-latest',
+      'claude-3-5-sonnet-latest',
+      'claude-3-5-haiku-latest',
+    ],
+  },
+  {
+    id: 'custom',
+    providerKey: 'custom',
+    label: 'Custom OpenAI-Compatible Proxy',
+    group: 'Cloud API',
+    defaultUrl: 'http://localhost:8000/v1',
+    defaultModel: 'custom-model',
+    description: 'Any custom vLLM, TabbyAPI, Aphrodite, or OpenAI-compatible endpoint.',
+    requiresKey: false,
+    suggestedModels: ['custom-model', 'gemma-4-27b-it', 'llama-3.3-70b-instruct'],
   },
 ];
+
+/**
+ * Maps any AIPresetId or provider alias to the canonical ProviderKeyId
+ * (`google`, `xai`, `openrouter`, `groq`, `meta`, `openai`, `anthropic`, `lmstudio`, `ollama`, `kobold`, `custom`).
+ */
+export function getProviderKeyId(presetOrId: AIPresetId | string): ProviderKeyId {
+  const clean = (presetOrId || '').trim().toLowerCase();
+  switch (clean) {
+    case 'gemini':
+    case 'google':
+      return 'google';
+    case 'xai_grok':
+    case 'xai':
+      return 'xai';
+    case 'openrouter_llama':
+    case 'openrouter':
+      return 'openrouter';
+    case 'groq_llama':
+    case 'groq':
+      return 'groq';
+    case 'meta_direct':
+    case 'meta':
+      return 'meta';
+    case 'openai_compatible':
+    case 'openai':
+      return 'openai';
+    case 'anthropic':
+      return 'anthropic';
+    case 'lmstudio':
+      return 'lmstudio';
+    case 'ollama':
+      return 'ollama';
+    case 'koboldcpp':
+    case 'kobold':
+      return 'kobold';
+    case 'custom':
+    default:
+      return 'custom';
+  }
+}
 
 export const COMPATIBILITY_FORMAT_LABELS: Record<
   Exclude<ModelCompatibilityFormat, 'auto'>,
   string
 > = {
-  llama_3_4: 'Llama 3 / 4 Instruct',
-  deepseek_qwen_think: 'DeepSeek / Qwen <think>',
-  gemini_thinking: 'Gemini Thinking',
-  xai_grok_reasoning: 'xAI Grok Reasoning',
-  mistral: 'Mistral Instruct',
-  claude_chatml: 'Claude / ChatML',
+  gemma: 'Gemma (System-Merged & Reasoning)',
+  deepseek_qwen_think: 'DeepSeek / Qwen (<think>)',
+  llama_3_4: 'Llama 3 / 4',
+  mistral: 'Mistral',
+  xai_grok_reasoning: 'xAI Grok',
+  gemini_thinking: 'Google Gemini',
+  claude_chatml: 'Anthropic Claude',
   kobold_raw: 'Kobold Raw',
 };
 
 /**
- * Automatically detects the model family and compatibility format from the selected model ID and preset.
+ * Strictly inspects the selected Model Name / ID string (`modelName.toLowerCase()`)
+ * to determine the compatibility & thinking format, regardless of which endpoint hosts it.
  */
 export function detectModelCompatibilityFormat(
   modelName: string,
-  preset: AIPresetId
+  preset?: AIPresetId
 ): Exclude<ModelCompatibilityFormat, 'auto'> {
-  const m = (modelName || '').toLowerCase();
+  const m = (modelName || '').trim().toLowerCase();
 
-  if (preset === 'koboldcpp' || m.includes('kobold')) {
-    return 'kobold_raw';
+  // 1. Gemma family (e.g., gemma-4, gemma4, gemma-3, gemma-2) -> System-Merged & Reasoning
+  if (m.includes('gemma')) {
+    return 'gemma';
   }
+  // 2. DeepSeek / Qwen / QwQ / R1 -> DeepSeek / Qwen (<think>)
   if (
     m.includes('deepseek') ||
     m.includes('qwen') ||
@@ -173,27 +269,41 @@ export function detectModelCompatibilityFormat(
   ) {
     return 'deepseek_qwen_think';
   }
-  if (preset === 'gemini' || m.includes('gemini')) {
-    return 'gemini_thinking';
-  }
-  if (preset === 'xai_grok' || m.includes('grok')) {
-    return 'xai_grok_reasoning';
-  }
-  if (m.includes('mistral') || m.includes('mixtral') || m.includes('nemo')) {
-    return 'mistral';
-  }
-  if (m.includes('claude') || m.includes('gpt-') || m.includes('o1') || m.includes('o3')) {
-    return 'claude_chatml';
-  }
-  if (
-    m.includes('llama') ||
-    m.includes('muse') ||
-    preset === 'openrouter_llama' ||
-    preset === 'groq_llama' ||
-    preset === 'meta_direct'
-  ) {
+  // 3. Llama family -> Llama 3 / 4
+  if (m.includes('llama') || m.includes('muse')) {
     return 'llama_3_4';
   }
+  // 4. Mistral / Mixtral / Pixtral / Nemo -> Mistral
+  if (
+    m.includes('mistral') ||
+    m.includes('mixtral') ||
+    m.includes('pixtral') ||
+    m.includes('nemo')
+  ) {
+    return 'mistral';
+  }
+  // 5. xAI Grok -> xAI Grok
+  if (m.includes('grok')) {
+    return 'xai_grok_reasoning';
+  }
+  // 6. Google Gemini -> Google Gemini
+  if (m.includes('gemini')) {
+    return 'gemini_thinking';
+  }
+  // 7. Anthropic Claude -> Anthropic Claude
+  if (m.includes('claude')) {
+    return 'claude_chatml';
+  }
+  // 8. Kobold explicit model
+  if (m.includes('kobold')) {
+    return 'kobold_raw';
+  }
+
+  // Fallback only if model name has none of the identifiers above
+  if (preset === 'koboldcpp') return 'kobold_raw';
+  if (preset === 'gemini') return 'gemini_thinking';
+  if (preset === 'xai_grok') return 'xai_grok_reasoning';
+  if (preset === 'anthropic') return 'claude_chatml';
 
   return 'llama_3_4';
 }
@@ -208,8 +318,9 @@ export function resolveEffectiveFormat(
 }
 
 /**
- * Strips `<think>...</think>`, `<thought>...</thought>`, and `<reasoning>...</reasoning>`
- * blocks from raw LLM responses so chain-of-thought never pollutes Character or Lorebook fields.
+ * Strips `<think>...</think>`, `<thought>...</thought>`, `<reasoning>...</reasoning>`,
+ * AND Gemma 4's `<|thought|>...<|/thought|>` blocks from raw LLM responses so chain-of-thought
+ * never pollutes Character or Lorebook fields.
  */
 export function extractThinkingAndCleanContent(
   rawText: string,
@@ -227,7 +338,16 @@ export function extractThinkingAndCleanContent(
 
   let cleaned = rawText;
 
-  // Match complete <think>...</think>, <thought>...</thought>, <reasoning>...</reasoning>
+  // 1. Match Gemma 4 special thought delimiters: <|thought|>...<|/thought|> or <|thought|>...</thought>
+  const gemmaPipeRegex = /<\|thought\|>([\s\S]*?)(?:<\|\/thought\|>|<\/thought>)/gi;
+  cleaned = cleaned.replace(gemmaPipeRegex, (_fullMatch, innerText) => {
+    if (innerText && innerText.trim()) {
+      extractedBlocks.push(innerText.trim());
+    }
+    return '';
+  });
+
+  // 2. Match complete <think>...</think>, <thought>...</thought>, <reasoning>...</reasoning>
   const tagRegex = /<(think|thought|reasoning)\b[^>]*>([\s\S]*?)<\/\1>/gi;
   cleaned = cleaned.replace(tagRegex, (_fullMatch, _tag, innerText) => {
     if (innerText && innerText.trim()) {
@@ -236,15 +356,31 @@ export function extractThinkingAndCleanContent(
     return '';
   });
 
-  // Also handle unclosed leading <think> if max_tokens cut off or model omitted opening tag before </think>
-  if (cleaned.includes('</think>')) {
-    const parts = cleaned.split('</think>');
+  // 3. Handle unclosed leading <|thought|> before <|/thought|>
+  if (cleaned.includes('<|/thought|>')) {
+    const parts = cleaned.split('<|/thought|>');
     if (parts.length > 1) {
-      const thoughtPart = parts[0].replace(/<think[^>]*>/gi, '').trim();
+      const thoughtPart = parts[0].replace(/<\|thought\|>/gi, '').trim();
       if (thoughtPart) {
         extractedBlocks.push(thoughtPart);
       }
-      cleaned = parts.slice(1).join('</think>');
+      cleaned = parts.slice(1).join('<|/thought|>');
+    }
+  }
+
+  // 4. Handle unclosed leading <think> or <thought> before </think> or </thought>
+  for (const closeTag of ['</think>', '</thought>', '</reasoning>']) {
+    if (cleaned.toLowerCase().includes(closeTag)) {
+      const idx = cleaned.toLowerCase().indexOf(closeTag);
+      const before = cleaned
+        .slice(0, idx)
+        .replace(/<(think|thought|reasoning)\b[^>]*>/gi, '')
+        .replace(/<\|thought\|>/gi, '')
+        .trim();
+      if (before) {
+        extractedBlocks.push(before);
+      }
+      cleaned = cleaned.slice(idx + closeTag.length);
     }
   }
 
@@ -283,8 +419,11 @@ export interface ConnectionTestResult {
 }
 
 /**
- * Synthesizes the active Context Theme's instructions and associated Tag definitions
+ * Synthesizes the active Context Theme's instructions and ALL associated Tag & Sub-Tag definitions
  * into a unified system prompt context block for AI generation and ghost-text.
+ *
+ * CRITICAL RULE: Always includes all attached tags and sub-tags (including `isNsfw: true` tags)
+ * regardless of whether "Hide NSFW Tags" is toggled ON in the visual UI!
  */
 export function buildActiveAIContextBlock(
   theme?: ContextTheme,
@@ -295,26 +434,81 @@ export function buildActiveAIContextBlock(
 
   const combinedTagNames = Array.from(
     new Set([...(theme.associatedTags || []), ...activeItemTags])
-  );
+  ).filter(Boolean);
 
-  const matchedTags = combinedTagNames
-    .map((tagName) =>
-      allTags.find((t) => t.name.toLowerCase() === tagName.toLowerCase())
-    )
-    .filter((t): t is TagDefinition => Boolean(t));
+  const tagContextLines: string[] = [];
+  const emittedKeys = new Set<string>();
 
-  const tagContextLines = matchedTags
-    .map(
-      (t) =>
-        `- [${t.name}] (${t.category}): ${t.aiContextDescription || t.aiDescription || t.description || ''}`
-    )
-    .join('\n');
+  for (const rawSelected of combinedTagNames) {
+    const trimmed = rawSelected.trim();
+    const lower = trimmed.toLowerCase();
+
+    // 1. Check if it matches a Main Tag directly
+    const mainMatch = allTags.find((t) => t.name.trim().toLowerCase() === lower);
+    if (mainMatch) {
+      const key = `main:${mainMatch.name.toLowerCase()}`;
+      if (!emittedKeys.has(key)) {
+        emittedKeys.add(key);
+        const desc =
+          mainMatch.aiContextDescription ||
+          mainMatch.aiDescription ||
+          mainMatch.description ||
+          '';
+        tagContextLines.push(`- [${mainMatch.name}] (${mainMatch.category}): ${desc}`);
+      }
+      continue;
+    }
+
+    // 2. Check if it is formatted as "ParentTag: SubTag" or "ParentTag :: SubTag" or matches a SubTag inside any Main Tag
+    let matchedSub = false;
+    for (const parentTag of allTags) {
+      if (!Array.isArray(parentTag.subTags) || parentTag.subTags.length === 0) {
+        continue;
+      }
+      for (const sub of parentTag.subTags) {
+        const compositeColon = `${parentTag.name}: ${sub.name}`.toLowerCase();
+        const compositeDoubleColon = `${parentTag.name} :: ${sub.name}`.toLowerCase();
+        const bareSub = sub.name.trim().toLowerCase();
+
+        if (
+          lower === compositeColon ||
+          lower === compositeDoubleColon ||
+          lower === bareSub
+        ) {
+          // Ensure parent tag directive is also present for full context
+          const parentKey = `main:${parentTag.name.toLowerCase()}`;
+          if (!emittedKeys.has(parentKey)) {
+            emittedKeys.add(parentKey);
+            const pDesc =
+              parentTag.aiContextDescription ||
+              parentTag.aiDescription ||
+              parentTag.description ||
+              '';
+            tagContextLines.push(
+              `- [${parentTag.name}] (${parentTag.category}): ${pDesc}`
+            );
+          }
+
+          const subKey = `sub:${parentTag.name.toLowerCase()}:${sub.name.toLowerCase()}`;
+          if (!emittedKeys.has(subKey)) {
+            emittedKeys.add(subKey);
+            tagContextLines.push(
+              `  • Sub-Tag [${parentTag.name} -> ${sub.name}]: ${sub.aiDescription}`
+            );
+          }
+          matchedSub = true;
+          break;
+        }
+      }
+      if (matchedSub) break;
+    }
+  }
 
   return [
     `### Overarching Context Theme: ${theme.name}`,
     theme.aiContextPrompt.trim(),
-    matchedTags.length > 0
-      ? `\n### Active Semantic Tag Directives:\n${tagContextLines}`
+    tagContextLines.length > 0
+      ? `\n### Active Semantic Tag & Sub-Tag Directives:\n${tagContextLines.join('\n')}`
       : '',
   ]
     .filter(Boolean)
@@ -393,10 +587,17 @@ export async function fetchModels(
             .map((m: { name?: string }) =>
               (m.name || '').replace(/^models\//, '')
             )
-            .filter((name: string) => name.startsWith('gemini'));
+            .filter(
+              (name: string) =>
+                name.startsWith('gemini') || name.startsWith('gemma')
+            );
           if (parsed.length > 0) return parsed;
         }
-      } else if (geminiRes.status === 400 || geminiRes.status === 401 || geminiRes.status === 403) {
+      } else if (
+        geminiRes.status === 400 ||
+        geminiRes.status === 401 ||
+        geminiRes.status === 403
+      ) {
         throw new AIServiceError(
           `Invalid API Key (HTTP ${geminiRes.status})`,
           { statusCode: geminiRes.status }
@@ -526,7 +727,10 @@ export async function testBackendConnection(
   try {
     const models = await fetchModels(config, signal);
     const latencyMs = Math.max(1, Math.round(performance.now() - start));
-    const chosenModel = models[0] || config.modelName;
+    const chosenModel =
+      models.includes(config.modelName) && config.modelName
+        ? config.modelName
+        : models[0] || config.modelName;
     const detectedFmtKey = detectModelCompatibilityFormat(
       chosenModel,
       config.preset
@@ -614,8 +818,50 @@ export function buildFullSystemPromptForRequest(
 }
 
 /**
+ * Helper to parse a successful OpenAI-compatible chat completion JSON payload.
+ */
+function parseChatCompletionData(
+  data: any,
+  detectedFormat: Exclude<ModelCompatibilityFormat, 'auto'>,
+  sentSystemPrompt: string
+): DetailedCompletionResult | null {
+  const messageObj = data?.choices?.[0]?.message;
+  const rawContent =
+    messageObj?.content ??
+    data?.choices?.[0]?.text ??
+    data?.response ??
+    '';
+  const reasoningField =
+    messageObj?.reasoning_content ??
+    messageObj?.reasoning ??
+    data?.choices?.[0]?.reasoning_content ??
+    '';
+
+  const parsed = extractThinkingAndCleanContent(
+    typeof rawContent === 'string' ? rawContent : '',
+    typeof reasoningField === 'string' ? reasoningField : undefined
+  );
+
+  if (parsed.content) {
+    return {
+      content: parsed.content,
+      reasoning: parsed.reasoning,
+      detectedFormat,
+      sentSystemPrompt,
+    };
+  }
+  return null;
+}
+
+/**
  * Generates completion and returns both the stripped clean content AND any extracted
- * `<think>...</think>` or `reasoning_content` thoughts for the collapsible AI Reasoning accordion.
+ * `<think>...</think>`, `<|thought|>...<|/thought|>`, or `reasoning_content` thoughts.
+ *
+ * Includes critical Gemma 4 / LM Studio compatibility:
+ * - When `effectiveFormat === 'gemma'`, merges the system prompt into the `user` message
+ *   (`"[SYSTEM INSTRUCTIONS]\n" + systemPrompt + "\n\n[USER REQUEST]\n" + userPrompt`)
+ *   and sends strictly `{ model, messages, temperature, max_tokens }`.
+ * - Also automatically falls back to this system-merged user payload if any server returns HTTP 400!
  */
 export async function generateCompletionDetailed(
   prompt: string,
@@ -632,19 +878,41 @@ export async function generateCompletionDetailed(
   const maxTokens = options?.maxTokens ?? config.maxTokens ?? 512;
   const temperature = options?.temperature ?? config.temperature ?? 0.75;
 
-  // Format-specific payload adjustments
-  const messages =
-    effectiveFormat === 'mistral'
-      ? [
-          {
-            role: 'user',
-            content: `${fullSystemPrompt}\n\n### Request:\n${prompt}`,
-          },
-        ]
-      : [
-          { role: 'system', content: fullSystemPrompt },
-          { role: 'user', content: prompt },
-        ];
+  const systemMergedUserMessages = [
+    {
+      role: 'user',
+      content: `[SYSTEM INSTRUCTIONS]\n${fullSystemPrompt}\n\n[USER REQUEST]\n${prompt}`,
+    },
+  ];
+
+  const isSystemMergedFormat =
+    effectiveFormat === 'gemma' || effectiveFormat === 'mistral';
+
+  const primaryMessages = isSystemMergedFormat
+    ? systemMergedUserMessages
+    : [
+        { role: 'system', content: fullSystemPrompt },
+        { role: 'user', content: prompt },
+      ];
+
+  // For Gemma (and system-merged formats), strictly send ONLY universally supported fields
+  // (`model`, `messages`, `temperature`, `max_tokens`) so LM Studio / llama.cpp Jinja templates never return HTTP 400.
+  const primaryPayload =
+    effectiveFormat === 'gemma'
+      ? {
+          model: config.modelName || 'local-model',
+          messages: primaryMessages,
+          temperature,
+          max_tokens: maxTokens,
+        }
+      : {
+          model: config.modelName || 'local-model',
+          messages: primaryMessages,
+          temperature,
+          max_tokens: maxTokens,
+          stream: false,
+          ...(options?.stop ? { stop: options.stop } : {}),
+        };
 
   // If Kobold Raw format is explicitly chosen, try `/api/v1/generate` first
   if (effectiveFormat === 'kobold_raw') {
@@ -654,7 +922,7 @@ export async function generateCompletionDetailed(
         headers,
         signal: abortSignal,
         body: JSON.stringify({
-          prompt: `${fullSystemPrompt}\n\n### User Request:\n${prompt}\n\n### Response:\n`,
+          prompt: `[SYSTEM INSTRUCTIONS]\n${fullSystemPrompt}\n\n[USER REQUEST]\n${prompt}\n\n### Response:\n`,
           max_length: maxTokens,
           temperature,
           ...(options?.stop ? { stop_sequence: options.stop } : {}),
@@ -685,42 +953,43 @@ export async function generateCompletionDetailed(
       method: 'POST',
       headers,
       signal: abortSignal,
-      body: JSON.stringify({
-        model: config.modelName || 'local-model',
-        messages,
-        temperature,
-        max_tokens: maxTokens,
-        stream: false,
-        ...(options?.stop ? { stop: options.stop } : {}),
-      }),
+      body: JSON.stringify(primaryPayload),
     });
 
     if (chatResponse.ok) {
       const data = await chatResponse.json();
-      const messageObj = data?.choices?.[0]?.message;
-      const rawContent =
-        messageObj?.content ??
-        data?.choices?.[0]?.text ??
-        data?.response ??
-        '';
-      const reasoningField =
-        messageObj?.reasoning_content ??
-        messageObj?.reasoning ??
-        data?.choices?.[0]?.reasoning_content ??
-        '';
-
-      const parsed = extractThinkingAndCleanContent(
-        typeof rawContent === 'string' ? rawContent : '',
-        typeof reasoningField === 'string' ? reasoningField : undefined
+      const parsedResult = parseChatCompletionData(
+        data,
+        effectiveFormat,
+        fullSystemPrompt
       );
+      if (parsedResult) return parsedResult;
+    }
 
-      if (parsed.content) {
-        return {
-          content: parsed.content,
-          reasoning: parsed.reasoning,
-          detectedFormat: effectiveFormat,
-          sentSystemPrompt: fullSystemPrompt,
-        };
+    // Automatic Gemma / Local Server HTTP 400 Fallback:
+    // If a local server (LM Studio, llama.cpp, vLLM, etc.) rejects `"role": "system"` or extra OpenAI params with HTTP 400/422,
+    // immediately retry with the System-Merged User Message and minimal `{ model, messages, temperature, max_tokens }` payload!
+    if (chatResponse.status === 400 || chatResponse.status === 422) {
+      const retryResponse = await fetch(`${v1Url}/chat/completions`, {
+        method: 'POST',
+        headers,
+        signal: abortSignal,
+        body: JSON.stringify({
+          model: config.modelName || 'local-model',
+          messages: systemMergedUserMessages,
+          temperature,
+          max_tokens: maxTokens,
+        }),
+      });
+
+      if (retryResponse.ok) {
+        const retryData = await retryResponse.json();
+        const retryResult = parseChatCompletionData(
+          retryData,
+          'gemma',
+          fullSystemPrompt
+        );
+        if (retryResult) return retryResult;
       }
     }
 
@@ -735,7 +1004,7 @@ export async function generateCompletionDetailed(
         headers,
         signal: abortSignal,
         body: JSON.stringify({
-          prompt: `${fullSystemPrompt}\n\n### User Request:\n${prompt}\n\n### Response:\n`,
+          prompt: `[SYSTEM INSTRUCTIONS]\n${fullSystemPrompt}\n\n[USER REQUEST]\n${prompt}\n\n### Response:\n`,
           max_length: maxTokens,
           temperature,
           ...(options?.stop ? { stop_sequence: options.stop } : {}),
@@ -775,7 +1044,7 @@ export async function generateCompletionDetailed(
         headers,
         signal: abortSignal,
         body: JSON.stringify({
-          prompt: `${fullSystemPrompt}\n\n### User Request:\n${prompt}\n\n### Response:\n`,
+          prompt: `[SYSTEM INSTRUCTIONS]\n${fullSystemPrompt}\n\n[USER REQUEST]\n${prompt}\n\n### Response:\n`,
           max_length: maxTokens,
           temperature,
         }),
@@ -808,14 +1077,17 @@ export async function generateCompletionDetailed(
     }
 
     const msg = err instanceof Error ? err.message : 'Network connection failed';
-    throw new AIServiceError(`Cannot connect to AI endpoint (${config.url}): ${msg}`, {
-      isCorsOrNetworkError: true,
-    });
+    throw new AIServiceError(
+      `Cannot connect to AI endpoint (${config.url}): ${msg}`,
+      {
+        isCorsOrNetworkError: true,
+      }
+    );
   }
 }
 
 /**
- * Standard string-returning wrapper that automatically strips `<think>...</think>` blocks.
+ * Standard string-returning wrapper that automatically strips `<think>...</think>` and `<|thought|>...<|/thought|>` blocks.
  */
 export async function generateCompletion(
   prompt: string,

@@ -1,6 +1,27 @@
 # Changelog
 
-All notable changes to **TavernSmith** are documented in this file. This file is synced with the in-app **About & Changelog** modal and the automated GitHub Release workflow (`.github/workflows/release.yml`).
+All notable changes to **TavernSmith** are documented in this file. This file is synced with the in-app **About & Changelog** modal (`src/utils/changelogData.ts`) and the automated GitHub Release workflows (`.github/workflows/version-update.yml` & `.github/workflows/release.yml`).
+
+## [v2.1.0] - 2026-11-12
+
+### 🚀 Highlights & Feature Additions
+- **Persistent AI API Keys & Models Per Provider**: Added a persistent credential vault (`savedProviderKeys` and `savedProviderModels`) keyed by canonical provider ID (`google`, `xai`, `openrouter`, `groq`, `meta`, `openai`, `anthropic`, `lmstudio`, `ollama`, `kobold`, `custom`). Switching between AI backend presets now automatically restores that provider's saved API key and last-used model so you never have to retype keys.
+- **Model-Based Auto-Formatting (`aiService.ts`)**: Refactored compatibility and thinking format detection to inspect the selected **Model Name / ID** (`config.modelName.toLowerCase()`) regardless of which endpoint hosts it (`gemma` -> `Gemma (System-Merged & Reasoning)`, `deepseek`/`qwen`/`qwq`/`r1` -> `DeepSeek / Qwen (<think>)`, `llama` -> `Llama 3 / 4`, `mistral`/`mixtral`/`pixtral` -> `Mistral`, `grok` -> `xAI Grok`, `gemini` -> `Google Gemini`, `claude` -> `Anthropic Claude`).
+- **Hierarchical Sub-Tags & "🔞 Hide NSFW Tags" UI Toggle**: Added `isNsfw` flags and `subTags` support across the tag system with pre-seeded sub-tags (`Big Breasts` -> `Huge / Hyper`, `Perky`, `Natural Sag`, `Cleavage Window`; `Bondage / Restraints` -> `Shibari Rope`, `Cuffs & Chains`, `Spreader Bar`, `Blindfold & Gag`; `Excessive Fluids / Hyper Messy` -> `Overflowing`, `Messy Sheets`, `Saliva Strings`, etc.). Added a prominent **"🔞 Hide NSFW Tags"** toggle in the Character, Lorebook, and Tag Manager views that hides adult tags visually while keeping 100% of attached NSFW tags and sub-tags active in AI generation prompts.
+- **In-Depth Automated GitHub Version & Changelog Generator**: Upgraded `.github/workflows/version-update.yml` to automatically analyze `git log`, `git diff --name-status`, and `git diff --numstat` since the previous tag, generating structured release sections into `CHANGELOG.md`, `src/versionInfo.json`, and `src/utils/changelogData.ts`.
+
+### 🛠️ Bug Fixes, AI & Stability Improvements
+- **Fixed LM Studio + Gemma 4 `400 Bad Request` Errors**: When running Gemma models (`gemma-4`, `gemma-3`, `gemma-2`) or when a local server returns HTTP 400/422, TavernSmith now automatically merges the `system` prompt into the `user` message (`[SYSTEM INSTRUCTIONS]\n...\n\n[USER REQUEST]\n...`), sends only universally supported fields (`model`, `messages`, `temperature`, `max_tokens`), and strips both `<think>...</think>` and Gemma 4's `<|thought|>...<|/thought|>` / `<thought>...</thought>` tags.
+- **Fixed White Screen on Normal Launch & Removed Admin Requirement**: Wrapped all startup `IndexedDB` (`folderDb.ts`), `localStorage`, and `FileSystemDirectoryHandle` initialization in strict `try/catch` blocks, and added a top-level React Error Boundary (`AppErrorBoundary` in `App.tsx`) with a 1-click "Safe Recovery / Reset View".
+- **Non-Admin Standalone Windows Launcher & Direct `file://` Support**: Updated `Launch-TavernSmith-Windows.bat` in `.github/workflows/release.yml` to start with `cd /d "%~dp0"`, run strictly as a standard non-admin user via `python -m http.server 4173 --bind 127.0.0.1`, `npx --yes serve -l tcp://127.0.0.1:4173`, or Edge/Chrome `--app` mode with `--allow-file-access-from-files`, and stripped `crossorigin` attributes from `dist/index.html`.
+
+### 📂 Detailed Component & File Changes
+- `src/services/aiService.ts` — Model-ID auto-detection, Gemma system-merged prompt formatting, HTTP 400 retry fallback, `<|thought|>` tag stripping, and full NSFW tag + sub-tag AI context preservation.
+- `src/context/StoreContext.tsx` — Per-provider API key/model persistence, safe `localStorage` wrappers, `isNsfw` markings, and seeded `subTags`.
+- `src/components/TagSelector.tsx` & `src/views/ThemesAndTagsView.tsx` — Sub-tag selector drawers, custom sub-tag creation, `NSFW Tag` checkbox, and `🔞 Hide NSFW Tags` toggle button.
+- `src/App.tsx`, `src/main.tsx` & `src/utils/folderDb.ts` — Top-level Error Boundary and defensive `try/catch` startup guards.
+- `src/views/OptionsView.tsx` & `src/utils/changelogData.ts` — Per-provider key badge indicators and synced multi-version About & Changelog modal.
+- `.github/workflows/release.yml` & `.github/workflows/version-update.yml` — Non-admin standalone launcher, `crossorigin` stripping, and automated git repository changelog analyzer.
 
 ## [v2.0.0] - 2026-11-11
 

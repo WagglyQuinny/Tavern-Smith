@@ -2,6 +2,10 @@
  * IndexedDB Persistence Layer for Local PC `FileSystemDirectoryHandle`
  * Allows TavernSmith to remember the user's selected local Save Folder across browser restarts
  * and perform Two-Way Live Directory Sync on launch.
+ *
+ * All IndexedDB and FileSystemDirectoryHandle operations are wrapped in strict try/catch
+ * blocks so restricted origins (`file://` or non-admin standard user accounts) never throw
+ * an uncaught startup exception.
  */
 
 const DB_NAME = 'tavernsmith_fs_db';
@@ -18,23 +22,31 @@ export interface StoredDirectoryRecord {
 
 function openFolderDatabase(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
-    if (typeof window === 'undefined' || !('indexedDB' in window)) {
-      reject(new Error('IndexedDB is not available in this browser environment.'));
-      return;
-    }
-
-    const request = window.indexedDB.open(DB_NAME, DB_VERSION);
-
-    request.onupgradeneeded = () => {
-      const db = request.result;
-      if (!db.objectStoreNames.contains(STORE_NAME)) {
-        db.createObjectStore(STORE_NAME);
+    try {
+      if (typeof window === 'undefined' || !('indexedDB' in window) || !window.indexedDB) {
+        reject(new Error('IndexedDB is not available in this browser environment.'));
+        return;
       }
-    };
 
-    request.onsuccess = () => resolve(request.result);
-    request.onerror = () =>
-      reject(request.error || new Error('Failed to open IndexedDB.'));
+      const request = window.indexedDB.open(DB_NAME, DB_VERSION);
+
+      request.onupgradeneeded = () => {
+        try {
+          const db = request.result;
+          if (!db.objectStoreNames.contains(STORE_NAME)) {
+            db.createObjectStore(STORE_NAME);
+          }
+        } catch (upgradeErr) {
+          reject(upgradeErr);
+        }
+      };
+
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () =>
+        reject(request.error || new Error('Failed to open IndexedDB.'));
+    } catch (syncErr) {
+      reject(syncErr);
+    }
   });
 }
 
@@ -48,26 +60,43 @@ export async function saveDirectoryHandleToIndexedDB(
   try {
     const db = await openFolderDatabase();
     await new Promise<void>((resolve, reject) => {
-      const tx = db.transaction(STORE_NAME, 'readwrite');
-      const store = tx.objectStore(STORE_NAME);
-      const record: StoredDirectoryRecord = {
-        handle: dirHandle,
-        folderName: dirHandle?.name || 'SaveFolder',
-        folderPath,
-        savedAt: new Date().toISOString(),
-      };
-      store.put(record, ACTIVE_HANDLE_KEY);
-      tx.oncomplete = () => {
-        db.close();
-        resolve();
-      };
-      tx.onerror = () => {
-        db.close();
-        reject(tx.error || new Error('Failed to store directory handle.'));
-      };
+      try {
+        const tx = db.transaction(STORE_NAME, 'readwrite');
+        const store = tx.objectStore(STORE_NAME);
+        const record: StoredDirectoryRecord = {
+          handle: dirHandle,
+          folderName: dirHandle?.name || 'SaveFolder',
+          folderPath,
+          savedAt: new Date().toISOString(),
+        };
+        store.put(record, ACTIVE_HANDLE_KEY);
+        tx.oncomplete = () => {
+          try {
+            db.close();
+          } catch {
+            // Ignore close errors
+          }
+          resolve();
+        };
+        tx.onerror = () => {
+          try {
+            db.close();
+          } catch {
+            // Ignore close errors
+          }
+          reject(tx.error || new Error('Failed to store directory handle.'));
+        };
+      } catch (txErr) {
+        try {
+          db.close();
+        } catch {
+          // Ignore
+        }
+        reject(txErr);
+      }
     });
   } catch {
-    // Gracefully ignore if browser restricts storing handles in private/iframe mode
+    // Gracefully ignore if browser restricts storing handles in private/file:// mode
   }
 }
 
@@ -78,24 +107,41 @@ export async function loadDirectoryHandleFromIndexedDB(): Promise<StoredDirector
   try {
     const db = await openFolderDatabase();
     return await new Promise<StoredDirectoryRecord | null>((resolve) => {
-      const tx = db.transaction(STORE_NAME, 'readonly');
-      const store = tx.objectStore(STORE_NAME);
-      const req = store.get(ACTIVE_HANDLE_KEY);
+      try {
+        const tx = db.transaction(STORE_NAME, 'readonly');
+        const store = tx.objectStore(STORE_NAME);
+        const req = store.get(ACTIVE_HANDLE_KEY);
 
-      req.onsuccess = () => {
-        db.close();
-        const result = req.result as StoredDirectoryRecord | undefined;
-        if (result && result.handle) {
-          resolve(result);
-        } else {
+        req.onsuccess = () => {
+          try {
+            db.close();
+          } catch {
+            // Ignore
+          }
+          const result = req.result as StoredDirectoryRecord | undefined;
+          if (result && result.handle) {
+            resolve(result);
+          } else {
+            resolve(null);
+          }
+        };
+
+        req.onerror = () => {
+          try {
+            db.close();
+          } catch {
+            // Ignore
+          }
           resolve(null);
+        };
+      } catch {
+        try {
+          db.close();
+        } catch {
+          // Ignore
         }
-      };
-
-      req.onerror = () => {
-        db.close();
         resolve(null);
-      };
+      }
     });
   } catch {
     return null;
@@ -109,17 +155,34 @@ export async function clearDirectoryHandleFromIndexedDB(): Promise<void> {
   try {
     const db = await openFolderDatabase();
     await new Promise<void>((resolve) => {
-      const tx = db.transaction(STORE_NAME, 'readwrite');
-      const store = tx.objectStore(STORE_NAME);
-      store.delete(ACTIVE_HANDLE_KEY);
-      tx.oncomplete = () => {
-        db.close();
+      try {
+        const tx = db.transaction(STORE_NAME, 'readwrite');
+        const store = tx.objectStore(STORE_NAME);
+        store.delete(ACTIVE_HANDLE_KEY);
+        tx.oncomplete = () => {
+          try {
+            db.close();
+          } catch {
+            // Ignore
+          }
+          resolve();
+        };
+        tx.onerror = () => {
+          try {
+            db.close();
+          } catch {
+            // Ignore
+          }
+          resolve();
+        };
+      } catch {
+        try {
+          db.close();
+        } catch {
+          // Ignore
+        }
         resolve();
-      };
-      tx.onerror = () => {
-        db.close();
-        resolve();
-      };
+      }
     });
   } catch {
     // Ignore

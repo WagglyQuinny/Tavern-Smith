@@ -43,7 +43,7 @@ import {
 import { SmartEditor } from './SmartEditor';
 import { Tooltip } from './Tooltip';
 import { PortraitCropperModal } from './PortraitCropperModal';
-import { TagSelector } from './TagSelector';
+import { isTagNsfw, TagSelector } from './TagSelector';
 import {
   buildStatTemplatePreset,
   calculateCardTokenBreakdown,
@@ -1762,11 +1762,13 @@ export const CharacterEditor: React.FC = () => {
                 className="theme-focus-ring rounded-md border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 px-2 py-1 text-[11px] text-slate-700 dark:text-slate-200 cursor-pointer"
               >
                 <option value="all">All Tags</option>
-                {tags.map((t) => (
-                  <option key={t.id} value={t.name}>
-                    {t.name}
-                  </option>
-                ))}
+                {tags
+                  .filter((t) => !settings.hideNsfwTags || !isTagNsfw(t))
+                  .map((t) => (
+                    <option key={t.id} value={t.name}>
+                      {t.name}
+                    </option>
+                  ))}
               </select>
             </div>
           </div>
