@@ -15,7 +15,7 @@ permissions:
 
 jobs:
   build-and-release:
-    name: Build Standalone Universal Bundle & Publish Release
+    name: Build Standalone Portable App & Publish Release
     runs-on: ubuntu-latest
 
     steps:
@@ -50,7 +50,7 @@ jobs:
             }
           '
 
-      - name: Generate Non-Admin Standalone Desktop Launchers (Windows, macOS x64/ARM, Linux)
+      - name: Generate Non-Admin Standalone Desktop Launchers Inside dist/
         run: |
           cat << 'EOF' > dist/Launch-TavernSmith-Windows.bat
           @echo off
@@ -132,8 +132,8 @@ jobs:
 
           chmod +x dist/Launch-TavernSmith-Mac-Linux.command
 
-          cat << 'EOF' > dist/README-STANDALONE.txt
-          TavernSmith — Universal Standalone Distribution
+          cat << 'EOF' > dist/README-PORTABLE.txt
+          TavernSmith — Portable Ready-to-Run Application
           ===============================================
           Compatible with Windows (x64/ARM64), macOS (Intel x64 & Apple Silicon M1/M2/M3/M4),
           Linux, iOS/iPadOS, and Android. Runs as a standard user with ZERO Administrator requirements.
@@ -151,10 +151,9 @@ jobs:
              dedicated standalone application window with full offline support.
           EOF
 
-      - name: Zip dist/ into TavernSmith-Standalone-Universal.zip
+      - name: Package ONLY Compiled Production App (dist/) into TavernSmith-App-Portable.zip
         run: |
-          cd dist
-          zip -r ../TavernSmith-Standalone-Universal.zip .
+          cd dist && zip -r ../TavernSmith-App-Portable.zip .
 
       - name: Extract Latest Release Notes & Publish GitHub Release via GitHub CLI
         env:
@@ -167,16 +166,18 @@ jobs:
             ? fs.readFileSync('CHANGELOG.md', 'utf8')
             : '';
 
+          const downloadCallout = "> 📦 **Download Ready-to-Run App:** Click **TavernSmith-App-Portable.zip** below under Assets to download the standalone compiled application (do not download the 'Source code' archives).\n\n";
+
           let notes = '';
           const sections = changelog.split(/\n(?=## \[)/);
           const firstReleaseSection = sections.find((s) => s.trim().startsWith('## ['));
           if (firstReleaseSection) {
             notes = firstReleaseSection.trim();
           } else {
-            notes = `## TavernSmith v${pkg.version}\n\nUniversal Standalone Release for Windows, macOS (x64 & Apple Silicon ARM), Linux, iOS, and Android.`;
+            notes = `## TavernSmith v${pkg.version}\n\nUniversal Portable Release for Windows, macOS (x64 & Apple Silicon ARM), Linux, iOS, and Android.`;
           }
 
-          fs.writeFileSync('RELEASE_NOTES.md', notes + '\n', 'utf8');
+          fs.writeFileSync('RELEASE_NOTES.md', downloadCallout + notes + '\n', 'utf8');
           EOF
 
           if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
@@ -187,8 +188,8 @@ jobs:
 
           echo "Publishing GitHub Release for tag: $TAG"
           if gh release view "$TAG" >/dev/null 2>&1; then
-            gh release upload "$TAG" TavernSmith-Standalone-Universal.zip --clobber
+            gh release upload "$TAG" TavernSmith-App-Portable.zip --clobber
             gh release edit "$TAG" --title "TavernSmith $TAG" --notes-file RELEASE_NOTES.md
           else
-            gh release create "$TAG" TavernSmith-Standalone-Universal.zip --title "TavernSmith $TAG" --notes-file RELEASE_NOTES.md
+            gh release create "$TAG" TavernSmith-App-Portable.zip --title "TavernSmith $TAG" --notes-file RELEASE_NOTES.md
           fi
