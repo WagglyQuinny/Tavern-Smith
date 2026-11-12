@@ -7,9 +7,43 @@ export interface ChangelogReleaseEntry {
   fileChanges: string[];
 }
 
-export const APP_VERSION = "3.0.0";
+export const APP_VERSION = "3.0.1";
 
 export const CHANGELOG_RELEASES: ChangelogReleaseEntry[] = [
+  {
+    "version": "v3.0.1",
+    "date": "2026-11-12",
+    "title": "Migrate to custom Express dev server (5cbe882)",
+    "highlights": [
+      "Migrate to custom Express dev server (5cbe882)",
+      "Create FUNDING.yml (cd9ca7a)"
+    ],
+    "fixes": [
+      "Verified TypeScript compilation, zero-crash sandbox storage guards, and cross-platform standalone launcher compatibility."
+    ],
+    "fileChanges": [
+      ".github/FUNDING.yml — Added Project Configuration & Metadata (+15 / -0 lines)",
+      ".github/workflows/release.yml — Updated GitHub Actions CI/CD & Standalone Release Workflow (+11 / -10 lines)",
+      "bun.lock — Added Project Configuration & Metadata (+570 / -0 lines)",
+      "index.html — Updated Project Configuration & Metadata (+3 / -0 lines)",
+      "package.json — Updated Project Configuration & Metadata (+7 / -6 lines)",
+      "public/sw.js — Updated Project Configuration & Metadata (+7 / -66 lines)",
+      "server.ts — Added Project Configuration & Metadata (+285 / -0 lines)",
+      "src/App.tsx — Updated Project Configuration & Metadata (+186 / -7 lines)",
+      "src/components/CharacterEditor.tsx — Updated Character Card Workbench & Wizard (+73 / -4 lines)",
+      "src/components/LorebookEditor.tsx — Updated Lorebook / World Info Workbench & Wizard (+70 / -5 lines)",
+      "src/components/SidebarNav.tsx — Updated UI Workbench Component (+259 / -117 lines)",
+      "src/components/TagSelector.tsx — Updated Tag & Sub-Tag Selector Bar (+335 / -566 lines)",
+      "src/components/TopBar.tsx — Updated UI Workbench Component (+126 / -300 lines)",
+      "src/context/StoreContext.tsx — Updated Workspace State, Auto-Save & Provider Credential Vault (+1393 / -352 lines)",
+      "src/main.tsx — Updated Project Configuration & Metadata (+5 / -21 lines)",
+      "src/services/aiService.ts — Updated AI Backend Service & Model Format Engine (+221 / -111 lines)",
+      "src/types.ts — Updated Project Configuration & Metadata (+148 / -144 lines)",
+      "src/utils/cardIO.ts — Updated PNG tEXt Chunk & JSON Import/Export Parser (+30 / -1 lines)",
+      "src/views/OptionsView.tsx — Updated Options, AI Scanner & Save Folder Manager (+101 / -31 lines)",
+      "src/views/ThemesAndTagsView.tsx — Updated Context Themes & Global Tag/Sub-Tag Manager (+1110 / -1008 lines)"
+    ]
+  },
   {
     "version": "v3.0.0",
     "date": "2026-11-12",
