@@ -2,6 +2,18 @@
 
 All notable changes to **TavernSmith** are documented in this file. This file is synced with the in-app **About & Changelog** modal (`src/utils/changelogData.ts`) and the automated GitHub Release workflows (`.github/workflows/version-update.yml` & `.github/workflows/release.yml`).
 
+## [v4.0.2] - 2026-11-13
+
+### 🚀 Highlights & Feature Additions
+- Grand AI conections overhaul
+
+### 🛠️ Bug Fixes, AI & Stability Improvements
+- Streamline AI connection manager UI (da37285)
+
+### 📂 Detailed Component & File Changes
+- **Repository Diff Summary**: 1 file changed, 420 insertions(+), 538 deletions(-)
+- `src/views/OptionsView.tsx — Updated Options, AI Scanner & Save Folder Manager (+420 / -538 lines)`
+
 ## [v4.0.1] - 2026-11-13
 
 ### 🚀 Highlights & Feature Additions

@@ -7,9 +7,23 @@ export interface ChangelogReleaseEntry {
   fileChanges: string[];
 }
 
-export const APP_VERSION = "4.0.1";
+export const APP_VERSION = "4.0.2";
 
 export const CHANGELOG_RELEASES: ChangelogReleaseEntry[] = [
+  {
+    "version": "v4.0.2",
+    "date": "2026-11-13",
+    "title": "Grand AI conections overhaul",
+    "highlights": [
+      "Grand AI conections overhaul"
+    ],
+    "fixes": [
+      "Streamline AI connection manager UI (da37285)"
+    ],
+    "fileChanges": [
+      "src/views/OptionsView.tsx — Updated Options, AI Scanner & Save Folder Manager (+420 / -538 lines)"
+    ]
+  },
   {
     "version": "v4.0.1",
     "date": "2026-11-13",
