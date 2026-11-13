@@ -2,6 +2,43 @@
 
 All notable changes to **TavernSmith** are documented in this file. This file is synced with the in-app **About & Changelog** modal (`src/utils/changelogData.ts`) and the automated GitHub Release workflows (`.github/workflows/version-update.yml` & `.github/workflows/release.yml`).
 
+## [v4.1.0] - 2026-11-13
+
+### 🚀 Highlights & Feature Additions
+- massive bug fixing, AI related integration
+- Update Gemini models and deprecation logic (a32c6f4)
+- Implement centralized delete confirmation modal (56e63cb)
+- Implement local filesystem persistence API (ab29254)
+
+### 🛠️ Bug Fixes, AI & Stability Improvements
+- Stop filtering legacy Gemini models (188c34f)
+- Update Gemini models and cleanup character files (6240485)
+- Simplify UI terminology and copy (45c89b7)
+
+### 📂 Detailed Component & File Changes
+- **Repository Diff Summary**: 21 files changed, 5051 insertions(+), 4270 deletions(-)
+- `.github/workflows/release.yml — Updated GitHub Actions CI/CD & Standalone Release Workflow (+615 / -36 lines)`
+- `public/sw.js — Removed Project Configuration & Metadata (+0 / -14 lines)`
+- `server.ts — Updated Project Configuration & Metadata (+109 / -30 lines)`
+- `src/App.tsx — Updated Project Configuration & Metadata (+95 / -20 lines)`
+- `src/components/CharacterEditor.tsx — Updated Character Card Workbench & Wizard (+191 / -229 lines)`
+- `src/components/JsonInspector.tsx — Updated UI Workbench Component (+30 / -30 lines)`
+- `src/components/LorebookEditor.tsx — Updated Lorebook / World Info Workbench & Wizard (+246 / -296 lines)`
+- `src/components/SidebarNav.tsx — Updated UI Workbench Component (+17 / -17 lines)`
+- `src/components/SmartEditor.tsx — Updated Synchronized Macro & Ghost-Text SmartEditor (+228 / -103 lines)`
+- `src/components/TagSelector.tsx — Updated Tag & Sub-Tag Selector Bar (+34 / -25 lines)`
+- `src/components/TopBar.tsx — Updated UI Workbench Component (+10 / -10 lines)`
+- `src/context/StoreContext.tsx — Updated Workspace State, Auto-Save & Provider Credential Vault (+1501 / -1933 lines)`
+- `src/services/aiService.ts — Updated AI Backend Service & Model Format Engine (+661 / -415 lines)`
+- `src/types.ts — Updated Project Configuration & Metadata (+31 / -1 lines)`
+- `src/utils/cardIO.ts — Updated PNG tEXt Chunk & JSON Import/Export Parser (+165 / -68 lines)`
+- `src/utils/cryptoVault.ts — Updated Core Utility Module (+104 / -136 lines)`
+- `src/utils/folderDb.ts — Removed IndexedDB & Native Directory Handle Persistence (+0 / -228 lines)`
+- `src/utils/tokenCounter.ts — Updated Core Utility Module (+1 / -1 lines)`
+- `src/views/OptionsView.tsx — Updated Options, AI Scanner & Save Folder Manager (+390 / -650 lines)`
+- `src/views/ThemesAndTagsView.tsx — Updated Context Themes & Global Tag/Sub-Tag Manager (+27 / -26 lines)`
+- `vite.config.ts — Updated Project Configuration & Metadata (+596 / -2 lines)`
+
 ## [v4.0.2] - 2026-11-13
 
 ### 🚀 Highlights & Feature Additions
