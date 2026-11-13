@@ -65,7 +65,7 @@ export const SidebarNav: React.FC = () => {
   // COLLAPSED BLENDER-STYLE VERTICAL ICON RAIL (`w-14` / 56px)
   if (!isMainSidebarOpen) {
     return (
-      <aside className="flex w-14 shrink-0 flex-col items-center justify-between border-r border-slate-200 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-950/70 py-3 transition-all duration-200 select-none">
+      <aside className="flex w-14 shrink-0 flex-col items-center justify-between border-r border-slate-200 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-950/70 py-3 transition-all duration-200 select-none md:sticky md:top-14 md:h-[calc(100vh-3.5rem)]">
         <div className="flex flex-col items-center gap-2 w-full px-1.5">
           {/* Expand Sidebar Button */}
           <button
@@ -134,8 +134,8 @@ export const SidebarNav: React.FC = () => {
             }
             title={
               isWizard
-                ? 'Active Mode: 5-Step Wizard (Click to switch to Full Sandbox Workbench)'
-                : 'Active Mode: Full Sandbox Workbench (Click to switch to 5-Step Wizard)'
+                ? 'Editor Workflow: 5-Step Wizard (Click to switch to Full Sandbox)'
+                : 'Editor Workflow: Full Sandbox (Click to switch to 5-Step Wizard)'
             }
             style={{ borderColor: 'var(--theme-accent)' }}
             className="theme-hover-outline flex h-9 w-9 items-center justify-center rounded-lg border bg-white dark:bg-slate-900 text-slate-700 dark:text-slate-200 cursor-pointer"
@@ -159,7 +159,7 @@ export const SidebarNav: React.FC = () => {
 
   // EXPANDED FULL SIDEBAR (`md:w-60`)
   return (
-    <aside className="flex w-full md:w-60 shrink-0 flex-col justify-between border-b md:border-b-0 md:border-r border-slate-200 dark:border-slate-800 bg-slate-50/60 dark:bg-slate-950/60 p-3 transition-all duration-200">
+    <aside className="flex w-full md:w-60 shrink-0 flex-col justify-between border-b md:border-b-0 md:border-r border-slate-200 dark:border-slate-800 bg-slate-50/60 dark:bg-slate-950/60 p-3 transition-all duration-200 md:sticky md:top-14 md:h-[calc(100vh-3.5rem)] md:overflow-y-auto">
       <div className="space-y-1">
         <div className="flex items-center justify-between px-2.5 py-1.5">
           <span className="text-[11px] font-mono uppercase tracking-wider text-slate-400 dark:text-slate-500">
@@ -217,8 +217,8 @@ export const SidebarNav: React.FC = () => {
         </nav>
       </div>
 
-      {/* Bottom Workspace Summary & Workflow Mode Card */}
-      <div className="hidden md:flex flex-col gap-2.5 pt-3 border-t border-slate-200 dark:border-slate-800">
+      {/* Bottom Workspace Summary & Workflow Mode Card (Permanently Visible Across All Views & Modes) */}
+      <div className="flex flex-col gap-2.5 pt-3 border-t border-slate-200 dark:border-slate-800">
         {/* Sandbox vs Wizard Workflow Switch */}
         <div
           style={{ borderColor: 'var(--theme-accent)' }}

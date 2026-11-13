@@ -29,6 +29,11 @@ import {
   User,
   BookOpen,
   Database,
+  Eye,
+  EyeOff,
+  Lock,
+  Unlock,
+  KeyRound,
 } from 'lucide-react';
 import {
   formatSafeTimestamp,
@@ -41,10 +46,20 @@ import {
   COMPATIBILITY_FORMAT_LABELS,
   ConnectionTestResult,
   detectModelCompatibilityFormat,
+  doesBackendSupportVision,
   getProviderKeyId,
+  isModelVisionCapable,
   resolveEffectiveFormat,
   testBackendConnection,
 } from '../services/aiService';
+import {
+  decryptProviderKeysFromVault,
+  encryptAndSaveProviderKeys,
+  getDecryptedKeyForProvider,
+  getVaultStatusInfo,
+  lockVaultSessionInMemory,
+  updateVaultPassphrase,
+} from '../utils/cryptoVault';
 import { AIPresetId, ModelCompatibilityFormat, SavedFileEntry } from '../types';
 import { Tooltip } from '../components/Tooltip';
 import { AppLogo } from '../components/AppLogo';
@@ -95,6 +110,14 @@ export const OptionsView: React.FC = () => {
   const [charactersFolderOpen, setCharactersFolderOpen] = useState(true);
   const [lorebooksFolderOpen, setLorebooksFolderOpen] = useState(true);
   const [metaSectionOpen, setMetaSectionOpen] = useState(true);
+
+  // API Key Show/Hide & AES-256-GCM Vault States
+  const [showApiKey, setShowApiKey] = useState(false);
+  const [keyActionMessage, setKeyActionMessage] = useState<string | null>(null);
+  const [vaultStatus, setVaultStatus] = useState(() => getVaultStatusInfo());
+  const [vaultPassphraseInput, setVaultPassphraseInput] = useState('');
+  const [vaultMessage, setVaultMessage] = useState<string | null>(null);
+  const [showVaultPassphraseBar, setShowVaultPassphraseBar] = useState(false);
 
   const abortControllerRef = useRef<AbortController | null>(null);
 
@@ -162,6 +185,147 @@ export const OptionsView: React.FC = () => {
   const handleSelectPreset = (presetId: AIPresetId) => {
     switchAIPreset(presetId);
     setTestResult(null);
+    setShowApiKey(false);
+    setVaultStatus(getVaultStatusInfo());
+  };
+
+  const handleToggleRevealApiKey = async () => {
+    const nextShow = !showApiKey;
+    setShowApiKey(nextShow);
+    if (nextShow && !aiConfig.apiKey) {
+      const providerKey = getProviderKeyId(aiConfig.preset);
+      const decrypted = await getDecryptedKeyForProvider(
+        providerKey,
+        aiConfig.preset
+      );
+      if (decrypted) {
+        setAiConfig((prev) => ({
+          ...prev,
+          apiKey: decrypted,
+          savedProviderKeys: {
+            ...(prev.savedProviderKeys || {}),
+            [providerKey]: decrypted,
+            [prev.preset]: decrypted,
+          },
+        }));
+      }
+    }
+    setVaultStatus(getVaultStatusInfo());
+  };
+
+  const handleSaveOrUpdateApiKey = async () => {
+    const providerKey = getProviderKeyId(aiConfig.preset);
+    const trimmedKey = aiConfig.apiKey.trim();
+    const updatedMap: Record<string, string> = {
+      ...(aiConfig.savedProviderKeys || {}),
+      [providerKey]: trimmedKey,
+      [aiConfig.preset]: trimmedKey,
+    };
+    setAiConfig((prev) => ({
+      ...prev,
+      apiKey: trimmedKey,
+      savedProviderKeys: updatedMap,
+    }));
+    await encryptAndSaveProviderKeys(updatedMap);
+    setVaultStatus(getVaultStatusInfo());
+    setKeyActionMessage(
+      trimmedKey
+        ? `AES-256-GCM Encrypted & Saved Key for ${currentPresetMeta.label}`
+        : `Cleared Key for ${currentPresetMeta.label}`
+    );
+    window.setTimeout(() => setKeyActionMessage(null), 4000);
+  };
+
+  const handleClearApiKey = async () => {
+    const providerKey = getProviderKeyId(aiConfig.preset);
+    const updatedMap: Record<string, string> = {
+      ...(aiConfig.savedProviderKeys || {}),
+      [providerKey]: '',
+      [aiConfig.preset]: '',
+    };
+    setAiConfig((prev) => ({
+      ...prev,
+      apiKey: '',
+      savedProviderKeys: updatedMap,
+    }));
+    await encryptAndSaveProviderKeys(updatedMap);
+    setVaultStatus(getVaultStatusInfo());
+    setKeyActionMessage(
+      aiConfig.preset === 'gemini'
+        ? 'Cleared Custom Gemini Key (Reverted to /api/gemini Server Fallback)'
+        : `Cleared API Key for ${currentPresetMeta.label}`
+    );
+    window.setTimeout(() => setKeyActionMessage(null), 4000);
+  };
+
+  const handleApplyVaultPassphrase = async () => {
+    const cleanPass = vaultPassphraseInput.trim();
+    if (!cleanPass) {
+      setVaultMessage('Enter a Passphrase or PIN first.');
+      return;
+    }
+    // First attempt unlock if vault is currently locked with a custom passphrase
+    const status = getVaultStatusInfo();
+    if (status.hasCustomPassphrase && status.isLocked) {
+      const unlocked = await decryptProviderKeysFromVault(cleanPass);
+      if (unlocked.ok) {
+        const providerKey = getProviderKeyId(aiConfig.preset);
+        const restoredKey =
+          unlocked.keys[providerKey] || unlocked.keys[aiConfig.preset] || '';
+        setAiConfig((prev) => ({
+          ...prev,
+          apiKey: restoredKey,
+          savedProviderKeys: unlocked.keys,
+        }));
+        setVaultStatus(getVaultStatusInfo());
+        setVaultPassphraseInput('');
+        setVaultMessage(
+          'Vault unlocked in memory using your Passphrase / PIN.'
+        );
+        window.setTimeout(() => setVaultMessage(null), 5000);
+        return;
+      } else {
+        setVaultMessage(
+          unlocked.error || 'Incorrect Vault Passphrase / PIN.'
+        );
+        window.setTimeout(() => setVaultMessage(null), 5000);
+        return;
+      }
+    }
+    if (Object.keys(aiConfig.savedProviderKeys || {}).length > 0) {
+      await encryptAndSaveProviderKeys(
+        aiConfig.savedProviderKeys || {},
+        cleanPass
+      );
+    }
+    const res = await updateVaultPassphrase(cleanPass);
+    setVaultStatus(getVaultStatusInfo());
+    setVaultPassphraseInput('');
+    setVaultMessage(res.message);
+    window.setTimeout(() => setVaultMessage(null), 5000);
+  };
+
+  const handleRemoveVaultPassphrase = async () => {
+    const res = await updateVaultPassphrase(null);
+    setVaultStatus(getVaultStatusInfo());
+    setVaultPassphraseInput('');
+    setVaultMessage(res.message);
+    window.setTimeout(() => setVaultMessage(null), 5000);
+  };
+
+  const handleLockVaultInMemory = () => {
+    lockVaultSessionInMemory();
+    setShowApiKey(false);
+    setAiConfig((prev) => ({
+      ...prev,
+      apiKey: '',
+      savedProviderKeys: {},
+    }));
+    setVaultStatus(getVaultStatusInfo());
+    setVaultMessage(
+      'Vault locked in memory. Keys remain AES-256-GCM encrypted in _tavernsmith_vault_enc.'
+    );
+    window.setTimeout(() => setVaultMessage(null), 5000);
   };
 
   const handleScanModels = async () => {
@@ -1273,45 +1437,118 @@ export const OptionsView: React.FC = () => {
                 />
               </div>
 
-              {aiConfig.preset === 'gemini' ? (
-                <div className="space-y-1.5">
+              {/* API Key Input Field — ALWAYS Unblocked & Editable for ALL Providers Including Google Gemini */}
+              <div className="space-y-1.5">
+                <div className="flex items-center justify-between gap-2">
                   <label className="flex items-center gap-1.5 text-xs font-medium text-slate-700 dark:text-slate-300">
-                    <span>Server-Side Gemini Status</span>
-                    <Tooltip content="Google Gemini calls run on the server via /api/gemini using the @google/genai SDK." />
-                  </label>
-                  <div className="flex items-center gap-2 rounded-lg border border-emerald-500/40 bg-emerald-500/10 px-3 py-2 text-xs font-mono font-semibold text-emerald-700 dark:text-emerald-300">
-                    <ShieldCheck className="h-3.5 w-3.5 shrink-0" />
-                    <span>Connected via Server (/api/gemini)</span>
-                  </div>
-                </div>
-              ) : (
-                <div className="space-y-1.5">
-                  <label className="flex items-center gap-1.5 text-xs font-medium text-slate-700 dark:text-slate-300">
+                    <KeyRound
+                      className="h-3.5 w-3.5"
+                      style={{ color: 'var(--theme-accent)' }}
+                    />
                     <span>
-                      {currentPresetMeta.requiresKey
-                        ? 'Provider Bearer Token (Required)'
-                        : 'Bearer Token (Optional for Local)'}
+                      {aiConfig.preset === 'gemini'
+                        ? 'Google Gemini API Key (Custom Key Prioritized)'
+                        : currentPresetMeta.requiresKey
+                          ? `${currentPresetMeta.label} API Key`
+                          : 'Bearer API Key (Optional for Local)'}
                     </span>
-                    <Tooltip content="Authorization token for custom or 3rd-party endpoints. Stored locally in your browser workspace and never exported into Character Cards." />
+                    <Tooltip content="Encrypted at rest using AES-256-GCM (PBKDF2 100k iterations, 12B IV, 16B Salt) in _tavernsmith_vault_enc. Never written in plaintext or exported into Character/Lorebook files." />
                   </label>
-                  <input
-                    type="password"
-                    value={aiConfig.apiKey}
-                    onChange={(e) =>
-                      setAiConfig((prev) => ({
-                        ...prev,
-                        apiKey: e.target.value,
-                      }))
-                    }
-                    placeholder={
-                      currentPresetMeta.requiresKey
-                        ? 'Enter endpoint authorization token...'
-                        : 'Not required for localhost'
-                    }
-                    className="theme-focus-ring font-mono w-full rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 px-3 py-2 text-xs text-slate-900 dark:text-white"
-                  />
+                  <span className="inline-flex items-center gap-1 font-mono text-[10px] text-emerald-600 dark:text-emerald-400">
+                    <Lock className="h-2.5 w-2.5" />
+                    <span>AES-256-GCM Vault</span>
+                  </span>
                 </div>
-              )}
+
+                <div className="flex items-center gap-1.5">
+                  <div className="relative flex-1 min-w-0">
+                    <input
+                      type={showApiKey ? 'text' : 'password'}
+                      value={aiConfig.apiKey}
+                      onChange={(e) =>
+                        setAiConfig((prev) => ({
+                          ...prev,
+                          apiKey: e.target.value,
+                        }))
+                      }
+                      placeholder={
+                        aiConfig.preset === 'gemini'
+                          ? 'Enter Gemini API key (AIza...) or leave empty for /api/gemini fallback'
+                          : currentPresetMeta.requiresKey
+                            ? `Enter ${currentPresetMeta.label} API key...`
+                            : 'Optional local bearer token...'
+                      }
+                      autoComplete="off"
+                      spellCheck={false}
+                      className="theme-focus-ring font-mono w-full rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 pl-3 pr-9 py-2 text-xs text-slate-900 dark:text-white"
+                    />
+                    <button
+                      type="button"
+                      onClick={handleToggleRevealApiKey}
+                      title={
+                        showApiKey
+                          ? 'Hide API Key'
+                          : 'Decrypt & Reveal API Key in Memory'
+                      }
+                      className="absolute right-2 top-1/2 -translate-y-1/2 rounded p-1 text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 cursor-pointer"
+                    >
+                      {showApiKey ? (
+                        <EyeOff className="h-3.5 w-3.5" />
+                      ) : (
+                        <Eye className="h-3.5 w-3.5" />
+                      )}
+                    </button>
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={handleSaveOrUpdateApiKey}
+                    style={{ borderColor: 'var(--theme-accent)' }}
+                    title="Encrypt with AES-256-GCM and save key for this provider"
+                    className="theme-hover-outline shrink-0 rounded-lg border bg-white dark:bg-slate-900 px-2.5 py-2 text-[11px] font-semibold text-slate-800 dark:text-slate-200 cursor-pointer whitespace-nowrap"
+                  >
+                    Save / Update Key
+                  </button>
+
+                  {aiConfig.apiKey && (
+                    <button
+                      type="button"
+                      onClick={handleClearApiKey}
+                      title="Clear saved API key for this provider"
+                      className="shrink-0 rounded-lg border border-rose-500/30 bg-rose-500/10 hover:bg-rose-500/20 px-2.5 py-2 text-[11px] font-semibold text-rose-600 dark:text-rose-300 cursor-pointer whitespace-nowrap"
+                    >
+                      Clear Key
+                    </button>
+                  )}
+                </div>
+
+                {/* Gemini Key Priority vs Server Fallback Indicator */}
+                {aiConfig.preset === 'gemini' && (
+                  <div className="flex flex-wrap items-center justify-between gap-2 pt-0.5 text-[10px] font-mono">
+                    {aiConfig.apiKey.trim() ? (
+                      <span className="inline-flex items-center gap-1 text-emerald-600 dark:text-emerald-400 font-semibold">
+                        <CheckCircle2 className="h-3 w-3 shrink-0" />
+                        <span>
+                          Custom Gemini API Key Active — Prioritized directly for all Gemini calls
+                        </span>
+                      </span>
+                    ) : (
+                      <span className="inline-flex items-center gap-1 text-slate-500 dark:text-slate-400">
+                        <ShieldCheck className="h-3 w-3 shrink-0 text-emerald-500" />
+                        <span>
+                          Key field empty — Using automatic server proxy fallback (/api/gemini)
+                        </span>
+                      </span>
+                    )}
+                  </div>
+                )}
+
+                {keyActionMessage && (
+                  <div className="text-[11px] font-mono font-semibold text-emerald-600 dark:text-emerald-400">
+                    ✓ {keyActionMessage}
+                  </div>
+                )}
+              </div>
 
               <div>
                 <button
@@ -1337,6 +1574,97 @@ export const OptionsView: React.FC = () => {
                   </span>
                 </button>
               </div>
+            </div>
+
+            {/* AES-256-GCM Encrypted API Key Vault & Optional Passphrase / PIN Bar */}
+            <div className="rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-950/60 p-2.5 space-y-2">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="flex items-center gap-2 text-[11px]">
+                  {!vaultStatus.isLocked ? (
+                    <Unlock className="h-3.5 w-3.5 text-emerald-500 shrink-0" />
+                  ) : (
+                    <Lock className="h-3.5 w-3.5 text-amber-500 shrink-0" />
+                  )}
+                  <span className="font-semibold text-slate-800 dark:text-slate-200">
+                    Encrypted Key Vault (`_tavernsmith_vault_enc`)
+                  </span>
+                  <span className="font-mono text-[10px] text-slate-500 dark:text-slate-400">
+                    AES-256-GCM • PBKDF2-SHA256 (100k iter) • 12B IV + 16B Salt •{' '}
+                    {vaultStatus.hasCustomPassphrase
+                      ? 'Passphrase/PIN Protected'
+                      : 'Auto Device-Key Mode'}
+                  </span>
+                </div>
+
+                <div className="flex items-center gap-1.5">
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setShowVaultPassphraseBar((prev) => !prev)
+                    }
+                    className="rounded-md border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-2.5 py-1 text-[10px] font-semibold text-slate-700 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white cursor-pointer"
+                  >
+                    {showVaultPassphraseBar
+                      ? 'Hide Vault PIN / Passphrase'
+                      : vaultStatus.hasCustomPassphrase
+                        ? 'Unlock / Manage Vault PIN'
+                        : 'Set Optional Vault Passphrase / PIN'}
+                  </button>
+                  {vaultStatus.hasCustomPassphrase && !vaultStatus.isLocked && (
+                    <button
+                      type="button"
+                      onClick={handleLockVaultInMemory}
+                      title="Wipe decrypted keys from RAM until unlocked again"
+                      className="rounded-md border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-2 py-1 text-[10px] font-mono text-slate-600 dark:text-slate-400 hover:text-amber-600 dark:hover:text-amber-300 cursor-pointer"
+                    >
+                      Lock Session
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              {(showVaultPassphraseBar ||
+                (vaultStatus.hasCustomPassphrase && vaultStatus.isLocked)) && (
+                <div className="flex flex-wrap items-center gap-2 pt-1 border-t border-slate-200/70 dark:border-slate-800/70">
+                  <input
+                    type="password"
+                    value={vaultPassphraseInput}
+                    onChange={(e) => setVaultPassphraseInput(e.target.value)}
+                    placeholder={
+                      vaultStatus.hasCustomPassphrase && vaultStatus.isLocked
+                        ? 'Enter Vault Passphrase / PIN to unlock keys...'
+                        : 'Enter new Vault Passphrase / PIN (PBKDF2-SHA256)...'
+                    }
+                    autoComplete="off"
+                    className="theme-focus-ring font-mono flex-1 min-w-[210px] rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-2.5 py-1.5 text-xs text-slate-900 dark:text-white"
+                  />
+                  <button
+                    type="button"
+                    onClick={handleApplyVaultPassphrase}
+                    style={{ borderColor: 'var(--theme-accent)' }}
+                    className="theme-hover-outline rounded-lg border bg-slate-900 dark:bg-white px-3 py-1.5 text-[11px] font-semibold text-white dark:text-slate-900 cursor-pointer"
+                  >
+                    {vaultStatus.hasCustomPassphrase && vaultStatus.isLocked
+                      ? 'Unlock Vault'
+                      : 'Encrypt with Passphrase / PIN'}
+                  </button>
+                  {vaultStatus.hasCustomPassphrase && (
+                    <button
+                      type="button"
+                      onClick={handleRemoveVaultPassphrase}
+                      className="rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-2.5 py-1.5 text-[11px] font-medium text-slate-600 dark:text-slate-300 hover:text-rose-500 cursor-pointer"
+                    >
+                      Switch to Auto Device-Key
+                    </button>
+                  )}
+                </div>
+              )}
+
+              {vaultMessage && (
+                <div className="text-[11px] font-mono text-emerald-600 dark:text-emerald-400">
+                  {vaultMessage}
+                </div>
+              )}
             </div>
 
             {/* Live Connection Reliability Status Banner */}
@@ -1375,10 +1703,30 @@ export const OptionsView: React.FC = () => {
             className="rounded-lg border bg-slate-50/70 dark:bg-slate-950/60 p-3.5 space-y-3"
           >
             <div className="flex flex-wrap items-center justify-between gap-2">
-              <label className="text-xs font-semibold text-slate-800 dark:text-slate-200">
-                Model Selection &amp; Live Scanner ({allSelectableModels.length}{' '}
-                listed)
-              </label>
+              <div className="flex flex-wrap items-center gap-2">
+                <label className="text-xs font-semibold text-slate-800 dark:text-slate-200">
+                  Model Selection &amp; Live Scanner ({allSelectableModels.length}{' '}
+                  listed)
+                </label>
+                {doesBackendSupportVision(aiConfig) ? (
+                  <span
+                    style={{
+                      borderColor:
+                        'color-mix(in srgb, var(--theme-accent) 45%, transparent)',
+                    }}
+                    className="inline-flex items-center gap-1 rounded-md border bg-emerald-500/15 px-2 py-0.5 font-mono text-[10px] font-bold text-emerald-700 dark:text-emerald-300"
+                  >
+                    <span>👁️ Vision Supported</span>
+                    <span className="opacity-80">
+                      ({isModelVisionCapable(aiConfig.modelName) ? 'Auto' : 'Forced'})
+                    </span>
+                  </span>
+                ) : (
+                  <span className="inline-flex items-center gap-1 rounded-md border border-slate-200 dark:border-slate-800 bg-white/70 dark:bg-slate-900/70 px-2 py-0.5 font-mono text-[10px] text-slate-500 dark:text-slate-400">
+                    Text-Only Model
+                  </span>
+                )}
+              </div>
               <div className="relative w-52">
                 <Search className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 h-3 w-3 text-slate-400" />
                 <input
@@ -1504,6 +1852,49 @@ export const OptionsView: React.FC = () => {
               <code className="font-mono">&lt;reasoning&gt;</code>, and{' '}
               <code className="font-mono">reasoning_content</code> into a
               collapsible Reasoning drawer.
+            </div>
+
+            {/* Multimodal Vision Input Detection & Force Enable Toggle for Custom Local GGUFs */}
+            <div className="flex flex-wrap items-center justify-between gap-3 pt-2.5 border-t border-slate-200/80 dark:border-slate-800/80">
+              <div className="flex flex-wrap items-center gap-2 text-xs">
+                <span className="font-medium text-slate-700 dark:text-slate-300">
+                  Multimodal Vision Context (~260 tok JPEG):
+                </span>
+                {doesBackendSupportVision(aiConfig) ? (
+                  <span className="inline-flex items-center gap-1 rounded bg-emerald-500/15 px-2 py-0.5 font-mono text-[10px] font-bold text-emerald-700 dark:text-emerald-300">
+                    👁️ Vision Supported
+                  </span>
+                ) : (
+                  <span className="font-mono text-[10px] text-slate-500 dark:text-slate-400">
+                    Not detected from model name
+                  </span>
+                )}
+                <Tooltip
+                  title="Zero-Bloat Multimodal Vision (~260 Tokens Max)"
+                  content="Vision-capable models (Gemini, Gemma 3/4, Qwen-VL/Qwen3, Pixtral, LLaVA, Llama 4, Llama 3.2 Vision, MiniCPM-V, Grok, GPT-4o/4.1, Claude 3/4) can inspect the Character Portrait or a temporary reference image during AI Assist. Images are compressed to 512px JPEG (~260 tokens) and NEVER sent during background Ghost-Text autocomplete."
+                />
+              </div>
+
+              <label
+                htmlFor="force-enable-vision-checkbox"
+                className="flex items-center gap-2 text-xs font-medium text-slate-700 dark:text-slate-300 cursor-pointer select-none"
+              >
+                <input
+                  id="force-enable-vision-checkbox"
+                  type="checkbox"
+                  checked={Boolean(aiConfig.forceEnableVision)}
+                  onChange={(e) =>
+                    setAiConfig((prev) => ({
+                      ...prev,
+                      forceEnableVision: e.target.checked,
+                    }))
+                  }
+                  className="h-4 w-4 rounded cursor-pointer"
+                  style={{ accentColor: 'var(--theme-accent)' }}
+                />
+                <span>Force Enable Vision Input</span>
+                <Tooltip content="Enable this for custom-named local GGUF vision models in LM Studio or Ollama that have a Vision (mmproj) projector loaded." />
+              </label>
             </div>
           </div>
 

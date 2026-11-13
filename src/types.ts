@@ -205,12 +205,14 @@ export interface AIBackendConfig {
   url: string;
   apiKey: string;
   modelName: string;
+  model?: string;
   compatibilityFormat: ModelCompatibilityFormat;
   temperature: number;
   maxTokens: number;
   ghostTextEnabled: boolean;
   debounceMs: number;
   availableModels: string[];
+  forceEnableVision?: boolean;
   savedProviderKeys?: Record<string, string>;
   savedProviderModels?: Record<string, string>;
 }

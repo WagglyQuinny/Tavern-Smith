@@ -40,6 +40,13 @@ import {
   StoredDirectoryRecord,
 } from '../utils/folderDb';
 import { AI_BACKEND_PRESETS, getProviderKeyId } from '../services/aiService';
+import {
+  decryptProviderKeysFromVault,
+  encryptAndSaveProviderKeys,
+  getInMemoryDecryptedKeys,
+  loadProviderModelsMap,
+  saveProviderModelsMap,
+} from '../utils/cryptoVault';
 
 const PREFERENCES_STORAGE_KEY = 'tavernsmith_preferences_v1';
 const SAVE_FOLDER_FILES_STORAGE_KEY = 'tavernsmith_save_folder_files_v1';
@@ -1510,42 +1517,54 @@ export const DEFAULT_SETTINGS: AppSettings = {
 };
 
 /**
- * Loads and merges per-provider credentials (`savedProviderKeys` and `savedProviderModels`)
- * from dedicated `localStorage` so switching between providers never loses an API key.
+ * Strips plaintext API keys from `AIBackendConfig` before writing preferences to `localStorage`.
+ * All API keys are stored exclusively in the AES-256-GCM encrypted vault (`_tavernsmith_vault_enc`).
+ */
+function stripApiKeysForStorage(config: AIBackendConfig): AIBackendConfig {
+  return {
+    ...config,
+    apiKey: '',
+    savedProviderKeys: {},
+  };
+}
+
+/**
+ * Loads per-provider models and in-memory decrypted keys from the AES-256-GCM vault,
+ * and migrates any legacy plaintext credentials into `_tavernsmith_vault_enc`.
  */
 function loadPersistedProviderCredentials(): {
   savedProviderKeys: Record<string, string>;
   savedProviderModels: Record<string, string>;
 } {
+  const modelsMap = loadProviderModelsMap();
+  const keysMap = getInMemoryDecryptedKeys();
   try {
     const raw = safeLocalStorageGet(PROVIDER_CREDENTIALS_STORAGE_KEY);
     if (raw) {
       const parsed = JSON.parse(raw);
-      return {
-        savedProviderKeys:
-          parsed && typeof parsed.savedProviderKeys === 'object'
-            ? { ...parsed.savedProviderKeys }
-            : {},
-        savedProviderModels:
-          parsed && typeof parsed.savedProviderModels === 'object'
-            ? { ...parsed.savedProviderModels }
-            : {},
-      };
+      if (parsed && typeof parsed.savedProviderModels === 'object') {
+        Object.assign(modelsMap, parsed.savedProviderModels);
+        saveProviderModelsMap(modelsMap);
+      }
+      if (parsed && typeof parsed.savedProviderKeys === 'object') {
+        Object.assign(keysMap, parsed.savedProviderKeys);
+        void encryptAndSaveProviderKeys(keysMap);
+      }
+      safeLocalStorageRemove(PROVIDER_CREDENTIALS_STORAGE_KEY);
     }
   } catch {
     // Ignore parse errors
   }
-  return { savedProviderKeys: {}, savedProviderModels: {} };
+  return { savedProviderKeys: keysMap, savedProviderModels: modelsMap };
 }
 
 function savePersistedProviderCredentials(
   savedProviderKeys: Record<string, string>,
   savedProviderModels: Record<string, string>
 ): void {
-  safeLocalStorageSet(
-    PROVIDER_CREDENTIALS_STORAGE_KEY,
-    JSON.stringify({ savedProviderKeys, savedProviderModels })
-  );
+  saveProviderModelsMap(savedProviderModels);
+  safeLocalStorageRemove(PROVIDER_CREDENTIALS_STORAGE_KEY);
+  void encryptAndSaveProviderKeys(savedProviderKeys);
 }
 
 /**
@@ -2213,6 +2232,14 @@ function loadInitialState(): InitialWorkspaceBootstrap {
       mergedProviderModels[activePreset] = currentModelName;
     }
 
+    // If any legacy plaintext keys were present in preferences, encrypt them into the AES-256-GCM vault
+    if (Object.values(mergedProviderKeys).some((k) => Boolean(k && k.trim()))) {
+      void encryptAndSaveProviderKeys(mergedProviderKeys);
+    }
+    if (Object.keys(mergedProviderModels).length > 0) {
+      saveProviderModelsMap(mergedProviderModels);
+    }
+
     const hydratedAiConfig: AIBackendConfig = {
       ...DEFAULT_AI_CONFIG,
       ...(parsedPrefs.aiConfig || {}),
@@ -2348,6 +2375,42 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
         availableModels: found.suggestedModels,
       })
     );
+  }, []);
+
+  // Hydrate AES-256-GCM encrypted provider keys (`_tavernsmith_vault_enc`) into memory on startup
+  useEffect(() => {
+    let cancelled = false;
+    decryptProviderKeysFromVault()
+      .then((res) => {
+        if (cancelled || !res.ok) return;
+        setAiConfigState((prev) => {
+          const mergedKeys: Record<string, string> = {
+            ...res.keys,
+            ...(prev.savedProviderKeys || {}),
+          };
+          const activeProviderId = getProviderKeyId(prev.preset);
+          const restoredActiveKey =
+            prev.apiKey ||
+            mergedKeys[activeProviderId] ||
+            mergedKeys[prev.preset] ||
+            '';
+          if (restoredActiveKey) {
+            mergedKeys[activeProviderId] = restoredActiveKey;
+            mergedKeys[prev.preset] = restoredActiveKey;
+          }
+          return {
+            ...prev,
+            apiKey: restoredActiveKey,
+            savedProviderKeys: mergedKeys,
+          };
+        });
+      })
+      .catch(() => {
+        // Ignore if vault requires custom passphrase unlock
+      });
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   const aiConfig = aiConfigState;
@@ -3905,7 +3968,7 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
         const prefsPayload: PersistedPreferencesState = {
           activeCharacterId,
           activeLorebookId,
-          aiConfig,
+          aiConfig: stripApiKeysForStorage(aiConfig),
           settings,
           saveLogs: updatedLogs,
           lastSavedAt: displayTime,
@@ -3975,7 +4038,7 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
     const prefsPayload: PersistedPreferencesState = {
       activeCharacterId,
       activeLorebookId,
-      aiConfig,
+      aiConfig: stripApiKeysForStorage(aiConfig),
       settings,
       saveLogs,
       lastSavedAt,
@@ -4081,7 +4144,7 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
         const prefsPayload: PersistedPreferencesState = {
           activeCharacterId: snap.activeCharacterId,
           activeLorebookId: snap.activeLorebookId,
-          aiConfig: snap.aiConfig,
+          aiConfig: stripApiKeysForStorage(snap.aiConfig),
           settings: snap.settings,
           saveLogs: snap.saveLogs,
           lastSavedAt: displayTime,

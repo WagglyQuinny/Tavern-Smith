@@ -813,3 +813,81 @@ export function exportLorebookAsJson(lorebook: Lorebook): void {
   const filename = `${sanitizeFilename(lorebook.name)}_lorebook.json`;
   triggerBrowserDownload(blob, filename);
 }
+
+/**
+ * Zero-Bloat Image Compression Utility (~260 Tokens Max):
+ * Scales any image data URL down using an offscreen HTML5 <canvas> so its longest edge
+ * is at most `maxDim` (default 512px) and encodes it as `image/jpeg` at 0.8 quality.
+ * Guarantees every visual context image costs only ~258–400 tokens and never bloats local LLM VRAM.
+ */
+export async function compressImageForVision(
+  dataUrl: string,
+  maxDim = 512
+): Promise<string> {
+  if (!dataUrl || typeof dataUrl !== 'string') {
+    throw new Error('Invalid image data URL provided for vision compression.');
+  }
+
+  return new Promise<string>((resolve, reject) => {
+    const img = new Image();
+    img.crossOrigin = 'anonymous';
+
+    img.onload = () => {
+      try {
+        const origWidth = img.naturalWidth || img.width || 512;
+        const origHeight = img.naturalHeight || img.height || 512;
+
+        const longestEdge = Math.max(origWidth, origHeight);
+        const scale = longestEdge > maxDim ? maxDim / longestEdge : 1;
+
+        const targetWidth = Math.max(1, Math.round(origWidth * scale));
+        const targetHeight = Math.max(1, Math.round(origHeight * scale));
+
+        const canvas = document.createElement('canvas');
+        canvas.width = targetWidth;
+        canvas.height = targetHeight;
+
+        const ctx = canvas.getContext('2d');
+        if (!ctx) {
+          resolve(dataUrl);
+          return;
+        }
+
+        // Fill neutral dark backdrop so transparent PNGs render cleanly in JPEG
+        ctx.fillStyle = '#18181b';
+        ctx.fillRect(0, 0, targetWidth, targetHeight);
+        ctx.drawImage(img, 0, 0, targetWidth, targetHeight);
+
+        const compressedJpeg = canvas.toDataURL('image/jpeg', 0.8);
+        resolve(compressedJpeg);
+      } catch (err) {
+        reject(err);
+      }
+    };
+
+    img.onerror = () => {
+      reject(new Error('Failed to load image for vision compression.'));
+    };
+
+    img.src = dataUrl;
+  });
+}
+
+/**
+ * Reads an uploaded or dropped File object into a base64 Data URL.
+ */
+export function readImageFileAsDataUrl(file: File): Promise<string> {
+  return new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      if (typeof reader.result === 'string') {
+        resolve(reader.result);
+      } else {
+        reject(new Error('Failed to read image file as Data URL.'));
+      }
+    };
+    reader.onerror = () => reject(new Error('Error reading image file.'));
+    reader.readAsDataURL(file);
+  });
+}
+

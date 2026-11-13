@@ -25,6 +25,7 @@ import {
   RefreshCw,
   FolderOpen,
   ShieldAlert,
+  Image as ImageIcon,
 } from 'lucide-react';
 import { useStore, isLorebookNsfw } from '../context/StoreContext';
 import {
@@ -40,8 +41,16 @@ import {
   calculateLorebookTokens,
   estimateTokens,
 } from '../utils/tokenCounter';
-import { exportLorebookAsJson } from '../utils/cardIO';
-import { AIServiceError, generateCompletionDetailed } from '../services/aiService';
+import {
+  compressImageForVision,
+  exportLorebookAsJson,
+  readImageFileAsDataUrl,
+} from '../utils/cardIO';
+import {
+  AIServiceError,
+  doesBackendSupportVision,
+  generateCompletionDetailed,
+} from '../services/aiService';
 
 const LOREBOOK_POSITIONS: { value: LorebookPosition; label: string }[] = [
   { value: 'before_char', label: 'Before Character Defs (before_char)' },
@@ -158,6 +167,44 @@ export const LorebookEditor: React.FC = () => {
     message: string;
     corsHint?: string;
   } | null>(null);
+
+  // Temporary Reference Image State for Lorebook AI Assist (never saved into Lorebook JSON)
+  const [loreTempRefImageUrl, setLoreTempRefImageUrl] = useState<string | null>(
+    null
+  );
+  const [loreTempRefImageName, setLoreTempRefImageName] = useState<string>('');
+  const [visionFallbackBanner, setVisionFallbackBanner] = useState<
+    string | null
+  >(null);
+  const loreTempRefInputRef = useRef<HTMLInputElement | null>(null);
+
+  const visionSupported = useMemo(
+    () => doesBackendSupportVision(aiConfig),
+    [aiConfig]
+  );
+
+  const handleLoadLoreTempReferenceFile = async (file: File) => {
+    if (!file.type.startsWith('image/')) {
+      setAiKeyError({
+        message: 'Please select or drop a valid image file (PNG, JPEG, WebP).',
+      });
+      return;
+    }
+    try {
+      const rawUrl = await readImageFileAsDataUrl(file);
+      const compressed = await compressImageForVision(rawUrl, 512);
+      setLoreTempRefImageUrl(compressed);
+      setLoreTempRefImageName(file.name);
+      setAiKeyError(null);
+    } catch (err) {
+      setAiKeyError({
+        message:
+          err instanceof Error
+            ? err.message
+            : 'Failed to compress reference image for vision.',
+      });
+    }
+  };
   const [syncSuccessBanner, setSyncSuccessBanner] = useState(false);
 
   const abortRef = useRef<AbortController | null>(null);
@@ -487,16 +534,23 @@ export const LorebookEditor: React.FC = () => {
   // Wizard Step 1: "✨ AI Generate Multi-Entry Lorebook from Concept"
   const handleGenerateMultiEntryLorebook = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!worldConceptPrompt.trim()) return;
+    const useRefImage = Boolean(visionSupported && loreTempRefImageUrl);
+    if (!worldConceptPrompt.trim() && !useRefImage) return;
 
     if (abortRef.current) abortRef.current.abort();
     const controller = new AbortController();
     abortRef.current = controller;
     setIsGeneratingMultiLore(true);
     setAiKeyError(null);
+    setVisionFallbackBanner(null);
 
     const prompt = [
-      `Design a rich SillyTavern World Info / Lorebook based on this concept: "${worldConceptPrompt.trim()}"`,
+      worldConceptPrompt.trim()
+        ? `Design a rich SillyTavern World Info / Lorebook based on this concept: "${worldConceptPrompt.trim()}"`
+        : `Design a rich SillyTavern World Info / Lorebook inspired directly by the attached Reference Image.`,
+      useRefImage
+        ? `A Reference Image is attached (~260 tokens). Inspect the visual setting, architecture, atmosphere, items, or entities in the image and incorporate them into the generated Lorebook entries.`
+        : '',
       lorebook.name && lorebook.name !== 'New Lorebook'
         ? `Lorebook Title: ${lorebook.name}`
         : '',
@@ -532,10 +586,15 @@ export const LorebookEditor: React.FC = () => {
           activeTheme,
           allTags: tags,
           characterTags: lorebook.tags || [],
+          imageDataUrl: useRefImage ? loreTempRefImageUrl! : undefined,
+          onVisionFallback: (warning) => setVisionFallbackBanner(warning),
         }
       );
 
       if (!controller.signal.aborted && detailed.content) {
+        if (detailed.visionFallbackWarning) {
+          setVisionFallbackBanner(detailed.visionFallbackWarning);
+        }
         const jsonMatch = detailed.content.match(/\{[\s\S]*\}/);
         const rawJson = jsonMatch ? jsonMatch[0] : detailed.content;
         const parsed = JSON.parse(rawJson) as {
@@ -615,7 +674,7 @@ export const LorebookEditor: React.FC = () => {
     }
   };
 
-  // Wizard Step 2: Per-Entry "✨ AI Assist" Draft from Short Prompt
+  // Wizard Step 2: Per-Entry "✨ AI Assist" Draft from Short Prompt (supports Temporary Reference Image)
   const handleDraftSelectedEntryWithAI = async () => {
     if (!selectedEntry) return;
     if (abortRef.current) abortRef.current.abort();
@@ -624,12 +683,18 @@ export const LorebookEditor: React.FC = () => {
     abortRef.current = controller;
     setIsDraftingEntryContent(true);
     setAiKeyError(null);
+    setVisionFallbackBanner(null);
+
+    const useRefImage = Boolean(visionSupported && loreTempRefImageUrl);
 
     const prompt = [
       `Write a rich, atmospheric SillyTavern World Info / Lorebook entry (1 to 2 concise paragraphs) for:`,
       `Entry Title: "${selectedEntry.comment || 'World Lore'}"`,
       entryDraftPrompt.trim()
         ? `Specific Directive / Concept: "${entryDraftPrompt.trim()}"`
+        : '',
+      useRefImage
+        ? `A Reference Image is attached (~260 tokens). Describe the location, item, outfit, faction, or entity shown in the attached picture with vivid worldbuilding detail.`
         : '',
       selectedEntry.keys.length > 0
         ? `Associated Keywords: ${selectedEntry.keys.join(', ')}`
@@ -651,10 +716,15 @@ export const LorebookEditor: React.FC = () => {
           activeTheme,
           allTags: tags,
           characterTags: selectedEntry.tags || lorebook.tags || [],
+          imageDataUrl: useRefImage ? loreTempRefImageUrl! : undefined,
+          onVisionFallback: (warning) => setVisionFallbackBanner(warning),
         }
       );
 
       if (!controller.signal.aborted && detailed.content.trim()) {
+        if (detailed.visionFallbackWarning) {
+          setVisionFallbackBanner(detailed.visionFallbackWarning);
+        }
         handleUpdateSelectedEntry({ content: detailed.content.trim() });
         setEntryDraftPrompt('');
       }
@@ -1088,34 +1158,6 @@ export const LorebookEditor: React.FC = () => {
             </div>
 
             <div className="flex flex-wrap items-center gap-2 shrink-0">
-              {/* Full Sandbox | 5-Step Wizard Toggle */}
-              <div className="flex items-center rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-100 dark:bg-slate-950 p-0.5">
-                <button
-                  type="button"
-                  onClick={() => updateSettings({ editorMode: 'sandbox' })}
-                  className={`flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs font-medium cursor-pointer ${
-                    settings.editorMode === 'sandbox'
-                      ? 'bg-white dark:bg-slate-800 text-slate-900 dark:text-white shadow-2xs'
-                      : 'text-slate-500 hover:text-slate-900 dark:hover:text-white'
-                  }`}
-                >
-                  <Sliders className="h-3.5 w-3.5" />
-                  <span>Full Sandbox</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => updateSettings({ editorMode: 'wizard' })}
-                  className={`flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs font-medium cursor-pointer ${
-                    settings.editorMode === 'wizard'
-                      ? 'bg-white dark:bg-slate-800 text-slate-900 dark:text-white shadow-2xs'
-                      : 'text-slate-500 hover:text-slate-900 dark:hover:text-white'
-                  }`}
-                >
-                  <Wand2 className="h-3.5 w-3.5" />
-                  <span>5-Step Wizard</span>
-                </button>
-              </div>
-
               <button
                 type="button"
                 onClick={handleBindToActiveCharacter}
@@ -1377,7 +1419,9 @@ export const LorebookEditor: React.FC = () => {
                     <button
                       type="submit"
                       disabled={
-                        isGeneratingMultiLore || !worldConceptPrompt.trim()
+                        isGeneratingMultiLore ||
+                        (!worldConceptPrompt.trim() &&
+                          !(visionSupported && loreTempRefImageUrl))
                       }
                       style={{ borderColor: 'var(--theme-accent)' }}
                       className="theme-hover-outline flex items-center justify-center gap-2 rounded-lg border bg-slate-900 dark:bg-white px-4 py-2 text-xs font-semibold text-white dark:text-slate-900 disabled:opacity-50 cursor-pointer whitespace-nowrap"
@@ -1395,6 +1439,73 @@ export const LorebookEditor: React.FC = () => {
                       )}
                     </button>
                   </div>
+
+                  {/* Hidden File Input for Temporary Reference Image in Lorebook */}
+                  <input
+                    ref={loreTempRefInputRef}
+                    type="file"
+                    accept="image/*"
+                    className="hidden"
+                    onChange={(e) => {
+                      const f = e.target.files?.[0];
+                      if (f) {
+                        void handleLoadLoreTempReferenceFile(f);
+                      }
+                      e.target.value = '';
+                    }}
+                  />
+
+                  {visionSupported && (
+                    <div
+                      onDragOver={(e) => e.preventDefault()}
+                      onDrop={(e) => {
+                        e.preventDefault();
+                        const f = e.dataTransfer.files?.[0];
+                        if (f) void handleLoadLoreTempReferenceFile(f);
+                      }}
+                      className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-slate-200/80 dark:border-slate-800/80 text-xs"
+                    >
+                      {loreTempRefImageUrl ? (
+                        <div className="flex items-center gap-2 rounded-md border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 px-2.5 py-1">
+                          <img
+                            src={loreTempRefImageUrl}
+                            alt="Lorebook Temp Reference"
+                            className="h-6 w-6 rounded object-cover"
+                          />
+                          <span className="font-semibold text-slate-800 dark:text-slate-200 truncate max-w-[180px]">
+                            {loreTempRefImageName || 'Reference Image'}
+                          </span>
+                          <span className="font-mono text-[10px] text-emerald-600 dark:text-emerald-400">
+                            👁️ ~260 tok JPEG (Temp Ref)
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setLoreTempRefImageUrl(null);
+                              setLoreTempRefImageName('');
+                            }}
+                            className="text-slate-400 hover:text-rose-500 cursor-pointer"
+                          >
+                            <X className="h-3.5 w-3.5" />
+                          </button>
+                        </div>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={() => loreTempRefInputRef.current?.click()}
+                          className="inline-flex items-center gap-1.5 rounded-md border border-dashed border-slate-300 dark:border-slate-700 bg-slate-50/70 dark:bg-slate-950/60 px-2.5 py-1 text-[11px] font-medium text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white cursor-pointer"
+                        >
+                          <ImageIcon
+                            className="h-3.5 w-3.5"
+                            style={{ color: 'var(--theme-accent)' }}
+                          />
+                          <span>
+                            👁️ Drop or Select Temp Reference Image (~260 tok · Never saved to JSON)
+                          </span>
+                        </button>
+                      )}
+                    </div>
+                  )}
                 </form>
 
                 <div
@@ -1687,7 +1798,75 @@ export const LorebookEditor: React.FC = () => {
                               <span>✨ AI Assist Draft</span>
                             </button>
                           </div>
+
+                          {visionSupported && (
+                            <div
+                              onDragOver={(e) => e.preventDefault()}
+                              onDrop={(e) => {
+                                e.preventDefault();
+                                const f = e.dataTransfer.files?.[0];
+                                if (f) void handleLoadLoreTempReferenceFile(f);
+                              }}
+                              className="flex flex-wrap items-center justify-between gap-2 pt-1.5 border-t border-slate-200/70 dark:border-slate-800/70 text-[11px]"
+                            >
+                              {loreTempRefImageUrl ? (
+                                <div className="flex items-center gap-2">
+                                  <img
+                                    src={loreTempRefImageUrl}
+                                    alt="Entry Reference"
+                                    className="h-5 w-5 rounded object-cover"
+                                  />
+                                  <span className="font-semibold text-slate-800 dark:text-slate-200 truncate max-w-[160px]">
+                                    {loreTempRefImageName || 'Reference Image'}
+                                  </span>
+                                  <span className="font-mono text-[9px] text-emerald-600 dark:text-emerald-400">
+                                    👁️ ~260 tok JPEG (Temp Ref)
+                                  </span>
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setLoreTempRefImageUrl(null);
+                                      setLoreTempRefImageName('');
+                                    }}
+                                    className="text-slate-400 hover:text-rose-500 cursor-pointer"
+                                  >
+                                    <X className="h-3.5 w-3.5" />
+                                  </button>
+                                </div>
+                              ) : (
+                                <button
+                                  type="button"
+                                  onClick={() => loreTempRefInputRef.current?.click()}
+                                  className="inline-flex items-center gap-1.5 text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white cursor-pointer"
+                                >
+                                  <ImageIcon
+                                    className="h-3.5 w-3.5"
+                                    style={{ color: 'var(--theme-accent)' }}
+                                  />
+                                  <span>
+                                    👁️ Attach Temp Reference Image for Location / Item / Entity (~260 tok)
+                                  </span>
+                                </button>
+                              )}
+                            </div>
+                          )}
                         </div>
+
+                        {visionFallbackBanner && (
+                          <div className="flex items-start justify-between gap-2 rounded-lg border border-amber-500/40 bg-amber-500/10 p-2.5 text-xs text-amber-900 dark:text-amber-200">
+                            <div className="flex items-start gap-2">
+                              <AlertTriangle className="h-4 w-4 text-amber-500 shrink-0 mt-0.5" />
+                              <span>{visionFallbackBanner}</span>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => setVisionFallbackBanner(null)}
+                              className="text-amber-700 dark:text-amber-300 cursor-pointer"
+                            >
+                              <X className="h-3.5 w-3.5" />
+                            </button>
+                          </div>
+                        )}
 
                         <SmartEditor
                           label={`Entry Content · ${selectedEntry.comment || 'World Info'}`}
@@ -1701,6 +1880,7 @@ export const LorebookEditor: React.FC = () => {
                           isPermanentTokenField={selectedEntry.constant}
                           extraContextSummary={`Lorebook: ${lorebook.name}\nEntry Title: ${selectedEntry.comment || ''}\nTrigger Keys: ${selectedEntry.keys.join(', ')}`}
                           additionalTags={selectedEntry.tags}
+                          enablePortraitVision={false}
                         />
                       </>
                     ) : (
@@ -2616,6 +2796,7 @@ export const LorebookEditor: React.FC = () => {
                     isPermanentTokenField={selectedEntry.constant}
                     extraContextSummary={`Lorebook: ${lorebook.name}\nEntry Title: ${selectedEntry.comment || ''}\nTrigger Keys: ${selectedEntry.keys.join(', ')}`}
                     additionalTags={selectedEntry.tags}
+                    enablePortraitVision={false}
                   />
 
                   {/* Insertion Order, Position & Trigger Flags */}

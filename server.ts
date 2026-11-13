@@ -15,9 +15,24 @@ const SUPPORTED_GEMINI_MODELS = [
   'gemma-3-27b-it',
 ];
 
-function createGeminiClient(): GoogleGenAI {
+function extractCustomApiKey(req: express.Request): string {
+  const authHeader = req.headers.authorization || '';
+  if (authHeader.toLowerCase().startsWith('bearer ')) {
+    const token = authHeader.slice(7).trim();
+    if (token) return token;
+  }
+  const bodyKey =
+    req.body && typeof req.body.apiKey === 'string'
+      ? req.body.apiKey.trim()
+      : '';
+  return bodyKey;
+}
+
+function createGeminiClient(customApiKey?: string): GoogleGenAI {
+  const effectiveKey =
+    (customApiKey && customApiKey.trim()) || process.env.GEMINI_API_KEY;
   return new GoogleGenAI({
-    apiKey: process.env.GEMINI_API_KEY,
+    apiKey: effectiveKey,
     httpOptions: {
       headers: {
         'User-Agent': 'aistudio-build',
@@ -79,7 +94,7 @@ function formatGeminiErrorMessage(err: unknown): {
     return {
       status: statusMatch,
       message:
-        'Gemini API authentication error. Please check your GEMINI_API_KEY in the Settings > Secrets panel.',
+        'Gemini API authentication error. Verify your custom Gemini API key or check GEMINI_API_KEY in Settings > Secrets.',
     };
   }
 
@@ -87,7 +102,7 @@ function formatGeminiErrorMessage(err: unknown): {
     return {
       status: 429,
       message:
-        'Gemini API quota exceeded (429 RESOURCE_EXHAUSTED). You can select a billing-enabled API key in the Settings > Secrets panel.',
+        'Gemini API quota exceeded (429 RESOURCE_EXHAUSTED). Enter your own Gemini API key in Options or select a billing-enabled key in Settings > Secrets.',
     };
   }
 
@@ -103,13 +118,14 @@ async function startServer() {
 
   app.use(express.json({ limit: '10mb' }));
 
-  // GET /api/gemini/models — Returns supported server-side Gemini models
-  app.get('/api/gemini/models', async (_req, res) => {
+  // GET /api/gemini/models — Returns supported Gemini models
+  app.get('/api/gemini/models', async (req, res) => {
     try {
-      if (!process.env.GEMINI_API_KEY) {
+      const customKey = extractCustomApiKey(req);
+      if (!customKey && !process.env.GEMINI_API_KEY) {
         res.status(403).json({
           error:
-            'GEMINI_API_KEY is not configured. Please check the Settings > Secrets panel.',
+            'No Gemini API key provided and server GEMINI_API_KEY is not configured.',
           models: SUPPORTED_GEMINI_MODELS,
         });
         return;
@@ -131,10 +147,11 @@ async function startServer() {
   // POST /api/gemini/generate — Standard server-side generateContent call
   app.post('/api/gemini/generate', async (req, res) => {
     try {
-      if (!process.env.GEMINI_API_KEY) {
+      const customKey = extractCustomApiKey(req);
+      if (!customKey && !process.env.GEMINI_API_KEY) {
         res.status(403).json({
           error:
-            'GEMINI_API_KEY is not configured on the server. Please check the Settings > Secrets panel.',
+            'No Gemini API key provided and server GEMINI_API_KEY is not configured.',
         });
         return;
       }
@@ -145,6 +162,8 @@ async function startServer() {
         model: requestedModel,
         responseMimeType,
         responseSchema,
+        inlineData,
+        imageDataUrl,
       } = req.body ?? {};
 
       if (!prompt || typeof prompt !== 'string') {
@@ -152,7 +171,7 @@ async function startServer() {
         return;
       }
 
-      const ai = createGeminiClient();
+      const ai = createGeminiClient(customKey);
       const model = resolveServerGeminiModel(requestedModel);
 
       const config: Record<string, unknown> = {};
@@ -166,9 +185,52 @@ async function startServer() {
         config.responseSchema = responseSchema;
       }
 
+      let resolvedInlineData: { mimeType: string; data: string } | null = null;
+      if (
+        inlineData &&
+        typeof inlineData === 'object' &&
+        typeof inlineData.data === 'string' &&
+        inlineData.data.trim()
+      ) {
+        resolvedInlineData = {
+          mimeType:
+            typeof inlineData.mimeType === 'string' && inlineData.mimeType
+              ? inlineData.mimeType
+              : 'image/jpeg',
+          data: inlineData.data.trim(),
+        };
+      } else if (typeof imageDataUrl === 'string' && imageDataUrl.startsWith('data:image/')) {
+        const commaIndex = imageDataUrl.indexOf(',');
+        if (commaIndex !== -1) {
+          const header = imageDataUrl.slice(5, commaIndex);
+          const mimeMatch = header.split(';')[0] || 'image/jpeg';
+          const base64Part = imageDataUrl.slice(commaIndex + 1).trim();
+          if (base64Part) {
+            resolvedInlineData = {
+              mimeType: mimeMatch,
+              data: base64Part,
+            };
+          }
+        }
+      }
+
+      const contentsPayload = resolvedInlineData
+        ? {
+            parts: [
+              { text: prompt },
+              {
+                inlineData: {
+                  mimeType: resolvedInlineData.mimeType,
+                  data: resolvedInlineData.data,
+                },
+              },
+            ],
+          }
+        : prompt;
+
       const response: GenerateContentResponse = await ai.models.generateContent({
         model,
-        contents: prompt,
+        contents: contentsPayload,
         config: Object.keys(config).length > 0 ? config : undefined,
       });
 
@@ -205,10 +267,11 @@ async function startServer() {
   // POST /api/gemini/stream — Streaming server-side generateContentStream via SSE
   app.post('/api/gemini/stream', async (req, res) => {
     try {
-      if (!process.env.GEMINI_API_KEY) {
+      const customKey = extractCustomApiKey(req);
+      if (!customKey && !process.env.GEMINI_API_KEY) {
         res.status(403).json({
           error:
-            'GEMINI_API_KEY is not configured on the server. Please check the Settings > Secrets panel.',
+            'No Gemini API key provided and server GEMINI_API_KEY is not configured.',
         });
         return;
       }
@@ -228,7 +291,7 @@ async function startServer() {
       res.setHeader('Cache-Control', 'no-cache');
       res.setHeader('Connection', 'keep-alive');
 
-      const ai = createGeminiClient();
+      const ai = createGeminiClient(customKey);
       const model = resolveServerGeminiModel(requestedModel);
 
       const streamResponse = await ai.models.generateContentStream({

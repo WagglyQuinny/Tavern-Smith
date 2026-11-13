@@ -6,6 +6,59 @@ import {
   ProviderKeyId,
   TagDefinition,
 } from '../types';
+import { getDecryptedKeyForProvider } from '../utils/cryptoVault';
+import { compressImageForVision } from '../utils/cardIO';
+
+export { compressImageForVision };
+
+/**
+ * Vision-capable model keywords automatically detected from `config.modelName` / `config.model`.
+ */
+export const VISION_MODEL_SUBSTRINGS: readonly string[] = [
+  'gemini',
+  'gemma-4',
+  'gemma4',
+  'gemma-3',
+  'gemma3',
+  'qwen-vl',
+  'qwen2-vl',
+  'qwen2.5-vl',
+  'qwen3',
+  'pixtral',
+  'llava',
+  'llama-4',
+  'llama4',
+  'llama-3.2-vision',
+  'llama3.2-vision',
+  'minicpm-v',
+  'grok',
+  'gpt-4o',
+  'gpt-4.1',
+  'claude-3',
+  'claude-4',
+];
+
+/**
+ * Auto-detects whether a model string supports multimodal vision inputs.
+ */
+export function isModelVisionCapable(modelName?: string): boolean {
+  const lower = (modelName || '').trim().toLowerCase();
+  if (!lower) return false;
+  return VISION_MODEL_SUBSTRINGS.some((token) => lower.includes(token));
+}
+
+/**
+ * Returns true if the active AI backend configuration supports vision input
+ * (either auto-detected from `config.modelName` / `config.model`, or via `config.forceEnableVision`).
+ */
+export function doesBackendSupportVision(
+  config?: AIBackendConfig | null
+): boolean {
+  if (!config) return false;
+  if (config.forceEnableVision) return true;
+  const rawModel = (config.modelName || config.model || '').toLowerCase();
+  return isModelVisionCapable(rawModel);
+}
 
 export interface AIPresetMeta {
   id: AIPresetId;
@@ -77,11 +130,11 @@ export const AI_BACKEND_PRESETS: AIPresetMeta[] = [
     providerKey: 'google',
     label: 'Google Gemini',
     group: 'Cloud API',
-    defaultUrl: '/api/gemini',
+    defaultUrl: 'https://generativelanguage.googleapis.com/v1beta/openai',
     defaultModel: 'gemini-3.8-flash',
     description:
-      'Server-side Google Gemini integration powered by @google/genai.',
-    requiresKey: false,
+      'Google Gemini API. Prioritizes your custom Gemini API key directly, or falls back to /api/gemini when left empty.',
+    requiresKey: true,
     suggestedModels: [
       'gemini-3.8-flash',
       'gemini-3.1-flash-lite',
@@ -519,30 +572,127 @@ export function isGeminiBackend(config: AIBackendConfig): boolean {
     config.preset === 'gemini' ||
     urlLower.startsWith('/api/gemini') ||
     urlLower.includes('/api/gemini') ||
+    urlLower.includes('generativelanguage.googleapis.com') ||
     modelLower.startsWith('gemini-')
   );
 }
 
 /**
- * Live Model Scanner: Queries `/api/gemini/models` for server-side Gemini,
- * or `/v1/models`, Ollama `/api/tags`, and KoboldCPP `/api/v1/model` for local/custom backends.
+ * Resolves the active provider's API key, checking the in-memory `config.apiKey` first
+ * and decrypting on-demand from the AES-256-GCM vault (`_tavernsmith_vault_enc`) if needed.
+ */
+export async function resolveEffectiveApiKey(
+  config: AIBackendConfig
+): Promise<string> {
+  if (config.apiKey && config.apiKey.trim()) {
+    return config.apiKey.trim();
+  }
+  const providerKeyId = getProviderKeyId(config.preset);
+  const fromMap =
+    config.savedProviderKeys?.[providerKeyId] ||
+    config.savedProviderKeys?.[config.preset] ||
+    '';
+  if (fromMap && fromMap.trim()) {
+    return fromMap.trim();
+  }
+  const decrypted = await getDecryptedKeyForProvider(providerKeyId, config.preset);
+  return (decrypted || '').trim();
+}
+
+/**
+ * Normalizes legacy Gemini model IDs to current supported models.
+ */
+function normalizeGeminiModelId(rawModel?: string): string {
+  const m = (rawModel || 'gemini-3.8-flash').trim().replace(/^models\//, '');
+  if (
+    !m ||
+    m === 'gemini-3-flash-preview' ||
+    m === 'gemini-2.5-flash' ||
+    m.startsWith('gemini-2.') ||
+    m.startsWith('gemini-1.') ||
+    m === 'gemini-pro'
+  ) {
+    return 'gemini-3.8-flash';
+  }
+  if (m === 'gemini-3.1-flash-lite-preview') {
+    return 'gemini-3.1-flash-lite';
+  }
+  return m;
+}
+
+/**
+ * Live Model Scanner:
+ * - For Google Gemini: If the user provided a custom API key, prioritizes querying Google's
+ *   `generativelanguage.googleapis.com/v1beta/models` directly with their key (and `/api/gemini/models` with Bearer key).
+ *   Only falls back to the default server `/api/gemini/models` when the user's Gemini key field is empty.
+ * - For other providers: Queries `/v1/models`, Ollama `/api/tags`, and KoboldCPP `/api/v1/model`.
  */
 export async function fetchModels(
   config: AIBackendConfig,
   abortSignal?: AbortSignal
 ): Promise<string[]> {
-  // 1. Server-side Gemini endpoint (`/api/gemini/models`)
+  const effectiveKey = await resolveEffectiveApiKey(config);
+
+  // 1. Google Gemini backend (Prioritize user's custom Gemini API key; fallback to `/api/gemini/models` when empty)
   if (isGeminiBackend(config)) {
+    if (effectiveKey) {
+      // Try direct Google Generative Language API first using the user's custom key
+      try {
+        const directRes = await fetch(
+          `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(effectiveKey)}`,
+          {
+            method: 'GET',
+            headers: { Accept: 'application/json' },
+            signal: abortSignal,
+          }
+        );
+        if (directRes.ok) {
+          const directData = await directRes.json().catch(() => ({}));
+          if (Array.isArray(directData?.models)) {
+            const list = directData.models
+              .map((m: { name?: string }) => (m.name || '').replace(/^models\//, ''))
+              .filter(
+                (id: string) =>
+                  id &&
+                  (id.startsWith('gemini-') || id.startsWith('gemma-')) &&
+                  !id.includes('embedding') &&
+                  !id.includes('vision') &&
+                  !id.startsWith('gemini-1.')
+              );
+            if (list.length > 0) {
+              return Array.from(new Set(['gemini-3.8-flash', ...list]));
+            }
+          }
+        } else if (directRes.status === 400 || directRes.status === 401 || directRes.status === 403) {
+          const errPayload = await directRes.json().catch(() => ({}));
+          throw new AIServiceError(
+            errPayload?.error?.message ||
+              `Invalid Custom Gemini API Key (HTTP ${directRes.status})`,
+            { statusCode: directRes.status }
+          );
+        }
+      } catch (err: unknown) {
+        if (err instanceof DOMException && err.name === 'AbortError') throw err;
+        if (err instanceof AIServiceError) throw err;
+        // If direct call encountered network/CORS restriction, pass the user's key to `/api/gemini/models`
+      }
+    }
+
+    const geminiHeaders: Record<string, string> = { Accept: 'application/json' };
+    if (effectiveKey) {
+      geminiHeaders['Authorization'] = `Bearer ${effectiveKey}`;
+    }
+
     const geminiRes = await fetch('/api/gemini/models', {
       method: 'GET',
-      headers: { Accept: 'application/json' },
+      headers: geminiHeaders,
       signal: abortSignal,
     });
     const geminiData = await geminiRes.json().catch(() => ({}));
     if (!geminiRes.ok) {
       throw new AIServiceError(
         geminiData?.error ||
-          `Server Gemini endpoint returned HTTP ${geminiRes.status}`,
+          `Gemini endpoint returned HTTP ${geminiRes.status}`,
         { statusCode: geminiRes.status }
       );
     }
@@ -558,7 +708,7 @@ export async function fetchModels(
   }
 
   const { rootUrl, v1Url } = normalizeBaseUrl(config.url);
-  const headers = buildAuthHeaders(config.apiKey);
+  const headers = buildAuthHeaders(effectiveKey);
 
   try {
     // 2. Standard OpenAI-Compatible `GET /v1/models`
@@ -662,11 +812,12 @@ export async function testBackendConnection(
 ): Promise<ConnectionTestResult> {
   const start = performance.now();
   const presetMeta = AI_BACKEND_PRESETS.find((p) => p.id === config.preset);
+  const effectiveKey = await resolveEffectiveApiKey(config);
 
   if (
     presetMeta?.requiresKey &&
     !isGeminiBackend(config) &&
-    !config.apiKey.trim()
+    !effectiveKey
   ) {
     const fmt = COMPATIBILITY_FORMAT_LABELS[resolveEffectiveFormat(config)];
     return {
@@ -680,7 +831,7 @@ export async function testBackendConnection(
   }
 
   try {
-    const models = await fetchModels(config, signal);
+    const models = await fetchModels({ ...config, apiKey: effectiveKey }, signal);
     const latencyMs = Math.max(1, Math.round(performance.now() - start));
     const chosenModel =
       models.includes(config.modelName) && config.modelName
@@ -691,14 +842,19 @@ export async function testBackendConnection(
       config.preset
     );
     const detectedFormatLabel = COMPATIBILITY_FORMAT_LABELS[detectedFmtKey];
+    const keyModeNote = isGeminiBackend(config)
+      ? effectiveKey
+        ? ' • Using Custom Gemini Key'
+        : ' • Using /api/gemini Server Fallback'
+      : '';
 
     return {
       ok: true,
       latencyMs,
       models,
       detectedFormatLabel,
-      diagnosticSummary: `${latencyMs}ms latency • ${models.length} models detected • Format: ${detectedFormatLabel}`,
-      message: `🟢 Connected & Verified • ${latencyMs}ms latency • ${models.length} models detected • Format: ${detectedFormatLabel}`,
+      diagnosticSummary: `${latencyMs}ms latency • ${models.length} models detected • Format: ${detectedFormatLabel}${keyModeNote}`,
+      message: `🟢 Connected & Verified • ${latencyMs}ms latency • ${models.length} models detected • Format: ${detectedFormatLabel}${keyModeNote}`,
     };
   } catch (err: unknown) {
     if (err instanceof DOMException && err.name === 'AbortError') {
@@ -738,6 +894,16 @@ export interface GenerateCompletionOptions {
   activeTheme?: ContextTheme;
   allTags?: TagDefinition[];
   characterTags?: string[];
+  /**
+   * Optional visual context Data URL (Portrait or Temporary Reference Image).
+   * NEVER passed by inline Ghost-Text autocomplete; only used on-demand in AI Assist / Wizard.
+   */
+  imageDataUrl?: string;
+  /**
+   * Optional callback invoked if a local server returns HTTP 400 because the GGUF lacks a vision `mmproj` adapter
+   * and TavernSmith automatically retries and succeeds with text-only context.
+   */
+  onVisionFallback?: (warningMessage: string) => void;
 }
 
 export interface DetailedCompletionResult {
@@ -745,6 +911,8 @@ export interface DetailedCompletionResult {
   reasoning: string;
   detectedFormat: Exclude<ModelCompatibilityFormat, 'auto'>;
   sentSystemPrompt: string;
+  usedVisionContext?: boolean;
+  visionFallbackWarning?: string;
 }
 
 /**
@@ -827,20 +995,178 @@ export async function generateCompletionDetailed(
 ): Promise<DetailedCompletionResult> {
   const effectiveFormat = resolveEffectiveFormat(config);
   const fullSystemPrompt = buildFullSystemPromptForRequest(systemContext, options);
+  const effectiveKey = await resolveEffectiveApiKey(config);
+  const maxTokens = options?.maxTokens ?? config.maxTokens ?? 512;
+  const temperature = options?.temperature ?? config.temperature ?? 0.75;
 
-  // Server-side Google Gemini route (`/api/gemini/generate`)
+  // Compress image for Vision Context if provided (~260 tokens max, 512px longest edge, JPEG 0.8)
+  let compressedJpegDataUrl: string | undefined;
+  let compressedBase64Data: string | undefined;
+  if (options?.imageDataUrl && typeof options.imageDataUrl === 'string') {
+    try {
+      compressedJpegDataUrl = await compressImageForVision(
+        options.imageDataUrl,
+        512
+      );
+      const commaIdx = compressedJpegDataUrl.indexOf(',');
+      compressedBase64Data =
+        commaIdx !== -1
+          ? compressedJpegDataUrl.slice(commaIdx + 1).trim()
+          : compressedJpegDataUrl;
+    } catch {
+      compressedJpegDataUrl = undefined;
+      compressedBase64Data = undefined;
+    }
+  }
+
+  // Google Gemini route:
+  // 1) If the user entered a custom Gemini API key, prioritize and use their provided key directly!
+  // 2) Only fall back to the `/api/gemini/generate` server default key when the user's Gemini key field is empty.
   if (isGeminiBackend(config)) {
+    const geminiModel = normalizeGeminiModelId(config.modelName);
+
+    if (effectiveKey) {
+      try {
+        const isGemmaModel = geminiModel.toLowerCase().includes('gemma');
+        const userParts: Array<Record<string, unknown>> = isGemmaModel
+          ? [
+              {
+                text: `[SYSTEM INSTRUCTIONS]\n${fullSystemPrompt}\n\n[USER REQUEST]\n${prompt}`,
+              },
+            ]
+          : [{ text: prompt }];
+
+        if (compressedBase64Data) {
+          userParts.push({
+            inlineData: {
+              mimeType: 'image/jpeg',
+              data: compressedBase64Data,
+            },
+          });
+        }
+
+        const directBody = isGemmaModel
+          ? {
+              contents: [
+                {
+                  role: 'user',
+                  parts: userParts,
+                },
+              ],
+              generationConfig: {
+                temperature,
+                maxOutputTokens: maxTokens,
+                ...(options?.stop && options.stop.length > 0
+                  ? { stopSequences: options.stop }
+                  : {}),
+              },
+            }
+          : {
+              systemInstruction: {
+                parts: [{ text: fullSystemPrompt }],
+              },
+              contents: [
+                {
+                  role: 'user',
+                  parts: userParts,
+                },
+              ],
+              generationConfig: {
+                temperature,
+                maxOutputTokens: maxTokens,
+                ...(options?.stop && options.stop.length > 0
+                  ? { stopSequences: options.stop }
+                  : {}),
+              },
+            };
+
+        const directRes = await fetch(
+          `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(geminiModel)}:generateContent?key=${encodeURIComponent(effectiveKey)}`,
+          {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              Accept: 'application/json',
+            },
+            signal: abortSignal,
+            body: JSON.stringify(directBody),
+          }
+        );
+
+        if (directRes.ok) {
+          const directData = await directRes.json().catch(() => ({}));
+          const parts = directData?.candidates?.[0]?.content?.parts;
+          let rawText = '';
+          let reasoningText = '';
+          if (Array.isArray(parts)) {
+            for (const p of parts) {
+              if (p?.thought && typeof p?.text === 'string') {
+                reasoningText += (reasoningText ? '\n\n' : '') + p.text;
+              } else if (typeof p?.text === 'string') {
+                rawText += p.text;
+              }
+            }
+          }
+          const parsedDirect = extractThinkingAndCleanContent(
+            rawText,
+            reasoningText || undefined
+          );
+          if (parsedDirect.content) {
+            return {
+              content: parsedDirect.content,
+              reasoning: parsedDirect.reasoning,
+              detectedFormat: 'gemini_thinking',
+              sentSystemPrompt: fullSystemPrompt,
+              usedVisionContext: Boolean(compressedBase64Data),
+            };
+          }
+        } else if (directRes.status === 401 || directRes.status === 403) {
+          const errJson = await directRes.json().catch(() => ({}));
+          throw new AIServiceError(
+            errJson?.error?.message ||
+              `Invalid Custom Gemini API Key (HTTP ${directRes.status})`,
+            { statusCode: directRes.status }
+          );
+        }
+      } catch (directErr: unknown) {
+        if (directErr instanceof DOMException && directErr.name === 'AbortError') {
+          throw directErr;
+        }
+        if (directErr instanceof AIServiceError) {
+          throw directErr;
+        }
+        // If direct browser fetch failed due to network/proxy, forward the user's custom key to `/api/gemini/generate`
+      }
+    }
+
+    const proxyHeaders: Record<string, string> = {
+      'Content-Type': 'application/json',
+      Accept: 'application/json',
+    };
+    if (effectiveKey) {
+      proxyHeaders['Authorization'] = `Bearer ${effectiveKey}`;
+    }
+
     const response = await fetch('/api/gemini/generate', {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Accept: 'application/json',
-      },
+      headers: proxyHeaders,
       signal: abortSignal,
       body: JSON.stringify({
-        model: config.modelName || 'gemini-3.8-flash',
+        model: geminiModel,
         prompt,
         systemInstruction: fullSystemPrompt,
+        temperature,
+        maxTokens,
+        stopSequences: options?.stop,
+        ...(compressedBase64Data
+          ? {
+              inlineData: {
+                mimeType: 'image/jpeg',
+                data: compressedBase64Data,
+              },
+            }
+          : {}),
+        ...(effectiveKey ? { apiKey: effectiveKey } : {}),
       }),
     });
 
@@ -848,7 +1174,7 @@ export async function generateCompletionDetailed(
     if (!response.ok) {
       throw new AIServiceError(
         data?.error ||
-          `Server Gemini endpoint returned HTTP ${response.status}`,
+          `Gemini endpoint returned HTTP ${response.status}`,
         { statusCode: response.status }
       );
     }
@@ -863,31 +1189,57 @@ export async function generateCompletionDetailed(
       reasoning: parsed.reasoning,
       detectedFormat: 'gemini_thinking',
       sentSystemPrompt: fullSystemPrompt,
+      usedVisionContext: Boolean(compressedBase64Data),
     };
   }
 
   const { rootUrl, v1Url } = normalizeBaseUrl(config.url);
-  const headers = buildAuthHeaders(config.apiKey);
+  const headers = buildAuthHeaders(effectiveKey);
 
-  const maxTokens = options?.maxTokens ?? config.maxTokens ?? 512;
-  const temperature = options?.temperature ?? config.temperature ?? 0.75;
+  const mergedPromptText = `[SYSTEM INSTRUCTIONS]\n${fullSystemPrompt}\n\n[USER REQUEST]\n${prompt}`;
 
-  const systemMergedUserMessages = [
+  // Pure text-only message structures (used when no image is attached OR on mmproj 400 fallback)
+  const textOnlySystemMergedMessages = [
     {
       role: 'user',
-      content: `[SYSTEM INSTRUCTIONS]\n${fullSystemPrompt}\n\n[USER REQUEST]\n${prompt}`,
+      content: mergedPromptText,
     },
   ];
+  const textOnlyStandardMessages = [
+    { role: 'system', content: fullSystemPrompt },
+    { role: 'user', content: prompt },
+  ];
+
+  // Multimodal OpenAI/LM Studio/Gemini/OpenRouter content array structures when compressedJpegDataUrl is present
+  const systemMergedUserMessages = compressedJpegDataUrl
+    ? [
+        {
+          role: 'user',
+          content: [
+            { type: 'text', text: mergedPromptText },
+            { type: 'image_url', image_url: { url: compressedJpegDataUrl } },
+          ],
+        },
+      ]
+    : textOnlySystemMergedMessages;
 
   const isSystemMergedFormat =
     effectiveFormat === 'gemma' || effectiveFormat === 'mistral';
 
   const primaryMessages = isSystemMergedFormat
     ? systemMergedUserMessages
-    : [
-        { role: 'system', content: fullSystemPrompt },
-        { role: 'user', content: prompt },
-      ];
+    : compressedJpegDataUrl
+      ? [
+          { role: 'system', content: fullSystemPrompt },
+          {
+            role: 'user',
+            content: [
+              { type: 'text', text: prompt },
+              { type: 'image_url', image_url: { url: compressedJpegDataUrl } },
+            ],
+          },
+        ]
+      : textOnlyStandardMessages;
 
   // For Gemma (and system-merged formats), strictly send ONLY universally supported fields
   // (`model`, `messages`, `temperature`, `max_tokens`) so LM Studio / llama.cpp Jinja templates never return HTTP 400.
@@ -957,33 +1309,121 @@ export async function generateCompletionDetailed(
         effectiveFormat,
         fullSystemPrompt
       );
-      if (parsedResult) return parsedResult;
+      if (parsedResult) {
+        return {
+          ...parsedResult,
+          usedVisionContext: Boolean(compressedJpegDataUrl),
+        };
+      }
     }
 
     // Automatic Gemma / Local Server HTTP 400 Fallback:
-    // If a local server (LM Studio, llama.cpp, vLLM, etc.) rejects `"role": "system"` or extra OpenAI params with HTTP 400/422,
-    // immediately retry with the System-Merged User Message and minimal `{ model, messages, temperature, max_tokens }` payload!
+    // 1. If not already system-merged, try system-merged user message (keeping image if present).
+    // 2. If `compressedJpegDataUrl` was sent and the local server STILL returns HTTP 400/422
+    //    (because the loaded GGUF lacks a vision `mmproj` projector file in LM Studio/Ollama),
+    //    automatically catch the error, retry as text-only, and return `visionFallbackWarning`!
     if (chatResponse.status === 400 || chatResponse.status === 422) {
-      const retryResponse = await fetch(`${v1Url}/chat/completions`, {
-        method: 'POST',
-        headers,
-        signal: abortSignal,
-        body: JSON.stringify({
-          model: config.modelName || 'local-model',
-          messages: systemMergedUserMessages,
-          temperature,
-          max_tokens: maxTokens,
-        }),
-      });
+      if (!isSystemMergedFormat) {
+        const retryResponse = await fetch(`${v1Url}/chat/completions`, {
+          method: 'POST',
+          headers,
+          signal: abortSignal,
+          body: JSON.stringify({
+            model: config.modelName || 'local-model',
+            messages: systemMergedUserMessages,
+            temperature,
+            max_tokens: maxTokens,
+          }),
+        });
 
-      if (retryResponse.ok) {
-        const retryData = await retryResponse.json();
-        const retryResult = parseChatCompletionData(
-          retryData,
-          'gemma',
-          fullSystemPrompt
-        );
-        if (retryResult) return retryResult;
+        if (retryResponse.ok) {
+          const retryData = await retryResponse.json();
+          const retryResult = parseChatCompletionData(
+            retryData,
+            'gemma',
+            fullSystemPrompt
+          );
+          if (retryResult) {
+            return {
+              ...retryResult,
+              usedVisionContext: Boolean(compressedJpegDataUrl),
+            };
+          }
+        }
+      }
+
+      // If an image was attached and the local server returned HTTP 400/422 (missing mmproj vision adapter),
+      // automatically retry as text-only and notify the user via `visionFallbackWarning` & `onVisionFallback`.
+      if (compressedJpegDataUrl) {
+        const mmprojWarning =
+          'Local server returned HTTP 400 for image input — this GGUF model likely lacks a Vision (mmproj) projector adapter in LM Studio / Ollama. Automatically retried using text-only context.';
+
+        const textOnlyMessages = isSystemMergedFormat
+          ? textOnlySystemMergedMessages
+          : textOnlyStandardMessages;
+
+        const textOnlyRetryRes = await fetch(`${v1Url}/chat/completions`, {
+          method: 'POST',
+          headers,
+          signal: abortSignal,
+          body: JSON.stringify({
+            model: config.modelName || 'local-model',
+            messages: textOnlyMessages,
+            temperature,
+            max_tokens: maxTokens,
+          }),
+        });
+
+        if (textOnlyRetryRes.ok) {
+          const textOnlyData = await textOnlyRetryRes.json();
+          const textOnlyParsed = parseChatCompletionData(
+            textOnlyData,
+            effectiveFormat,
+            fullSystemPrompt
+          );
+          if (textOnlyParsed) {
+            options?.onVisionFallback?.(mmprojWarning);
+            return {
+              ...textOnlyParsed,
+              usedVisionContext: false,
+              visionFallbackWarning: mmprojWarning,
+            };
+          }
+        }
+
+        // Also try system-merged text-only if standard text-only returned 400
+        if (
+          !isSystemMergedFormat &&
+          (textOnlyRetryRes.status === 400 || textOnlyRetryRes.status === 422)
+        ) {
+          const mergedTextOnlyRes = await fetch(`${v1Url}/chat/completions`, {
+            method: 'POST',
+            headers,
+            signal: abortSignal,
+            body: JSON.stringify({
+              model: config.modelName || 'local-model',
+              messages: textOnlySystemMergedMessages,
+              temperature,
+              max_tokens: maxTokens,
+            }),
+          });
+          if (mergedTextOnlyRes.ok) {
+            const mergedTextData = await mergedTextOnlyRes.json();
+            const mergedTextParsed = parseChatCompletionData(
+              mergedTextData,
+              'gemma',
+              fullSystemPrompt
+            );
+            if (mergedTextParsed) {
+              options?.onVisionFallback?.(mmprojWarning);
+              return {
+                ...mergedTextParsed,
+                usedVisionContext: false,
+                visionFallbackWarning: mmprojWarning,
+              };
+            }
+          }
+        }
       }
     }
 
@@ -1084,6 +1524,14 @@ export async function generateCompletionDetailed(
             model: 'gemini-3.8-flash',
             prompt,
             systemInstruction: fullSystemPrompt,
+            ...(compressedBase64Data
+              ? {
+                  inlineData: {
+                    mimeType: 'image/jpeg',
+                    data: compressedBase64Data,
+                  },
+                }
+              : {}),
           }),
         });
         if (serverGeminiFallback.ok) {
@@ -1100,6 +1548,7 @@ export async function generateCompletionDetailed(
               reasoning: parsed.reasoning,
               detectedFormat: 'gemini_thinking',
               sentSystemPrompt: fullSystemPrompt,
+              usedVisionContext: Boolean(compressedBase64Data),
             };
           }
         }
@@ -1139,17 +1588,24 @@ export async function generateCompletionStream(
   options?: GenerateCompletionOptions
 ): Promise<string> {
   const fullSystemPrompt = buildFullSystemPromptForRequest(systemContext, options);
+  const effectiveKey = await resolveEffectiveApiKey(config);
+  const streamHeaders: Record<string, string> = {
+    'Content-Type': 'application/json',
+    Accept: 'text/event-stream',
+  };
+  if (effectiveKey) {
+    streamHeaders['Authorization'] = `Bearer ${effectiveKey}`;
+  }
+
   const response = await fetch('/api/gemini/stream', {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Accept: 'text/event-stream',
-    },
+    headers: streamHeaders,
     signal: abortSignal,
     body: JSON.stringify({
-      model: config.modelName || 'gemini-3.8-flash',
+      model: normalizeGeminiModelId(config.modelName),
       prompt,
       systemInstruction: fullSystemPrompt,
+      ...(effectiveKey ? { apiKey: effectiveKey } : {}),
     }),
   });
 

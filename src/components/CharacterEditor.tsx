@@ -58,7 +58,11 @@ import {
   extractPngTextChunks,
   readImageDimensions,
 } from '../utils/cardIO';
-import { AIServiceError, generateCompletionDetailed } from '../services/aiService';
+import {
+  AIServiceError,
+  doesBackendSupportVision,
+  generateCompletionDetailed,
+} from '../services/aiService';
 
 const WIZARD_STEPS = [
   {
@@ -172,6 +176,23 @@ export const CharacterEditor: React.FC = () => {
 
   // StatBlock Compiler Notification State
   const [compiledBanner, setCompiledBanner] = useState<string | null>(null);
+
+  // Multimodal Vision Context State (Character Portrait ~260 tok)
+  const [usePortraitAsVisionContext, setUsePortraitAsVisionContext] =
+    useState<boolean>(true);
+  const [isDescribingPortrait, setIsDescribingPortrait] =
+    useState<boolean>(false);
+  const [visionFallbackBanner, setVisionFallbackBanner] = useState<
+    string | null
+  >(null);
+
+  const visionSupported = useMemo(
+    () => doesBackendSupportVision(aiConfig),
+    [aiConfig]
+  );
+  const hasPortraitImage = Boolean(
+    character.avatar && character.avatar.startsWith('data:image/')
+  );
 
   const abortRef = useRef<AbortController | null>(null);
   const importFileInputRef = useRef<HTMLInputElement | null>(null);
@@ -474,9 +495,12 @@ export const CharacterEditor: React.FC = () => {
     ].join('\n');
 
     try {
+      const usePortraitNow =
+        visionSupported && hasPortraitImage && usePortraitAsVisionContext;
+
       const detailed = await generateCompletionDetailed(
         prompt,
-        cardContext,
+        `Active Context Theme: ${activeTheme.name}`,
         aiConfig,
         controller.signal,
         {
@@ -485,10 +509,15 @@ export const CharacterEditor: React.FC = () => {
           activeTheme,
           allTags: tags,
           characterTags: character.tags,
+          imageDataUrl: usePortraitNow ? character.avatar : undefined,
+          onVisionFallback: (warning) => setVisionFallbackBanner(warning),
         }
       );
 
       if (!controller.signal.aborted && detailed.content.trim()) {
+        if (detailed.visionFallbackWarning) {
+          setVisionFallbackBanner(detailed.visionFallbackWarning);
+        }
         const nextAlts = [
           ...(character.alternate_greetings || []),
           detailed.content.trim(),
@@ -516,19 +545,101 @@ export const CharacterEditor: React.FC = () => {
     }
   };
 
+  // 1-Click "✨ Describe Appearance from Portrait" (used in Wizard Step 1 & Portrait Workbench)
+  const handleDescribeAppearanceFromPortraitCard = async () => {
+    if (!character.avatar) return;
+    if (abortRef.current) abortRef.current.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
+    setIsDescribingPortrait(true);
+    setConceptError(null);
+    setVisionFallbackBanner(null);
+
+    const promptText = [
+      `Inspect the attached Character Portrait image carefully and write a vivid, high-craft SillyTavern physical appearance & attire description for "${character.name || '{{char}}'}".`,
+      `Include facial features, eye/hair details, physique/build, clothing/armor/accessories, posture, and visual aura.`,
+      character.description.trim()
+        ? `\nExisting Description Draft (integrate or enrich with visual details from the portrait):\n${character.description}`
+        : '',
+      `\nOutput ONLY the raw Markdown description content using {{char}} where appropriate, without conversational filler.`,
+    ]
+      .filter(Boolean)
+      .join('\n');
+
+    try {
+      const detailed = await generateCompletionDetailed(
+        promptText,
+        `Character Name: ${character.name || '{{char}}'}\nPersonality: ${character.personality}\nScenario: ${character.scenario}`,
+        aiConfig,
+        controller.signal,
+        {
+          maxTokens: aiConfig.maxTokens || 512,
+          temperature: aiConfig.temperature,
+          activeTheme,
+          allTags: tags,
+          characterTags: character.tags,
+          imageDataUrl: character.avatar,
+          onVisionFallback: (warning) => setVisionFallbackBanner(warning),
+        }
+      );
+
+      if (!controller.signal.aborted && detailed.content.trim()) {
+        if (detailed.visionFallbackWarning) {
+          setVisionFallbackBanner(detailed.visionFallbackWarning);
+        }
+        const currentDesc = character.description.trim();
+        const nextDesc = currentDesc
+          ? `${currentDesc}\n\n${detailed.content.trim()}`
+          : detailed.content.trim();
+        updateCharacterField('description', nextDesc);
+        setImportStatusBanner(
+          `✨ Generated physical appearance description from ${character.name || 'Character'}'s portrait!`
+        );
+        window.setTimeout(() => setImportStatusBanner(null), 4000);
+      }
+    } catch (err: unknown) {
+      if (err instanceof DOMException && err.name === 'AbortError') return;
+      if (err instanceof AIServiceError) {
+        setConceptError({
+          message: err.message,
+          corsHint: err.isCorsOrNetworkError ? err.corsHint : undefined,
+        });
+      } else {
+        setConceptError({
+          message:
+            err instanceof Error
+              ? err.message
+              : 'Failed to describe appearance from portrait.',
+        });
+      }
+    } finally {
+      if (!controller.signal.aborted) {
+        setIsDescribingPortrait(false);
+      }
+    }
+  };
+
   // Wizard Step 1: "Generate Full Character from Concept"
   const handleGenerateFullCharacterFromConcept = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!conceptPrompt.trim()) return;
+    const usePortraitNow =
+      visionSupported && hasPortraitImage && usePortraitAsVisionContext;
+    if (!conceptPrompt.trim() && !usePortraitNow) return;
 
     if (abortRef.current) abortRef.current.abort();
     const controller = new AbortController();
     abortRef.current = controller;
     setIsGeneratingConcept(true);
     setConceptError(null);
+    setVisionFallbackBanner(null);
 
     const prompt = [
-      `Generate a complete SillyTavern Character Card based on this concept: "${conceptPrompt.trim()}"`,
+      conceptPrompt.trim()
+        ? `Generate a complete SillyTavern Character Card based on this concept: "${conceptPrompt.trim()}"`
+        : `Generate a complete SillyTavern Character Card inspired directly by the attached Character Portrait image.`,
+      usePortraitNow
+        ? `The Character Portrait image is attached (~260 tokens). Inspect the portrait carefully and ensure the character's physical appearance, attire, aura, and description accurately reflect the portrait.`
+        : '',
       character.name && character.name !== 'New Character'
         ? `Preferred Character Name: ${character.name}`
         : '',
@@ -560,10 +671,15 @@ export const CharacterEditor: React.FC = () => {
           activeTheme,
           allTags: tags,
           characterTags: character.tags,
+          imageDataUrl: usePortraitNow ? character.avatar : undefined,
+          onVisionFallback: (warning) => setVisionFallbackBanner(warning),
         }
       );
 
       if (!controller.signal.aborted && detailed.content) {
+        if (detailed.visionFallbackWarning) {
+          setVisionFallbackBanner(detailed.visionFallbackWarning);
+        }
         const jsonMatch = detailed.content.match(/\{[\s\S]*\}/);
         const rawJson = jsonMatch ? jsonMatch[0] : detailed.content;
         const parsed = JSON.parse(rawJson) as Partial<CharacterCardData>;
@@ -900,6 +1016,65 @@ export const CharacterEditor: React.FC = () => {
             </>
           )}
         </div>
+
+        {/* Portrait Multimodal Vision Context Controls (shown when active model supports Vision and Portrait is uploaded) */}
+        {visionSupported && hasPortraitImage && (
+          <div className="space-y-1.5 pt-1">
+            <button
+              type="button"
+              onClick={() =>
+                setUsePortraitAsVisionContext((prev) => !prev)
+              }
+              style={
+                usePortraitAsVisionContext
+                  ? {
+                      borderColor: 'var(--theme-accent)',
+                      backgroundColor:
+                        'color-mix(in srgb, var(--theme-accent) 14%, transparent)',
+                    }
+                  : undefined
+              }
+              title="When enabled, AI Assist and Concept Generation inspect a compressed 512px JPEG (~260 tokens) of this portrait. Never sent during Ghost-Text autocomplete."
+              className={`theme-hover-outline w-full flex items-center justify-between gap-1.5 rounded-lg border px-2.5 py-1.5 text-left text-[11px] font-semibold transition-colors cursor-pointer ${
+                usePortraitAsVisionContext
+                  ? 'text-slate-900 dark:text-white'
+                  : 'border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 text-slate-500 dark:text-slate-400'
+              }`}
+            >
+              <span className="leading-tight">
+                👁️ Use Portrait as Visual Context (~260 tok)
+              </span>
+              {usePortraitAsVisionContext && (
+                <Check
+                  className="h-3.5 w-3.5 shrink-0"
+                  style={{ color: 'var(--theme-accent)' }}
+                />
+              )}
+            </button>
+
+            <button
+              type="button"
+              disabled={isDescribingPortrait}
+              onClick={handleDescribeAppearanceFromPortraitCard}
+              style={{ borderColor: 'var(--theme-accent)' }}
+              title="Inspect Character Portrait (~260 tokens) and generate/append physical appearance & attire into the Description field"
+              className="theme-hover-outline w-full flex items-center justify-center gap-1.5 rounded-lg border bg-white dark:bg-slate-900 px-2.5 py-1.5 text-[11px] font-semibold text-slate-900 dark:text-white disabled:opacity-50 cursor-pointer"
+            >
+              {isDescribingPortrait ? (
+                <Loader2
+                  className="h-3 w-3 animate-spin shrink-0"
+                  style={{ color: 'var(--theme-accent)' }}
+                />
+              ) : (
+                <Sparkles
+                  className="h-3 w-3 shrink-0"
+                  style={{ color: 'var(--theme-accent)' }}
+                />
+              )}
+              <span>✨ Describe Appearance from Portrait</span>
+            </button>
+          </div>
+        )}
       </div>
     );
   };
@@ -1553,6 +1728,8 @@ export const CharacterEditor: React.FC = () => {
         tooltip="Opening message sent by {{char}} when a chat starts. Use *italics* for narration and quotes for dialogue."
         rows={7}
         isPermanentTokenField={false}
+        usePortraitVisionContext={usePortraitAsVisionContext}
+        onTogglePortraitVisionContext={setUsePortraitAsVisionContext}
       />
     </div>
   );
@@ -1975,33 +2152,6 @@ export const CharacterEditor: React.FC = () => {
           </div>
 
           <div className="flex flex-wrap items-center gap-2 shrink-0">
-            <div className="flex items-center rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-100 dark:bg-slate-900 p-0.5">
-              <button
-                type="button"
-                onClick={() => updateSettings({ editorMode: 'sandbox' })}
-                className={`flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs font-medium cursor-pointer ${
-                  settings.editorMode === 'sandbox'
-                    ? 'bg-white dark:bg-slate-800 text-slate-900 dark:text-white shadow-2xs'
-                    : 'text-slate-500 hover:text-slate-900 dark:hover:text-white'
-                }`}
-              >
-                <Sliders className="h-3.5 w-3.5" />
-                <span>Full Sandbox</span>
-              </button>
-              <button
-                type="button"
-                onClick={() => updateSettings({ editorMode: 'wizard' })}
-                className={`flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs font-medium cursor-pointer ${
-                  settings.editorMode === 'wizard'
-                    ? 'bg-white dark:bg-slate-800 text-slate-900 dark:text-white shadow-2xs'
-                    : 'text-slate-500 hover:text-slate-900 dark:hover:text-white'
-                }`}
-              >
-                <Wand2 className="h-3.5 w-3.5" />
-                <span>5-Step Wizard</span>
-              </button>
-            </div>
-
             <button
               type="button"
               onClick={() =>
@@ -2068,6 +2218,26 @@ export const CharacterEditor: React.FC = () => {
             <button
               type="button"
               onClick={() => setConceptError(null)}
+              className="text-amber-700 dark:text-amber-300 cursor-pointer"
+            >
+              <X className="h-4 w-4" />
+            </button>
+          </div>
+        )}
+
+        {/* Helpful Vision Adapter Fallback Toast (when local GGUF lacks mmproj projector) */}
+        {visionFallbackBanner && (
+          <div className="flex items-start justify-between gap-3 rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 text-xs text-amber-900 dark:text-amber-200">
+            <div className="flex items-start gap-2">
+              <AlertTriangle className="h-4 w-4 text-amber-500 shrink-0 mt-0.5" />
+              <div>
+                <span className="font-semibold">Vision (mmproj) Notice: </span>
+                <span>{visionFallbackBanner}</span>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => setVisionFallbackBanner(null)}
               className="text-amber-700 dark:text-amber-300 cursor-pointer"
             >
               <X className="h-4 w-4" />
@@ -2158,7 +2328,7 @@ export const CharacterEditor: React.FC = () => {
                     </span>
                   </div>
                   <p className="text-xs text-slate-500 dark:text-slate-400">
-                    Describe a character idea in 1–3 sentences and let the AI draft the Name, Description, Personality, Scenario, First Message, and Example Dialogue automatically.
+                    Describe a character idea in 1–3 sentences (or upload a portrait below with Vision enabled) and let the AI draft the Name, Description, Personality, Scenario, First Message, and Example Dialogue automatically.
                   </p>
                   <div className="flex flex-col sm:flex-row gap-2.5">
                     <input
@@ -2170,7 +2340,15 @@ export const CharacterEditor: React.FC = () => {
                     />
                     <button
                       type="submit"
-                      disabled={isGeneratingConcept || !conceptPrompt.trim()}
+                      disabled={
+                        isGeneratingConcept ||
+                        (!conceptPrompt.trim() &&
+                          !(
+                            visionSupported &&
+                            hasPortraitImage &&
+                            usePortraitAsVisionContext
+                          ))
+                      }
                       style={{ borderColor: 'var(--theme-accent)' }}
                       className="theme-hover-outline flex items-center justify-center gap-2 rounded-lg border bg-slate-900 dark:bg-white px-4 py-2 text-xs font-semibold text-white dark:text-slate-900 disabled:opacity-50 cursor-pointer whitespace-nowrap"
                     >
@@ -2187,6 +2365,61 @@ export const CharacterEditor: React.FC = () => {
                       )}
                     </button>
                   </div>
+
+                  {/* Wizard Step 1 Vision Context Controls when Portrait is Uploaded */}
+                  {visionSupported && hasPortraitImage && (
+                    <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-slate-200/80 dark:border-slate-800/80">
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setUsePortraitAsVisionContext((prev) => !prev)
+                        }
+                        style={
+                          usePortraitAsVisionContext
+                            ? {
+                                borderColor: 'var(--theme-accent)',
+                                backgroundColor:
+                                  'color-mix(in srgb, var(--theme-accent) 14%, transparent)',
+                              }
+                            : undefined
+                        }
+                        className={`theme-hover-outline inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-xs font-semibold transition-colors cursor-pointer ${
+                          usePortraitAsVisionContext
+                            ? 'text-slate-900 dark:text-white'
+                            : 'border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 text-slate-500 dark:text-slate-400'
+                        }`}
+                      >
+                        <span>👁️ Use Portrait as Visual Context (~260 tok)</span>
+                        {usePortraitAsVisionContext && (
+                          <Check
+                            className="h-3.5 w-3.5 shrink-0"
+                            style={{ color: 'var(--theme-accent)' }}
+                          />
+                        )}
+                      </button>
+
+                      <button
+                        type="button"
+                        disabled={isDescribingPortrait}
+                        onClick={handleDescribeAppearanceFromPortraitCard}
+                        style={{ borderColor: 'var(--theme-accent)' }}
+                        className="theme-hover-outline inline-flex items-center gap-1.5 rounded-md border bg-slate-50 dark:bg-slate-950 px-3 py-1 text-xs font-semibold text-slate-800 dark:text-slate-200 disabled:opacity-50 cursor-pointer"
+                      >
+                        {isDescribingPortrait ? (
+                          <Loader2
+                            className="h-3.5 w-3.5 animate-spin"
+                            style={{ color: 'var(--theme-accent)' }}
+                          />
+                        ) : (
+                          <Sparkles
+                            className="h-3.5 w-3.5"
+                            style={{ color: 'var(--theme-accent)' }}
+                          />
+                        )}
+                        <span>✨ Describe Appearance from Portrait</span>
+                      </button>
+                    </div>
+                  )}
                 </form>
 
                 {/* Core Identity Fields + Portrait Slot */}
@@ -2304,6 +2537,8 @@ export const CharacterEditor: React.FC = () => {
                   tooltip="Physical appearance, attire, backstory, and essential traits of {{char}}."
                   rows={7}
                   isPermanentTokenField={true}
+                  usePortraitVisionContext={usePortraitAsVisionContext}
+                  onTogglePortraitVisionContext={setUsePortraitAsVisionContext}
                 />
                 <SmartEditor
                   label="Personality Summary"
@@ -2313,6 +2548,8 @@ export const CharacterEditor: React.FC = () => {
                   tooltip="Behavioral patterns, speech register, temperament, and core motivations."
                   rows={5}
                   isPermanentTokenField={true}
+                  usePortraitVisionContext={usePortraitAsVisionContext}
+                  onTogglePortraitVisionContext={setUsePortraitAsVisionContext}
                 />
               </div>
             )}
@@ -2328,6 +2565,8 @@ export const CharacterEditor: React.FC = () => {
                   tooltip="Immediate setting and inciting situation framing the interaction."
                   rows={4}
                   isPermanentTokenField={true}
+                  usePortraitVisionContext={usePortraitAsVisionContext}
+                  onTogglePortraitVisionContext={setUsePortraitAsVisionContext}
                 />
                 {renderGreetingsCarousel()}
               </div>
@@ -2344,6 +2583,8 @@ export const CharacterEditor: React.FC = () => {
                   tooltip="Sample exchanges formatted with <START>, {{user}}, and {{char}}."
                   rows={6}
                   isPermanentTokenField={false}
+                  usePortraitVisionContext={usePortraitAsVisionContext}
+                  onTogglePortraitVisionContext={setUsePortraitAsVisionContext}
                 />
                 <SmartEditor
                   label="System Prompt Override"
@@ -2353,6 +2594,8 @@ export const CharacterEditor: React.FC = () => {
                   tooltip="Card-specific narrative instructions overriding SillyTavern main prompt."
                   rows={4}
                   isPermanentTokenField={true}
+                  usePortraitVisionContext={usePortraitAsVisionContext}
+                  onTogglePortraitVisionContext={setUsePortraitAsVisionContext}
                 />
                 <SmartEditor
                   label="Post-History Instructions (UJB)"
@@ -2364,6 +2607,8 @@ export const CharacterEditor: React.FC = () => {
                   tooltip="High-priority instructions injected right before the AI generates its reply."
                   rows={4}
                   isPermanentTokenField={true}
+                  usePortraitVisionContext={usePortraitAsVisionContext}
+                  onTogglePortraitVisionContext={setUsePortraitAsVisionContext}
                 />
                 <SmartEditor
                   label="Creator Notes"
@@ -2373,6 +2618,8 @@ export const CharacterEditor: React.FC = () => {
                   tooltip="Usage notes for players (not sent to the AI prompt)."
                   rows={3}
                   isPermanentTokenField={false}
+                  usePortraitVisionContext={usePortraitAsVisionContext}
+                  onTogglePortraitVisionContext={setUsePortraitAsVisionContext}
                 />
               </div>
             )}
@@ -2640,6 +2887,8 @@ export const CharacterEditor: React.FC = () => {
                 tooltip="Physical appearance, core backstory, attire, and essential traits of {{char}}. Sent in permanent context."
                 rows={6}
                 isPermanentTokenField={true}
+                usePortraitVisionContext={usePortraitAsVisionContext}
+                onTogglePortraitVisionContext={setUsePortraitAsVisionContext}
               />
 
               <div
@@ -2657,6 +2906,8 @@ export const CharacterEditor: React.FC = () => {
                   tooltip="Concise behavioral patterns, temperament, speech register, and psychological drives."
                   rows={5}
                   isPermanentTokenField={true}
+                  usePortraitVisionContext={usePortraitAsVisionContext}
+                  onTogglePortraitVisionContext={setUsePortraitAsVisionContext}
                 />
 
                 <SmartEditor
@@ -2667,6 +2918,8 @@ export const CharacterEditor: React.FC = () => {
                   tooltip="Immediate setting, atmosphere, and inciting situation framing the interaction between {{char}} and {{user}}."
                   rows={5}
                   isPermanentTokenField={true}
+                  usePortraitVisionContext={usePortraitAsVisionContext}
+                  onTogglePortraitVisionContext={setUsePortraitAsVisionContext}
                 />
               </div>
 
@@ -2681,6 +2934,8 @@ export const CharacterEditor: React.FC = () => {
                 tooltip="Sample exchanges formatted with <START>, {{user}}, and {{char}} to calibrate voice and formatting."
                 rows={5}
                 isPermanentTokenField={false}
+                usePortraitVisionContext={usePortraitAsVisionContext}
+                onTogglePortraitVisionContext={setUsePortraitAsVisionContext}
               />
 
               <div
@@ -2698,6 +2953,8 @@ export const CharacterEditor: React.FC = () => {
                   tooltip="Card-specific narrative instructions overriding or supplementing SillyTavern main prompt."
                   rows={4}
                   isPermanentTokenField={true}
+                  usePortraitVisionContext={usePortraitAsVisionContext}
+                  onTogglePortraitVisionContext={setUsePortraitAsVisionContext}
                 />
 
                 <SmartEditor
@@ -2710,6 +2967,8 @@ export const CharacterEditor: React.FC = () => {
                   tooltip="High-priority instructions injected at the bottom of chat history right before the AI generates its reply. Also holds compiled DM StatBlock rules."
                   rows={4}
                   isPermanentTokenField={true}
+                  usePortraitVisionContext={usePortraitAsVisionContext}
+                  onTogglePortraitVisionContext={setUsePortraitAsVisionContext}
                 />
               </div>
 
@@ -2721,6 +2980,8 @@ export const CharacterEditor: React.FC = () => {
                 tooltip="Author notes, recommended settings, and context for users (does not consume prompt tokens)."
                 rows={3}
                 isPermanentTokenField={false}
+                usePortraitVisionContext={usePortraitAsVisionContext}
+                onTogglePortraitVisionContext={setUsePortraitAsVisionContext}
               />
             </div>
           </div>
