@@ -1910,9 +1910,8 @@ export const DEFAULT_CHARACTER: CharacterCardData = {
 
 function sanitizeModelName(rawModel?: string, preset?: AIPresetId): string {
   const clean = (rawModel || '').trim().replace(/^models\//i, '');
-  const isGemini = !preset || preset === 'gemini';
-  if (!clean || (isGemini && isDeprecatedGeminiModel(clean))) {
-    if (isGemini) {
+  if (!clean) {
+    if (!preset || preset === 'gemini') {
       return 'gemini-3.8-flash';
     }
     const found = AI_BACKEND_PRESETS.find((p) => p.id === preset);
@@ -2817,6 +2816,22 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
         if (options?.isInitialMount && meta.aiConfig) {
           const incomingAi = meta.aiConfig;
           const cleanPreset = incomingAi.preset || DEFAULT_AI_CONFIG.preset;
+          const hydratedAvailable = sanitizeAvailableModelsList(
+            incomingAi.availableModels,
+            AI_BACKEND_PRESETS.find((p) => p.id === cleanPreset)?.suggestedModels,
+            cleanPreset
+          );
+          const migrateLegacyDefault = (rawModel: string | undefined, targetPreset: AIPresetId) => {
+            const clean = sanitizeModelName(rawModel, targetPreset);
+            if (
+              targetPreset === 'gemini' &&
+              isDeprecatedGeminiModel(clean) &&
+              !(Array.isArray(incomingAi.availableModels) && incomingAi.availableModels.includes(clean))
+            ) {
+              return 'gemini-3.8-flash';
+            }
+            return clean;
+          };
           const sanitizedModelsMap: Record<string, string> = {};
           if (
             incomingAi.savedProviderModels &&
@@ -2825,20 +2840,15 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
             for (const [k, v] of Object.entries(incomingAi.savedProviderModels)) {
               const mapPreset =
                 k === 'google' || k === 'gemini' ? 'gemini' : cleanPreset;
-              sanitizedModelsMap[k] = sanitizeModelName(v, mapPreset);
+              sanitizedModelsMap[k] = migrateLegacyDefault(v, mapPreset);
             }
             saveProviderModelsMap(sanitizedModelsMap);
           }
-          const presetDefaults = AI_BACKEND_PRESETS.find((p) => p.id === cleanPreset);
           setAiConfigState((prev) => ({
             ...prev,
             ...incomingAi,
-            modelName: sanitizeModelName(incomingAi.modelName, cleanPreset),
-            availableModels: sanitizeAvailableModelsList(
-              incomingAi.availableModels,
-              presetDefaults?.suggestedModels,
-              cleanPreset
-            ),
+            modelName: migrateLegacyDefault(incomingAi.modelName, cleanPreset),
+            availableModels: hydratedAvailable,
             savedProviderModels:
               Object.keys(sanitizedModelsMap).length > 0
                 ? sanitizedModelsMap

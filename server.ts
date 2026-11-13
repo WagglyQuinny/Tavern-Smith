@@ -53,34 +53,12 @@ function createGeminiClient(customApiKey?: string): GoogleGenAI {
 }
 
 /**
- * Normalizes requested Gemini model names to active supported models
- * and prevents deprecated 1.x / 2.0 / 2.5 aliases from causing 404 errors.
+ * Normalizes requested Gemini model names, defaulting only when empty
+ * so any pulled model selected by the user passes through cleanly.
  */
 function resolveServerGeminiModel(rawModel?: string): string {
   const clean = (rawModel || '').trim().replace(/^models\//i, '');
-  if (!clean) return 'gemini-3.8-flash';
-
-  const lower = clean.toLowerCase();
-  if (
-    lower.startsWith('gemini-1.') ||
-    lower.startsWith('gemini-2.0') ||
-    lower.startsWith('gemini-2.5') ||
-    lower === 'gemini-pro'
-  ) {
-    return 'gemini-3.8-flash';
-  }
-
-  if (
-    SUPPORTED_GEMINI_MODELS.includes(clean) ||
-    lower.startsWith('gemini-4') ||
-    lower.startsWith('gemini-3.') ||
-    lower.startsWith('gemma-4') ||
-    lower.startsWith('gemma-3')
-  ) {
-    return clean;
-  }
-
-  return 'gemini-3.8-flash';
+  return clean || 'gemini-3.8-flash';
 }
 
 function formatGeminiErrorMessage(err: unknown): {
@@ -178,11 +156,13 @@ async function startServer() {
     }
   });
 
-  // GET /api/gemini/models — Returns supported Gemini models
+  // GET /api/gemini/models — Pulls all available models from Google Generative Language API merged with priority catalog
   app.get('/api/gemini/models', async (req, res) => {
     try {
       const customKey = extractCustomApiKey(req);
-      if (!customKey && !process.env.GEMINI_API_KEY) {
+      const effectiveKey =
+        (customKey && customKey.trim()) || process.env.GEMINI_API_KEY || '';
+      if (!effectiveKey) {
         res.status(403).json({
           error:
             'No Gemini API key provided and server GEMINI_API_KEY is not configured.',
@@ -191,8 +171,47 @@ async function startServer() {
         return;
       }
 
+      const scannedIds: string[] = [];
+      let pageToken = '';
+      let pageCount = 0;
+
+      try {
+        do {
+          const pageParam = pageToken
+            ? `&pageToken=${encodeURIComponent(pageToken)}`
+            : '';
+          const url = `https://generativelanguage.googleapis.com/v1beta/models?pageSize=1000${pageParam}&key=${encodeURIComponent(effectiveKey)}`;
+          const apiRes = await fetch(url, {
+            method: 'GET',
+            headers: { Accept: 'application/json' },
+          });
+          if (!apiRes.ok) break;
+          const apiData = (await apiRes.json().catch(() => ({}))) as {
+            models?: Array<{ name?: string; id?: string }>;
+            nextPageToken?: string;
+          };
+          if (Array.isArray(apiData?.models)) {
+            for (const m of apiData.models) {
+              const id = (m.name || m.id || '').replace(/^models\//i, '').trim();
+              if (id) scannedIds.push(id);
+            }
+          }
+          pageToken =
+            typeof apiData?.nextPageToken === 'string'
+              ? apiData.nextPageToken.trim()
+              : '';
+          pageCount += 1;
+        } while (pageToken && pageCount < 50);
+      } catch {
+        // Fall back cleanly to priority catalog if live list fetch is unreachable
+      }
+
+      const mergedModels = Array.from(
+        new Set([...SUPPORTED_GEMINI_MODELS, ...scannedIds])
+      );
+
       res.json({
-        models: SUPPORTED_GEMINI_MODELS,
+        models: mergedModels,
         defaultModel: 'gemini-3.8-flash',
       });
     } catch (err: unknown) {

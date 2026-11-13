@@ -733,40 +733,33 @@ export function resolveEffectiveMaxTokens(
 }
 
 /**
- * Preserves the selected Gemini / Gemma 4 model ID, mapping empty values or
- * deprecated 1.x / 2.0 / 2.5 aliases to `gemini-3.8-flash`.
+ * Preserves the selected Gemini / Gemma model ID, defaulting only when empty.
  */
 function normalizeGeminiModelId(rawModel?: string): string {
   const m = (rawModel || '').trim().replace(/^models\//i, '');
-  if (!m || isDeprecatedGeminiModel(m)) {
+  if (!m) {
     return 'gemini-3.8-flash';
   }
   return m;
 }
 
 /**
- * Merges live scanned Gemini/Gemma models with the prioritized Gemini 4 / 3.8 / Gemma 4 catalog,
- * filtering out deprecated 1.5 / 2.0 / 2.5 models.
+ * Merges live scanned Gemini/Gemma/API models with the prioritized Gemini 4 / 3.8 / Gemma 4 catalog
+ * without hiding any model returned by the API pull.
  */
 export function buildMergedGeminiModelList(scannedModels: string[] = []): string[] {
-  const filteredScanned = scannedModels
-    .map((id) => id.trim().replace(/^models\//i, ''))
-    .filter(
-      (id) =>
-        id &&
-        (id.startsWith('gemini-') || id.startsWith('gemma-')) &&
-        !id.includes('embedding') &&
-        !isDeprecatedGeminiModel(id)
-    );
+  const cleanedScanned = scannedModels
+    .map((id) => (id || '').trim().replace(/^models\//i, ''))
+    .filter(Boolean);
 
-  return Array.from(new Set([...GEMINI_PRIORITY_MODELS, ...filteredScanned]));
+  return Array.from(new Set([...GEMINI_PRIORITY_MODELS, ...cleanedScanned]));
 }
 
 /**
  * Live Model Scanner:
  * - For Google Gemini with a user API key: calls Google's direct REST API
  *   (`https://generativelanguage.googleapis.com/v1beta/models?pageSize=1000&key=...`, following `nextPageToken`)
- *   and merges with the Gemini 4 / 3.8 / Gemma 4 priority catalog.
+ *   and merges ALL returned models with the Gemini 4 / 3.8 / Gemma 4 priority catalog.
  * - For Google Gemini without an API key: queries `/api/gemini/models`.
  * - For other providers: queries `/v1/models`, Ollama `/api/tags`, and KoboldCPP `/api/v1/model`.
  */
@@ -816,19 +809,10 @@ export async function fetchModels(
         if (Array.isArray(directData?.models)) {
           for (const m of directData.models as Array<{
             name?: string;
-            supportedGenerationMethods?: string[];
+            id?: string;
           }>) {
-            const id = (m.name || '').replace(/^models\//, '').trim();
-            const supportsGen =
-              !Array.isArray(m.supportedGenerationMethods) ||
-              m.supportedGenerationMethods.includes('generateContent');
-            if (
-              supportsGen &&
-              id &&
-              (id.startsWith('gemini-') || id.startsWith('gemma-')) &&
-              !id.includes('embedding') &&
-              !isDeprecatedGeminiModel(id)
-            ) {
+            const id = (m.name || m.id || '').replace(/^models\//i, '').trim();
+            if (id) {
               scannedIds.push(id);
             }
           }
@@ -839,7 +823,7 @@ export async function fetchModels(
             ? directData.nextPageToken.trim()
             : '';
         pageCount += 1;
-      } while (pageToken && pageCount < 10);
+      } while (pageToken && pageCount < 50);
 
       return buildMergedGeminiModelList(scannedIds);
     }
@@ -867,6 +851,16 @@ export async function fetchModels(
   const { rootUrl, v1Url } = normalizeBaseUrl(config.url);
   const headers = buildAuthHeaders(effectiveKey);
 
+  const collectedModels: string[] = [];
+  const pushModels = (items: string[]) => {
+    for (const raw of items) {
+      const clean = (raw || '').trim();
+      if (clean && !collectedModels.includes(clean)) {
+        collectedModels.push(clean);
+      }
+    }
+  };
+
   try {
     // 2. Standard OpenAI-Compatible `GET /v1/models`
     const response = await fetch(`${v1Url}/models`, {
@@ -878,20 +872,32 @@ export async function fetchModels(
     if (response.ok) {
       const payload = await response.json();
       if (Array.isArray(payload?.data)) {
-        const list = payload.data
-          .map((item: { id?: string; name?: string }) => item.id || item.name || '')
-          .filter(Boolean);
-        if (list.length > 0) return list;
-      }
-      if (Array.isArray(payload?.models)) {
-        const list = payload.models
-          .map((item: { id?: string; name?: string } | string) =>
-            typeof item === 'string'
-              ? item
-              : (item.id || item.name || '').replace(/^models\//, '')
+        pushModels(
+          payload.data.map(
+            (item: { id?: string; name?: string; model?: string } | string) =>
+              typeof item === 'string'
+                ? item
+                : item.id || item.name || item.model || ''
           )
-          .filter(Boolean);
-        if (list.length > 0) return list;
+        );
+      } else if (Array.isArray(payload?.models)) {
+        pushModels(
+          payload.models.map(
+            (item: { id?: string; name?: string; model?: string } | string) =>
+              typeof item === 'string'
+                ? item
+                : (item.id || item.name || item.model || '').replace(/^models\//, '')
+          )
+        );
+      } else if (Array.isArray(payload)) {
+        pushModels(
+          payload.map(
+            (item: { id?: string; name?: string; model?: string } | string) =>
+              typeof item === 'string'
+                ? item
+                : item.id || item.name || item.model || ''
+          )
+        );
       }
     }
 
@@ -902,22 +908,33 @@ export async function fetchModels(
       );
     }
 
-    // 3. Ollama Native Fallback: `GET /api/tags`
+    // 3. Ollama Native Check: `GET /api/tags` (merged with /v1/models so neither endpoint hides models)
     if (config.preset === 'ollama' || rootUrl.includes('11434')) {
-      const ollamaRes = await fetch(`${rootUrl}/api/tags`, {
-        method: 'GET',
-        headers,
-        signal: abortSignal,
-      });
-      if (ollamaRes.ok) {
-        const ollamaData = await ollamaRes.json();
-        if (Array.isArray(ollamaData?.models)) {
-          const list = ollamaData.models
-            .map((m: { name?: string; model?: string }) => m.name || m.model || '')
-            .filter(Boolean);
-          if (list.length > 0) return list;
+      try {
+        const ollamaRes = await fetch(`${rootUrl}/api/tags`, {
+          method: 'GET',
+          headers,
+          signal: abortSignal,
+        });
+        if (ollamaRes.ok) {
+          const ollamaData = await ollamaRes.json();
+          if (Array.isArray(ollamaData?.models)) {
+            pushModels(
+              ollamaData.models.map(
+                (m: { name?: string; model?: string }) => m.name || m.model || ''
+              )
+            );
+          }
+        }
+      } catch (ollamaErr: unknown) {
+        if (ollamaErr instanceof DOMException && ollamaErr.name === 'AbortError') {
+          throw ollamaErr;
         }
       }
+    }
+
+    if (collectedModels.length > 0) {
+      return collectedModels;
     }
 
     // 4. KoboldCPP Fallback: `GET /api/v1/model`

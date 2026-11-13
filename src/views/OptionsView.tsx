@@ -48,7 +48,6 @@ import {
   detectModelCompatibilityFormat,
   doesBackendSupportVision,
   getProviderKeyId,
-  isDeprecatedGeminiModel,
 } from '../services/aiService';
 import {
   decryptProviderKeysFromVault,
@@ -139,7 +138,7 @@ export const OptionsView: React.FC = () => {
     [aiConfig.modelName, aiConfig.preset]
   );
 
-  const allSelectableModels = useMemo(() => {
+  const unfilteredSelectableModels = useMemo(() => {
     const rawCombined = Array.from(
       new Set([
         ...(aiConfig.availableModels || []),
@@ -148,23 +147,21 @@ export const OptionsView: React.FC = () => {
       ])
     ).filter(Boolean);
 
-    const combined =
-      aiConfig.preset === 'gemini'
-        ? buildMergedGeminiModelList(
-            rawCombined.filter((m) => !isDeprecatedGeminiModel(m))
-          )
-        : rawCombined;
-
-    const q = modelSearchQuery.trim().toLowerCase();
-    if (!q) return combined;
-    return combined.filter((m) => m.toLowerCase().includes(q));
+    return aiConfig.preset === 'gemini'
+      ? buildMergedGeminiModelList(rawCombined)
+      : rawCombined;
   }, [
     aiConfig.availableModels,
     aiConfig.modelName,
     aiConfig.preset,
     currentPresetMeta.suggestedModels,
-    modelSearchQuery,
   ]);
+
+  const allSelectableModels = useMemo(() => {
+    const q = modelSearchQuery.trim().toLowerCase();
+    if (!q) return unfilteredSelectableModels;
+    return unfilteredSelectableModels.filter((m) => m.toLowerCase().includes(q));
+  }, [unfilteredSelectableModels, modelSearchQuery]);
 
   // Group Unified Save Folder files into `Characters/`, `Lorebooks/`, and `_tavernsmith_meta.json`
   const characterSavedFiles = useMemo(
@@ -191,6 +188,7 @@ export const OptionsView: React.FC = () => {
 
   const handleSelectPreset = (presetId: AIPresetId) => {
     switchAIPreset(presetId);
+    setModelSearchQuery('');
     setShowApiKey(false);
     setVaultStatus(getVaultStatusInfo());
   };
@@ -1403,8 +1401,18 @@ export const OptionsView: React.FC = () => {
                       value={modelSearchQuery}
                       onChange={(e) => setModelSearchQuery(e.target.value)}
                       placeholder="Filter models..."
-                      className="theme-focus-ring w-full rounded-md border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 pl-7 pr-2.5 py-1 text-xs text-slate-900 dark:text-white"
+                      className="theme-focus-ring w-full rounded-md border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 pl-7 pr-6 py-1 text-xs text-slate-900 dark:text-white"
                     />
+                    {modelSearchQuery && (
+                      <button
+                        type="button"
+                        onClick={() => setModelSearchQuery('')}
+                        title="Clear filter"
+                        className="absolute right-1.5 top-1/2 -translate-y-1/2 rounded p-0.5 text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 cursor-pointer"
+                      >
+                        <X className="h-3 w-3" />
+                      </button>
+                    )}
                   </div>
                   <button
                     type="button"
@@ -1425,6 +1433,9 @@ export const OptionsView: React.FC = () => {
               <div className="space-y-1">
                 <span className="text-[11px] text-slate-500 dark:text-slate-400">
                   Available Models
+                  {modelSearchQuery.trim()
+                    ? ` (Showing ${allSelectableModels.length} of ${unfilteredSelectableModels.length})`
+                    : ''}
                 </span>
                 <select
                   value={
