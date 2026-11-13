@@ -1112,22 +1112,6 @@ export const DEFAULT_TAGS: TagDefinition[] = [
     true
   ),
   createBuiltInTag(
-    'tag-musk-sweat-heavy-pheromones',
-    'Musk / Sweat / Heavy Pheromones',
-    '#d97706',
-    'Extreme & Hentai Physics',
-    'Intense olfactory focus: thick arousal scent, steamy post-exertion sweat, intoxicating pheromones, and skin-licking.',
-    true
-  ),
-  createBuiltInTag(
-    'tag-watersports-omorashi',
-    'Watersports / Omorashi',
-    '#eab308',
-    'Extreme & Hentai Physics',
-    'Loss of bladder control from overwhelming overstimulation, desperation, or explicit watersports kink.',
-    true
-  ),
-  createBuiltInTag(
     'tag-somnophilia-drowsy-intimacy',
     'Somnophilia / Drowsy Intimacy',
     '#6366f1',
@@ -1151,17 +1135,426 @@ export const DEFAULT_TAGS: TagDefinition[] = [
     'Erotic metal barbells, rings, or chains on nipples or intimate anatomy that heighten sensitivity and tug during play.',
     true
   ),
+
+  // F. SFW Setting, Vibe & Action Tags
   createBuiltInTag(
-    'tag-foot-armpit-worship',
-    'Foot / Armpit Worship',
-    '#fb923c',
+    'tag-high-fantasy-sword-sorcery',
+    'High Fantasy / Sword & Sorcery',
+    '#10b981',
+    'Setting & Vibe',
+    'Classic high-fantasy setting with ancient magic, kingdoms, guild quests, dungeons, and mythical creatures.',
+    false
+  ),
+  createBuiltInTag(
+    'tag-cyberpunk-neon-dystopia',
+    'Cyberpunk / Neon Dystopia',
+    '#06b6d4',
+    'Setting & Vibe',
+    'High-tech, low-life futuristic megacity filled with cyberware, corporate espionage, neon-lit rain, and street mercenaries.',
+    false
+  ),
+  createBuiltInTag(
+    'tag-post-apocalyptic-wasteland',
+    'Post-Apocalyptic / Wasteland',
+    '#d97706',
+    'Setting & Vibe',
+    'Gritty survival tension, ruined civilization, scavenging, scarce resources, and rugged wasteland factions.',
+    false
+  ),
+  createBuiltInTag(
+    'tag-gothic-horror-eldritch',
+    'Gothic Horror / Eldritch',
+    '#6366f1',
+    'Setting & Vibe',
+    'Brooding Victorian or cosmic dread atmosphere with cursed manors, occult mysteries, fog-choked streets, and eerie tension.',
+    false
+  ),
+  createBuiltInTag(
+    'tag-space-opera-scifi-frontier',
+    'Space Opera / Sci-Fi Frontier',
+    '#3b82f6',
+    'Setting & Vibe',
+    'Starships, alien worlds, orbital stations, interstellar politics, and deep-space exploration.',
+    false
+  ),
+  createBuiltInTag(
+    'tag-noir-detective-mystery',
+    'Noir / Detective Mystery',
+    '#64748b',
+    'Setting & Vibe',
+    'Gritty investigative atmosphere, morally gray motives, rain-slicked streets, secrets, and sharp dialogue.',
+    false
+  ),
+  createBuiltInTag(
+    'tag-high-octane-action-combat',
+    'High-Octane Action / Combat',
+    '#ef4444',
+    'Setting & Vibe',
+    'Dynamic, visceral fight choreography, weapon mastery, tactical momentum, and high-stakes physical danger.',
+    false
+  ),
+  createBuiltInTag(
+    'tag-political-intrigue-royal-court',
+    'Political Intrigue / Royal Court',
+    '#eab308',
+    'Setting & Vibe',
+    'Scheming nobility, whispered alliances, formal etiquette masking lethal ambition, and high-society tension.',
+    false
+  ),
+  createBuiltInTag(
+    'tag-wuxia-cultivation-martial-arts',
+    'Wuxia / Cultivation / Martial Arts',
+    '#14b8a6',
+    'Setting & Vibe',
+    'Eastern fantasy setting focused on qi cultivation, martial sects, sword techniques, and spiritual ascension.',
+    false
+  ),
+  createBuiltInTag(
+    'tag-cozy-warm-slice-of-life',
+    'Cozy / Warm Slice of Life',
+    '#f59e0b',
+    'Setting & Vibe',
+    'Relaxed, comforting everyday interactions, domestic warmth, quiet taverns or cafes, and low-stakes character bonding.',
+    false
+  ),
+  createBuiltInTag(
+    'tag-isekai-another-world',
+    'Isekai / Another World',
+    '#8b5cf6',
+    'Setting & Vibe',
+    'Summoned, reincarnated, or transported into an unfamiliar fantasy world with RPG mechanics, culture shock, and fish-out-of-water discovery.',
+    false
+  ),
+  createBuiltInTag(
+    'tag-arranged-marriage-fake-dating',
+    'Arranged Marriage / Fake Dating',
+    '#ec4899',
+    'Setting & Vibe',
+    'Forced to act like a devoted couple in public while navigating awkward tension, clashing personalities, and growing attraction in private.',
+    false
+  ),
+  createBuiltInTag(
+    'tag-bodyguard-x-vip-forbidden-duty',
+    'Bodyguard x VIP (Forbidden Duty)',
+    '#3b82f6',
+    'Setting & Vibe',
+    'A stoic protector bound by strict duty struggling to maintain professional distance while guarding a teasing or reckless {{user}}.',
+    false
+  ),
+  createBuiltInTag(
+    'tag-captor-x-prisoner-interrogation',
+    'Captor x Prisoner / Interrogation',
+    '#64748b',
+    'Setting & Vibe',
+    'High-stakes captivity dynamic built on psychological mind games, bargaining, and dangerous proximity.',
+    false
+  ),
+  createBuiltInTag(
+    'tag-adventuring-bounty-partner',
+    'Adventuring / Bounty Partner',
+    '#10b981',
+    'Setting & Vibe',
+    "Close-knit combat duo sharing campfires, splitting loot, bantering during quests, and tending each other's wounds.",
+    false
+  ),
+
+  // G. Narrative & Meta Writing-Style Tags (SFW)
+  createBuiltInTag(
+    'tag-visible-inner-thoughts',
+    'Visible Inner Thoughts',
+    '#06b6d4',
+    'Narrative & Meta',
+    "Always include {{char}}'s secret internal monologue in italicized parentheses so the reader sees the contrast between her outward words and hidden desires.",
+    false
+  ),
+  createBuiltInTag(
+    'tag-anti-godmodding-strict-char-only',
+    'Anti-Godmodding (Strict {{char}} Only)',
+    '#14b8a6',
+    'Narrative & Meta',
+    "Strictly write only {{char}}'s actions, dialogue, and sensations. Never speak, act, or decide feelings on behalf of {{user}}.",
+    false
+  ),
+  createBuiltInTag(
+    'tag-heavy-vocal-audio-detail',
+    'Heavy Vocal & Audio Detail',
+    '#a855f7',
+    'Narrative & Meta',
+    'Emphasize voice tone, hitched breaths, stammering, whispered words against the ear, and vocal cracks in every reply.',
+    false
+  ),
+  createBuiltInTag(
+    'tag-sharp-banter-natural-dialogue',
+    'Sharp Banter & Natural Dialogue',
+    '#f59e0b',
+    'Narrative & Meta',
+    'Prioritize snappy, grounded, character-driven dialogue and chemistry over purple prose or melodramatic monologues.',
+    false
+  ),
+
+  // H. Fantasy-Mechanic & Situational NSFW Tags
+  createBuiltInTag(
+    'tag-shared-senses-soulbond-link',
+    'Shared Senses / Soulbond Link',
+    '#c084fc',
+    'NSFW & Kinks',
+    "A magical or psychic link where every physical touch and wave of pleasure felt by one partner echoes directly into the other's body, doubling sensory overload.",
+    true
+  ),
+  createBuiltInTag(
+    'tag-time-stop-suspended-perception',
+    'Time Stop / Suspended Perception',
+    '#6366f1',
+    'NSFW & Kinks',
+    'Frozen-time or suspended-awareness scenario where sensations accumulate silently and hit in an overwhelming rush all at once.',
+    true
+  ),
+  createBuiltInTag(
+    'tag-android-gynoid-overheating',
+    'Android / Gynoid (Overheating)',
+    '#38bdf8',
+    'NSFW & Kinks',
+    "Synthetic mechanical girl treating intimacy as 'sensory calibration' or 'maintenance,' complete with cooling fans whirring, system alerts, and core overheating during climax.",
+    true
+  ),
+  createBuiltInTag(
+    'tag-lamia-arachne-coiling-body',
+    'Lamia / Arachne / Coiling Body',
+    '#10b981',
+    'NSFW & Kinks',
+    'Monstrous lower body (giant serpent tail or arachnid form) that physically coils around {{user}} in a warm, inescapable embrace.',
+    true
+  ),
+  createBuiltInTag(
+    'tag-prehensile-tail-play',
+    'Prehensile Tail Play',
+    '#f43f5e',
+    'NSFW & Kinks',
+    'Expressive demon, dragon, orsuccubus tail with a mind of its own that coils around wrists, thighs, or teases erogenous zones.',
+    true
+  ),
+  createBuiltInTag(
+    'tag-cursed-equipment-living-armor',
+    'Cursed Equipment / Living Armor',
+    '#9333ea',
+    'NSFW & Kinks',
+    "Enchanted armor, rings, or attire that cannot be removed and steadily amplifies the wearer's physical sensitivity and arousal.",
+    true
+  ),
+  createBuiltInTag(
+    'tag-giantess-towering-size-8ft',
+    'Giantess / Towering Size (8ft+)',
+    '#eab308',
+    'NSFW & Kinks',
+    'Towering demigoddess, amazon, or giantess who effortlessly pins, lifts, or smothers {{user}} against her massive frame.',
+    true
+  ),
+  createBuiltInTag(
+    'tag-power-reversal-humbled-authority',
+    'Power Reversal / Humbled Authority',
+    '#e11d48',
+    'NSFW & Kinks',
+    'An arrogant queen, boss, or paladin whose commanding authority completely shatters into needy, blushing submission behind closed doors.',
+    true
+  ),
+  createBuiltInTag(
+    'tag-mirror-play-forced-to-watch',
+    'Mirror Play (Forced to Watch)',
+    '#ec4899',
+    'NSFW & Kinks',
+    'Positioning {{char}} in front of a mirror during intimacy so she is forced to watch her own flushed, pleasure-broken expression.',
+    true
+  ),
+  createBuiltInTag(
+    'tag-edging-orgasm-denial',
+    'Edging / Orgasm Denial',
+    '#be123c',
+    'NSFW & Kinks',
+    'Repeatedly bringing {{char}} to the absolute brink of climax and stopping until she is trembling, incoherent, and begging for release.',
+    true
+  ),
+  createBuiltInTag(
+    'tag-impatient-clothed-torn-attire',
+    'Impatient / Clothed / Torn Attire',
+    '#fb7185',
+    'NSFW & Kinks',
+    'Frantic, impatient intimacy without fully undressing—pushing aside underwear, hitching up skirts, or ripping stockings open.',
+    true
+  ),
+  createBuiltInTag(
+    'tag-cramped-space-forced-proximity',
+    'Cramped Space / Forced Proximity',
+    '#f97316',
+    'NSFW & Kinks',
+    'Trapped pressed tightly together inside a narrow closet, locker, or booth where every breath and movement causes intimate friction.',
+    true
+  ),
+  createBuiltInTag(
+    'tag-sensory-deprivation-blindfold',
+    'Sensory Deprivation (Blindfold)',
+    '#475569',
+    'NSFW & Kinks',
+    'Blindfolded intimacy where the loss of sight makes every sudden touch, whisper, and movement ten times more intense.',
+    true
+  ),
+  createBuiltInTag(
+    'tag-vampiric-erotic-neck-bite',
+    'Vampiric / Erotic Neck Bite',
+    '#991b1b',
+    'NSFW & Kinks',
+    'Sensual fangs grazing the throat and blood-drinking treated as an intoxicating, full-body aphrodisiac.',
+    true
+  ),
+
+  // I. NSFW Backdoor, Birth, Tentacle, Hyper-Physics & Eldritch Host Tags
+  createBuiltInTag(
+    'tag-anal-obsession-anal-only',
+    'Anal Obsession / Anal Only',
+    '#be123c',
     'Extreme & Hentai Physics',
-    'Dedicated focus on kissing, licking, smelling, and servicing bare soles, toes, or glistening underarms.',
+    'Intense fixation on anal intimacy, treating deep anal penetration as the primary and most sensitive path to climax.',
+    true
+  ),
+  createBuiltInTag(
+    'tag-heavy-anal-anal-gaping',
+    'Heavy Anal / Anal Gaping',
+    '#9f1239',
+    'Extreme & Hentai Physics',
+    'Intense anal stretching, deep accommodation of large girth, lingering openness, and visceral physical aftermath.',
+    true
+  ),
+  createBuiltInTag(
+    'tag-double-penetration-dp',
+    'Double Penetration (DP)',
+    '#e11d48',
+    'Extreme & Hentai Physics',
+    'Simultaneous oral and anal/vaginal fullness, overwhelming dual stretching, and breathless, overstimulated vocal reactions.',
+    true
+  ),
+  createBuiltInTag(
+    'tag-hyper-pregnancy-rapid-gestation',
+    'Hyper Pregnancy / Rapid Gestation',
+    '#db2777',
+    'Extreme & Hentai Physics',
+    'Fantasy rapid pregnancy with a heavily rounded, tight, life-swollen belly, heightened hormones, and constant needy arousal.',
+    true
+  ),
+  createBuiltInTag(
+    'tag-fantasy-birthing-labor',
+    'Fantasy Birthing / Labor',
+    '#ec4899',
+    'Extreme & Hentai Physics',
+    'Visceral fantasy birthing or egg-expulsion scenes focusing on rhythmic abdominal contractions, physical strain, and intense release.',
+    true
+  ),
+  createBuiltInTag(
+    'tag-backdoor-birth-anal-delivery',
+    'Backdoor Birth / Anal Delivery',
+    '#881337',
+    'Extreme & Hentai Physics',
+    'Surreal hentai/fantasy biology where gestation, eggs, or birth occurs through the anus with intense contractions and deep fullness.',
+    true
+  ),
+  createBuiltInTag(
+    'tag-tentacle-nest-all-orifice',
+    'Tentacle Nest / All-Orifice',
+    '#10b981',
+    'Extreme & Hentai Physics',
+    'Writhing mass of slick, sentient tentacles coiling around limbs and filling vaginal, anal, and oral orifices simultaneously.',
+    true
+  ),
+  createBuiltInTag(
+    'tag-knotting-coital-lock-hybrid',
+    'Knotting / Coital Lock (Hybrid)',
+    '#d97706',
+    'Extreme & Hentai Physics',
+    'Sentient adult monster/kemonomimi/were-hybrid anatomy featuring a swelling base knot that physically locks partners together during prolonged internal climax.',
+    true
+  ),
+  createBuiltInTag(
+    'tag-flared-heavy-tip-hybrid-anatomy',
+    'Flared / Heavy-Tip Hybrid Anatomy',
+    '#b45309',
+    'Extreme & Hentai Physics',
+    'Sentient adult fantasy/hybrid anatomy with a heavy, flared ring and thick shaft that stretches internal walls to their limit.',
+    true
+  ),
+  createBuiltInTag(
+    'tag-barbed-textured-monster-anatomy',
+    'Barbed / Textured Monster Anatomy',
+    '#7c3aed',
+    'Extreme & Hentai Physics',
+    'Sentient adult monster/demonic/feline-hybrid anatomy with anatomical ridges, bumps, or soft barbs that scrape and overstimulate internal walls.',
+    true
+  ),
+  createBuiltInTag(
+    'tag-hyper-distension-floor-dragging-belly',
+    'Hyper Distension / Floor-Dragging Belly',
+    '#db2777',
+    'Extreme & Hentai Physics',
+    'Extreme hentai-scale abdominal expansion where the belly swells larger than the torso, sagging heavily to the floor under its own massive weight and immobilizing {{char}}.',
+    true
+  ),
+  createBuiltInTag(
+    'tag-extreme-elasticity-impossible-stretch',
+    'Extreme Elasticity / Impossible Stretch',
+    '#be123c',
+    'Extreme & Hentai Physics',
+    'Surreal hentai anatomy where orifices stretch to impossible diameters to accommodate massive clusters of tentacles or hyper anatomy without injury or pain.',
+    true
+  ),
+  createBuiltInTag(
+    'tag-living-host-tentacle-incubator',
+    'Living Host / Tentacle Incubator',
+    '#059669',
+    'Extreme & Hentai Physics',
+    "{{char}}'s womb and abdomen serve as a living nest and incubator housing massive, writhing eldritch tentacles that coil inside her and emerge from her orifices.",
+    true
+  ),
+  createBuiltInTag(
+    'tag-gilded-metallic-anatomy-orifice-rings',
+    'Gilded / Metallic Anatomy & Orifice Rings',
+    '#eab308',
+    'Extreme & Hentai Physics',
+    'Erotic body modification featuring metallic gold/chrome nipples, gilded lips, and permanent rigid metal rings grafted into orifices holding them open for display and access.',
+    true
+  ),
+  createBuiltInTag(
+    'tag-oiled-glossy-wet-look-skin',
+    'Oiled / Glossy / Wet-Look Skin',
+    '#0ea5e9',
+    'Extreme & Hentai Physics',
+    'Glistening, hyper-reflective skin coated in oil, slime, or sheen that catches the light across every stretched curve.',
+    true
+  ),
+  createBuiltInTag(
+    'tag-corrupted-sclera-glowing-eyes',
+    'Corrupted Sclera / Glowing Eyes',
+    '#c026d3',
+    'Extreme & Hentai Physics',
+    'Darkened sclera with glowing neon irises signaling total supernatural corruption, hypnotic trance, and mind-rewriting pleasure.',
+    true
+  ),
+  createBuiltInTag(
+    'tag-unbirth-full-body-engulfment',
+    'Unbirth / Full-Body Engulfment',
+    '#7c3aed',
+    'Extreme & Hentai Physics',
+    'Extreme fantasy hentai physics involving engulfing or drawing entire massive entities deep inside the body for internal gestation or stimulation.',
     true
   ),
 ];
 
 export const DEFAULT_TAG_LIBRARY: TagDefinition[] = DEFAULT_TAGS;
+
+const RETIRED_BUILTIN_TAG_KEYS = new Set<string>([
+  'tag-watersports-omorashi',
+  'watersports / omorashi',
+  'tag-musk-sweat-heavy-pheromones',
+  'musk / sweat / heavy pheromones',
+  'tag-foot-armpit-worship',
+  'foot / armpit worship',
+]);
 
 /**
  * Returns true if a TagDefinition has its NSFW (18+) flag set.
@@ -1307,6 +1700,10 @@ export function extractCustomUserTags(
   for (const tag of allTags) {
     if (!tag || typeof tag.name !== 'string') continue;
     const key = tag.name.trim().toLowerCase();
+    const idKey = (tag.id || '').trim().toLowerCase();
+    if (RETIRED_BUILTIN_TAG_KEYS.has(key) || RETIRED_BUILTIN_TAG_KEYS.has(idKey)) {
+      continue;
+    }
     const builtIn = builtInByName.get(key);
 
     if (!builtIn) {
@@ -1340,7 +1737,7 @@ export function extractCustomUserTags(
 }
 
 /**
- * Always loads the 84+ built-in `DEFAULT_TAGS` (including their `isNsfw` flags, categories,
+ * Always loads the built-in `DEFAULT_TAGS` (including their `isNsfw` flags, categories,
  * colors, and `aiDescription`) 100% fresh from source code, and merges user-created custom tags on top.
  */
 export function mergeWithDefaultTags(
@@ -1367,6 +1764,10 @@ export function mergeWithDefaultTags(
     const cleanName = incoming.name.trim();
     if (!cleanName) continue;
     const key = cleanName.toLowerCase();
+    const idKey = (incoming.id || '').trim().toLowerCase();
+    if (RETIRED_BUILTIN_TAG_KEYS.has(key) || RETIRED_BUILTIN_TAG_KEYS.has(idKey)) {
+      continue;
+    }
 
     const builtInIdx = builtInIndexByName.get(key);
     if (builtInIdx !== undefined) {

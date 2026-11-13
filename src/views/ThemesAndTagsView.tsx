@@ -30,13 +30,17 @@ import { isTagNsfw, TagSelector } from '../components/TagSelector';
 import { AIServiceError, generateCompletionDetailed } from '../services/aiService';
 
 const TAG_CATEGORIES: { value: TagCategory; label: string }[] = [
+  { value: 'Setting & Vibe', label: 'Setting & Vibe' },
+  { value: 'Narrative & Meta', label: 'Narrative & Meta' },
   { value: 'Rating', label: 'Rating' },
+  { value: 'Archetype', label: 'Archetype' },
+  { value: 'Body & Attire', label: 'Body & Attire' },
+  { value: 'NSFW & Kinks', label: 'NSFW & Kinks' },
+  { value: 'Extreme & Hentai Physics', label: 'Extreme & Hentai Physics' },
   { value: 'Genre & Setting', label: 'Genre & Setting' },
   { value: 'Personality & Archetype', label: 'Personality & Archetype' },
   { value: 'Relationship & Role', label: 'Relationship & Role' },
   { value: 'Tone & Style', label: 'Tone & Style' },
-  { value: 'NSFW & Kinks', label: 'NSFW & Kinks' },
-  { value: 'Extreme & Hentai Physics', label: 'Extreme & Hentai Physics' },
   { value: 'Custom', label: 'Custom' },
 ];
 
@@ -78,7 +82,7 @@ export const ThemesAndTagsView: React.FC = () => {
   const [quickTagName, setQuickTagName] = useState('');
   const [quickTagColor, setQuickTagColor] = useState('#a855f7');
   const [quickTagCategory, setQuickTagCategory] =
-    useState<TagCategory>('Genre & Setting');
+    useState<TagCategory>('Setting & Vibe');
   const [quickTagIsNsfw, setQuickTagIsNsfw] = useState(false);
   const [quickTagAiDesc, setQuickTagAiDesc] = useState('');
   const [generatingQuickTagDesc, setGeneratingQuickTagDesc] = useState(false);
@@ -390,6 +394,25 @@ export const ThemesAndTagsView: React.FC = () => {
   const availableCategories = useMemo(() => {
     const visiblePool = hideNsfw ? tags.filter((t) => !isTagNsfw(t)) : tags;
     const set = new Set<string>();
+    const preferredOrder = [
+      'Setting & Vibe',
+      'Narrative & Meta',
+      'Rating',
+      'Archetype',
+      'Body & Attire',
+      'NSFW & Kinks',
+      'Extreme & Hentai Physics',
+      'Genre & Setting',
+      'Personality & Archetype',
+      'Relationship & Role',
+      'Tone & Style',
+      'Custom',
+    ];
+    for (const p of preferredOrder) {
+      if (visiblePool.some((t) => t.category === p)) {
+        set.add(p);
+      }
+    }
     for (const c of TAG_CATEGORIES) {
       if (visiblePool.some((t) => t.category === c.value)) {
         set.add(c.value);

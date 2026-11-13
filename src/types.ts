@@ -15,7 +15,11 @@ export type RosterSortOption =
   | 'tokens_asc';
 
 export type TagCategory =
+  | 'Setting & Vibe'
+  | 'Narrative & Meta'
   | 'Rating'
+  | 'Archetype'
+  | 'Body & Attire'
   | 'Genre & Setting'
   | 'Personality & Archetype'
   | 'Relationship & Role'

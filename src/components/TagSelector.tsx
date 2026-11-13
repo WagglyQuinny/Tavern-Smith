@@ -57,13 +57,17 @@ export const TagSelector: React.FC<TagSelectorProps> = ({
     const visibleSource = hideNsfw ? tags.filter((t) => !isTagNsfw(t)) : tags;
     const set = new Set<string>();
     const preferredOrder = [
+      'Setting & Vibe',
+      'Narrative & Meta',
       'Rating',
+      'Archetype',
+      'Body & Attire',
+      'NSFW & Kinks',
+      'Extreme & Hentai Physics',
       'Genre & Setting',
       'Personality & Archetype',
       'Relationship & Role',
       'Tone & Style',
-      'NSFW & Kinks',
-      'Extreme & Hentai Physics',
       'Custom',
     ];
     for (const p of preferredOrder) {
