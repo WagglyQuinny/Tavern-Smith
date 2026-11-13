@@ -414,19 +414,28 @@ export async function generateDefaultAvatarPngBuffer(
 }
 
 /**
- * Sanitizes and serializes a CharacterCardData into a clean V2 or V3 Wrapper,
+ * Sanitizes and serializes a CharacterCardData into a clean V2 or V3 Wrapper with
+ * `_tavernsmithType: 'character'` and lossless `data.extensions.tavernsmith`,
  * guaranteeing NO API keys or sensitive credentials ever enter the exported JSON.
  */
 export function serializeCharacterCard(
   character: CharacterCardData,
   spec: 'v2' | 'v3',
   fallbackLorebook?: Lorebook
-): SillyTavernV2Wrapper | SillyTavernV3Wrapper {
+): (SillyTavernV2Wrapper | SillyTavernV3Wrapper) & {
+  _tavernsmithType: 'character';
+} {
   const cleanBook = character.character_book || fallbackLorebook;
+  const resolvedStatBlock =
+    character.extensions?.statBlock || DEFAULT_STAT_BLOCK;
+  const resolvedIsNsfw = Boolean(
+    character.isNsfw || character.extensions?.isNsfw
+  );
 
-  const cleanData: CharacterCardData = {
+  const losslessSnapshot: CharacterCardData = {
     id: character.id,
     name: character.name || 'Untitled Character',
+    nickname: character.nickname || '',
     description: character.description || '',
     personality: character.personality || '',
     scenario: character.scenario || '',
@@ -443,22 +452,30 @@ export function serializeCharacterCard(
     character_version: character.character_version || '1.0.0',
     character_book: cleanBook,
     avatar: character.avatar,
-    nickname: character.nickname || '',
     creation_date: character.creation_date || Math.floor(Date.now() / 1000),
     modification_date:
       character.modification_date || Math.floor(Date.now() / 1000),
-    isNsfw: Boolean(character.isNsfw || character.extensions?.isNsfw),
+    isNsfw: resolvedIsNsfw,
     extensions: {
       talkativeness: character.extensions?.talkativeness || '0.5',
       fav: Boolean(character.extensions?.fav),
       world: cleanBook?.name || character.extensions?.world || '',
-      statBlock: character.extensions?.statBlock || DEFAULT_STAT_BLOCK,
-      isNsfw: Boolean(character.isNsfw || character.extensions?.isNsfw),
+      statBlock: resolvedStatBlock,
+      isNsfw: resolvedIsNsfw,
+    },
+  };
+
+  const cleanData: CharacterCardData = {
+    ...losslessSnapshot,
+    extensions: {
+      ...losslessSnapshot.extensions,
+      tavernsmith: losslessSnapshot,
     },
   };
 
   if (spec === 'v2') {
     return {
+      _tavernsmithType: 'character',
       spec: 'chara_card_v2',
       spec_version: '2.0',
       data: cleanData,
@@ -466,9 +483,47 @@ export function serializeCharacterCard(
   }
 
   return {
+    _tavernsmithType: 'character',
     spec: 'chara_card_v3',
     spec_version: '3.0',
     data: cleanData,
+  };
+}
+
+/**
+ * Serializes a Lorebook into a lossless SillyTavern World Info + TavernSmith JSON object
+ * with `_tavernsmithType: 'lorebook'` and `extensions.tavernsmith`.
+ */
+export function serializeLorebookCard(lorebook: Lorebook): Record<string, unknown> {
+  const losslessBook: Lorebook = {
+    id: lorebook.id,
+    name: lorebook.name || 'Untitled Lorebook',
+    description: lorebook.description || '',
+    scan_depth: Number(lorebook.scan_depth ?? 4),
+    token_budget: Number(lorebook.token_budget ?? 1024),
+    recursive_scanning: Boolean(lorebook.recursive_scanning ?? true),
+    tags: Array.isArray(lorebook.tags) ? lorebook.tags : [],
+    modification_date:
+      lorebook.modification_date || Math.floor(Date.now() / 1000),
+    isNsfw: Boolean(lorebook.isNsfw),
+    entries: Array.isArray(lorebook.entries) ? lorebook.entries : [],
+  };
+
+  return {
+    _tavernsmithType: 'lorebook',
+    id: losslessBook.id,
+    name: losslessBook.name,
+    description: losslessBook.description,
+    scan_depth: losslessBook.scan_depth,
+    token_budget: losslessBook.token_budget,
+    recursive_scanning: losslessBook.recursive_scanning,
+    modification_date: losslessBook.modification_date,
+    isNsfw: losslessBook.isNsfw,
+    tags: losslessBook.tags,
+    entries: losslessBook.entries,
+    extensions: {
+      tavernsmith: losslessBook,
+    },
   };
 }
 
@@ -487,11 +542,21 @@ export type ImportedAssetResult =
       lorebook: Lorebook;
     };
 
-function normalizeLorebookObject(
+export function normalizeLorebookObject(
   rawBook: Record<string, unknown>,
   fallbackName = 'Imported World Book'
 ): Lorebook {
-  const rawEntries = rawBook.entries;
+  const extObj =
+    rawBook.extensions && typeof rawBook.extensions === 'object'
+      ? (rawBook.extensions as Record<string, unknown>)
+      : null;
+  const tsSnapshot =
+    extObj && extObj.tavernsmith && typeof extObj.tavernsmith === 'object'
+      ? (extObj.tavernsmith as Record<string, unknown>)
+      : null;
+
+  const source = tsSnapshot ? { ...rawBook, ...tsSnapshot } : rawBook;
+  const rawEntries = source.entries ?? rawBook.entries;
   const entriesList: LorebookEntry[] = [];
 
   if (Array.isArray(rawEntries)) {
@@ -548,7 +613,8 @@ function normalizeLorebookObject(
                 ? e.secondary_keys.map(String)
                 : [],
             content: String(e.content || ''),
-            enabled: e.disable !== undefined ? !e.disable : Boolean(e.enabled ?? true),
+            enabled:
+              e.disable !== undefined ? !e.disable : Boolean(e.enabled ?? true),
             insertion_order: Number(e.order ?? e.insertion_order ?? 100),
             case_sensitive: Boolean(e.caseSensitive ?? e.case_sensitive),
             constant: Boolean(e.constant),
@@ -565,19 +631,22 @@ function normalizeLorebookObject(
   }
 
   return createBlankLorebook({
-    id: typeof rawBook.id === 'string' && rawBook.id ? rawBook.id : undefined,
-    name: String(rawBook.name || fallbackName),
-    description: String(rawBook.description || 'Imported SillyTavern Lorebook'),
-    scan_depth: Number(rawBook.scan_depth ?? rawBook.scanDepth ?? 4),
-    token_budget: Number(rawBook.token_budget ?? rawBook.tokenBudget ?? 1024),
+    id: typeof source.id === 'string' && source.id ? source.id : undefined,
+    name: String(source.name || fallbackName),
+    description:
+      source.description !== undefined
+        ? String(source.description)
+        : 'Imported SillyTavern Lorebook',
+    scan_depth: Number(source.scan_depth ?? source.scanDepth ?? 4),
+    token_budget: Number(source.token_budget ?? source.tokenBudget ?? 1024),
     recursive_scanning: Boolean(
-      rawBook.recursive_scanning ?? rawBook.recursiveScanning ?? true
+      source.recursive_scanning ?? source.recursiveScanning ?? true
     ),
-    tags: Array.isArray(rawBook.tags) ? rawBook.tags.map(String) : [],
+    tags: Array.isArray(source.tags) ? source.tags.map(String) : [],
     modification_date: Number(
-      rawBook.modification_date ?? Math.floor(Date.now() / 1000)
+      source.modification_date ?? Math.floor(Date.now() / 1000)
     ),
-    isNsfw: Boolean(rawBook.isNsfw),
+    isNsfw: Boolean(source.isNsfw),
     entries: entriesList,
   });
 }
@@ -585,32 +654,61 @@ function normalizeLorebookObject(
 export function parseImportedJsonString(
   jsonStr: string,
   avatarDataUrl?: string,
-  fallbackFileName = 'Imported'
+  fallbackFileName = 'Imported',
+  forcedKind?: 'character' | 'lorebook'
 ): ImportedAssetResult {
   const parsed = JSON.parse(jsonStr) as Record<string, unknown>;
+  const cleanFallbackName = fallbackFileName.replace(/\.(json|png)$/i, '');
 
-  // Check if this is a standalone SillyTavern Lorebook / World Info JSON
-  if (
-    parsed.entries &&
-    !parsed.spec &&
-    !parsed.name?.toString().includes('chara') &&
-    parsed.first_mes === undefined &&
-    parsed.description === undefined
-  ) {
+  const topExtensions =
+    parsed.extensions && typeof parsed.extensions === 'object'
+      ? (parsed.extensions as Record<string, unknown>)
+      : null;
+  const topTsSnapshot =
+    topExtensions &&
+    topExtensions.tavernsmith &&
+    typeof topExtensions.tavernsmith === 'object'
+      ? (topExtensions.tavernsmith as Record<string, unknown>)
+      : null;
+
+  const isExplicitLorebook =
+    forcedKind === 'lorebook' ||
+    parsed._tavernsmithType === 'lorebook' ||
+    (topTsSnapshot && Array.isArray(topTsSnapshot.entries)) ||
+    (parsed.entries !== undefined &&
+      !parsed.spec &&
+      parsed._tavernsmithType !== 'character' &&
+      parsed.first_mes === undefined &&
+      parsed.personality === undefined);
+
+  if (isExplicitLorebook && forcedKind !== 'character') {
     return {
       kind: 'lorebook',
-      lorebook: normalizeLorebookObject(
-        parsed,
-        fallbackFileName.replace(/\.(json|png)$/i, '')
-      ),
+      lorebook: normalizeLorebookObject(parsed, cleanFallbackName),
     };
   }
 
   const detectedSpec = String(parsed.spec || 'chara_card_v2');
-  const inner =
+  const rawInner =
     parsed.data && typeof parsed.data === 'object'
       ? (parsed.data as Record<string, unknown>)
       : parsed;
+
+  const innerExtensions =
+    rawInner.extensions && typeof rawInner.extensions === 'object'
+      ? (rawInner.extensions as Record<string, unknown>)
+      : topExtensions;
+
+  const charTsSnapshot =
+    innerExtensions &&
+    innerExtensions.tavernsmith &&
+    typeof innerExtensions.tavernsmith === 'object'
+      ? (innerExtensions.tavernsmith as Record<string, unknown>)
+      : null;
+
+  const inner: Record<string, unknown> = charTsSnapshot
+    ? { ...rawInner, ...charTsSnapshot }
+    : rawInner;
 
   let embeddedLorebook: Lorebook | undefined;
   if (inner.character_book && typeof inner.character_book === 'object') {
@@ -628,21 +726,26 @@ export function parseImportedJsonString(
         (inner.extensions as Record<string, unknown>).isNsfw)
   );
 
+  const mergedExtensions =
+    inner.extensions && typeof inner.extensions === 'object'
+      ? (inner.extensions as Record<string, unknown>)
+      : innerExtensions || {};
+
   const character = createBlankCharacter({
     id: typeof inner.id === 'string' && inner.id ? inner.id : undefined,
-    name: String(inner.name || parsed.name || 'Imported Character'),
+    name: String(inner.name || parsed.name || cleanFallbackName || 'Imported Character'),
     nickname: String(inner.nickname || ''),
-    description: String(inner.description || parsed.description || ''),
-    personality: String(inner.personality || parsed.personality || ''),
-    scenario: String(inner.scenario || parsed.scenario || ''),
-    first_mes: String(inner.first_mes || parsed.first_mes || ''),
-    mes_example: String(inner.mes_example || parsed.mes_example || ''),
+    description: String(inner.description ?? parsed.description ?? ''),
+    personality: String(inner.personality ?? parsed.personality ?? ''),
+    scenario: String(inner.scenario ?? parsed.scenario ?? ''),
+    first_mes: String(inner.first_mes ?? parsed.first_mes ?? ''),
+    mes_example: String(inner.mes_example ?? parsed.mes_example ?? ''),
     creator_notes: String(
-      inner.creator_notes || inner.creatorcomment || ''
+      inner.creator_notes ?? inner.creatorcomment ?? ''
     ),
-    system_prompt: String(inner.system_prompt || ''),
+    system_prompt: String(inner.system_prompt ?? ''),
     post_history_instructions: String(
-      inner.post_history_instructions || ''
+      inner.post_history_instructions ?? ''
     ),
     alternate_greetings: Array.isArray(inner.alternate_greetings)
       ? inner.alternate_greetings.map(String)
@@ -656,24 +759,20 @@ export function parseImportedJsonString(
     modification_date: Number(
       inner.modification_date ?? Math.floor(Date.now() / 1000)
     ),
-    avatar: avatarDataUrl || (typeof inner.avatar === 'string' ? inner.avatar : undefined),
+    avatar:
+      avatarDataUrl ||
+      (typeof inner.avatar === 'string' ? inner.avatar : undefined),
     character_book: embeddedLorebook,
     isNsfw: importedIsNsfw,
-    extensions:
-      inner.extensions && typeof inner.extensions === 'object'
-        ? {
-            ...(inner.extensions as Record<string, unknown>),
-            isNsfw: importedIsNsfw,
-            statBlock:
-              (inner.extensions as { statBlock?: typeof DEFAULT_STAT_BLOCK })
-                .statBlock || DEFAULT_STAT_BLOCK,
-          }
-        : {
-            talkativeness: '0.5',
-            fav: false,
-            isNsfw: importedIsNsfw,
-            statBlock: DEFAULT_STAT_BLOCK,
-          },
+    extensions: {
+      ...mergedExtensions,
+      talkativeness: String(mergedExtensions.talkativeness || '0.5'),
+      fav: Boolean(mergedExtensions.fav),
+      isNsfw: importedIsNsfw,
+      statBlock:
+        (mergedExtensions as { statBlock?: typeof DEFAULT_STAT_BLOCK })
+          .statBlock || DEFAULT_STAT_BLOCK,
+    },
   });
 
   return {
@@ -714,7 +813,12 @@ export async function importCardFromFile(
     }
     const avatarDataUrl = `data:image/png;base64,${window.btoa(binary)}`;
 
-    return parseImportedJsonString(decodedJson, avatarDataUrl, file.name);
+    return parseImportedJsonString(
+      decodedJson,
+      avatarDataUrl,
+      file.name,
+      'character'
+    );
   }
 
   // Otherwise parse as JSON file
@@ -800,14 +904,7 @@ export function exportCharacterAsJson(
  * Exports a Lorebook as a standalone SillyTavern World Info `.json` file.
  */
 export function exportLorebookAsJson(lorebook: Lorebook): void {
-  const cleanBook = {
-    name: lorebook.name,
-    description: lorebook.description,
-    scan_depth: lorebook.scan_depth,
-    token_budget: lorebook.token_budget,
-    recursive_scanning: lorebook.recursive_scanning,
-    entries: lorebook.entries,
-  };
+  const cleanBook = serializeLorebookCard(lorebook);
   const jsonString = JSON.stringify(cleanBook, null, 2);
   const blob = new Blob([jsonString], { type: 'application/json' });
   const filename = `${sanitizeFilename(lorebook.name)}_lorebook.json`;

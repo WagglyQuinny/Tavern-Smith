@@ -136,14 +136,14 @@ export const TopBar: React.FC = () => {
           <span className="hidden md:inline text-[10px] opacity-80">tok</span>
         </button>
 
-        {/* Save & Sync Button */}
+        {/* Save Button */}
         <button
           type="button"
           onClick={() => void handleSaveAndSync()}
           title={
             lastSavedAt
-              ? `Last saved at ${lastSavedAt}. Click to Save & Sync to Save Folder and wipe temporary browser cache.`
-              : 'Save & Sync workspace to Save Folder and clear temporary browser cache'
+              ? `Last saved at ${lastSavedAt}. Click to save Characters, Lorebooks, Tags & Themes directly to ./Saves/ on disk.`
+              : 'Save Characters, Lorebooks, Tags & Themes directly to ./Saves/ on disk'
           }
           style={{
             borderColor: justSaved ? '#10b981' : 'var(--theme-accent)',
@@ -154,7 +154,7 @@ export const TopBar: React.FC = () => {
             <>
               <Check className="h-3.5 w-3.5 text-emerald-500" />
               <span className="hidden sm:inline text-emerald-500">
-                Saved &amp; Synced
+                Saved to Disk
               </span>
             </>
           ) : (
@@ -164,7 +164,7 @@ export const TopBar: React.FC = () => {
                 style={{ color: 'var(--theme-accent)' }}
               />
               <span className="hidden sm:inline">
-                {isDirty ? 'Save & Sync *' : 'Save & Sync'}
+                {isDirty ? 'Save *' : 'Save'}
               </span>
             </>
           )}

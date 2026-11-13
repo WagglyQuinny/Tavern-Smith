@@ -257,7 +257,7 @@ export interface SavedFileEntry {
   id: string;
   folderPath: string;
   fileName: string;
-  kind: 'character' | 'lorebook' | 'meta';
+  kind: 'character' | 'lorebook' | 'meta' | 'vault';
   sizeBytes: number;
   updatedAt: string;
   content: string;
@@ -278,6 +278,22 @@ export interface TavernSmithMetaPayload {
   activeThemeId: string;
   contextThemes: ContextTheme[];
   tags: TagDefinition[];
+  settings?: Partial<AppSettings>;
+  aiConfig?: Partial<AIBackendConfig>;
+  activeCharacterId?: string;
+  activeLorebookId?: string;
+}
+
+export interface DiskStateResponse {
+  ok: boolean;
+  diskRoot: string;
+  resolvedPath: string;
+  characters: Record<string, unknown>[];
+  lorebooks: Record<string, unknown>[];
+  meta: TavernSmithMetaPayload | null;
+  vault: Record<string, unknown> | null;
+  files: SavedFileEntry[];
+  updatedAt: string;
 }
 
 export interface NameConflictRequest {
@@ -287,3 +303,4 @@ export interface NameConflictRequest {
   suggestedNames: string[];
   sourceAction: 'create' | 'rename' | 'save' | 'import';
 }
+

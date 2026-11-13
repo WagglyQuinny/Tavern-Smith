@@ -1,24 +1,22 @@
 /**
- * AES-256-GCM Encrypted Credential Vault (`_tavernsmith_vault_enc`)
+ * AES-256-GCM Encrypted Credential Vault (`./Saves/_tavernsmith_vault.enc`)
  * Uses pure browser Web Crypto API (`window.crypto.subtle`) with:
  * - PBKDF2 key derivation (SHA-256, 100,000 iterations)
  * - 16-byte random salt (`Uint8Array(16)`)
  * - 12-byte random IV (`Uint8Array(12)`)
  * - AES-GCM 256-bit authenticated encryption
  *
- * Supports both automatic device-key encryption and an optional user-defined
- * Vault Passphrase / PIN to lock/unlock the API key vault.
+ * Strictly zero browser localStorage/IndexedDB usage: the encrypted vault envelope
+ * is stored exclusively on disk inside `./Saves/_tavernsmith_vault.enc`.
  */
 
-export const ENCRYPTED_VAULT_STORAGE_KEY = '_tavernsmith_vault_enc';
-export const DEVICE_SEED_STORAGE_KEY = '_tavernsmith_vault_device_seed';
-export const PROVIDER_MODELS_STORAGE_KEY = '_tavernsmith_provider_models_v1';
-export const LEGACY_PLAINTEXT_CREDENTIALS_KEY =
-  'tavernsmith_provider_credentials_v1';
+export const VAULT_FILENAME = '_tavernsmith_vault.enc';
 
 const PBKDF2_ITERATIONS = 100_000;
 const SALT_BYTE_LENGTH = 16;
 const IV_BYTE_LENGTH = 12;
+const DEFAULT_DISK_VAULT_SECRET =
+  'tavernsmith-disk-vault-v2-aes-256-gcm-key-derivation';
 
 export interface EncryptedVaultEnvelope {
   version: 1;
@@ -29,6 +27,7 @@ export interface EncryptedVaultEnvelope {
   saltBase64: string;
   ivBase64: string;
   ciphertextBase64: string;
+  deviceSecretBase64?: string;
   updatedAt: string;
 }
 
@@ -40,10 +39,21 @@ export interface VaultStatusInfo {
   updatedAt: string | null;
 }
 
-// In-memory session state (never persisted to disk/localStorage)
+// Pure in-memory session state (persisted to disk `./Saves/_tavernsmith_vault.enc` via `/api/disk/save`)
+let inMemoryVaultEnvelope: EncryptedVaultEnvelope | null = null;
 let inMemoryPassphrase: string | null = null;
 let inMemoryDecryptedKeys: Record<string, string> = {};
+let inMemoryProviderModels: Record<string, string> = {};
 let vaultLockedState = false;
+let onVaultDiskFlushCallback:
+  | ((envelope: EncryptedVaultEnvelope) => void)
+  | null = null;
+
+export function registerVaultDiskFlushCallback(
+  cb: ((envelope: EncryptedVaultEnvelope) => void) | null
+): void {
+  onVaultDiskFlushCallback = cb;
+}
 
 function bytesToBase64(bytes: Uint8Array): string {
   let binary = '';
@@ -60,55 +70,6 @@ function base64ToBytes(base64: string): Uint8Array {
     bytes[i] = binary.charCodeAt(i);
   }
   return bytes;
-}
-
-function safeStorageGet(key: string): string | null {
-  try {
-    if (typeof window === 'undefined' || !window.localStorage) return null;
-    return window.localStorage.getItem(key);
-  } catch {
-    return null;
-  }
-}
-
-function safeStorageSet(key: string, value: string): void {
-  try {
-    if (typeof window === 'undefined' || !window.localStorage) return;
-    window.localStorage.setItem(key, value);
-  } catch {
-    // Ignore storage quota or restricted origin errors
-  }
-}
-
-function safeStorageRemove(key: string): void {
-  try {
-    if (typeof window === 'undefined' || !window.localStorage) return;
-    window.localStorage.removeItem(key);
-  } catch {
-    // Ignore restricted origin errors
-  }
-}
-
-/**
- * Generates or retrieves the per-device 256-bit random seed used when no custom
- * user passphrase/PIN is active.
- */
-function getOrCreateDeviceSecret(): string {
-  const existing = safeStorageGet(DEVICE_SEED_STORAGE_KEY);
-  if (existing && existing.length >= 24) {
-    return existing;
-  }
-  const randomBytes = new Uint8Array(32);
-  if (typeof window !== 'undefined' && window.crypto?.getRandomValues) {
-    window.crypto.getRandomValues(randomBytes);
-  } else {
-    for (let i = 0; i < randomBytes.length; i++) {
-      randomBytes[i] = Math.floor(Math.random() * 256);
-    }
-  }
-  const generated = bytesToBase64(randomBytes);
-  safeStorageSet(DEVICE_SEED_STORAGE_KEY, generated);
-  return generated;
 }
 
 /**
@@ -142,9 +103,25 @@ async function deriveAesGcmKey(
   );
 }
 
-function getEffectiveSecret(customPassphrase?: string | null): {
+function generateRandomDeviceSecretBase64(): string {
+  const randomBytes = new Uint8Array(32);
+  if (typeof window !== 'undefined' && window.crypto?.getRandomValues) {
+    window.crypto.getRandomValues(randomBytes);
+  } else {
+    for (let i = 0; i < randomBytes.length; i++) {
+      randomBytes[i] = Math.floor(Math.random() * 256);
+    }
+  }
+  return bytesToBase64(randomBytes);
+}
+
+function getEffectiveSecret(
+  customPassphrase?: string | null,
+  existingDeviceSecret?: string
+): {
   secret: string;
   hasCustomPassphrase: boolean;
+  deviceSecretBase64?: string;
 } {
   const cleanCustom = (customPassphrase ?? inMemoryPassphrase ?? '').trim();
   if (cleanCustom.length > 0) {
@@ -153,20 +130,22 @@ function getEffectiveSecret(customPassphrase?: string | null): {
       hasCustomPassphrase: true,
     };
   }
+  const devSecret = existingDeviceSecret || generateRandomDeviceSecretBase64();
   return {
-    secret: `tavernsmith-device-v1:${getOrCreateDeviceSecret()}`,
+    secret: `tavernsmith-device-v1:${devSecret}:${DEFAULT_DISK_VAULT_SECRET}`,
     hasCustomPassphrase: false,
+    deviceSecretBase64: devSecret,
   };
 }
 
-/**
- * Reads the raw encrypted envelope from `_tavernsmith_vault_enc` in localStorage.
- */
-export function readEncryptedVaultEnvelope(): EncryptedVaultEnvelope | null {
+export function normalizeVaultEnvelope(
+  raw: unknown
+): EncryptedVaultEnvelope | null {
+  if (!raw) return null;
   try {
-    const raw = safeStorageGet(ENCRYPTED_VAULT_STORAGE_KEY);
-    if (!raw) return null;
-    const parsed = JSON.parse(raw) as Partial<EncryptedVaultEnvelope>;
+    const parsed = (
+      typeof raw === 'string' ? JSON.parse(raw) : raw
+    ) as Partial<EncryptedVaultEnvelope>;
     if (
       parsed &&
       parsed.alg === 'AES-256-GCM' &&
@@ -183,6 +162,10 @@ export function readEncryptedVaultEnvelope(): EncryptedVaultEnvelope | null {
         saltBase64: parsed.saltBase64,
         ivBase64: parsed.ivBase64,
         ciphertextBase64: parsed.ciphertextBase64,
+        deviceSecretBase64:
+          typeof parsed.deviceSecretBase64 === 'string'
+            ? parsed.deviceSecretBase64
+            : undefined,
         updatedAt: parsed.updatedAt || new Date().toISOString(),
       };
     }
@@ -193,14 +176,32 @@ export function readEncryptedVaultEnvelope(): EncryptedVaultEnvelope | null {
 }
 
 /**
+ * Sets the in-memory encrypted envelope loaded from `./Saves/_tavernsmith_vault.enc` on disk.
+ */
+export function setInMemoryVaultEnvelope(raw: unknown): EncryptedVaultEnvelope | null {
+  const normalized = normalizeVaultEnvelope(raw);
+  if (normalized) {
+    inMemoryVaultEnvelope = normalized;
+  }
+  return inMemoryVaultEnvelope;
+}
+
+/**
+ * Returns the current encrypted envelope for writing to `./Saves/_tavernsmith_vault.enc`.
+ */
+export function readEncryptedVaultEnvelope(): EncryptedVaultEnvelope | null {
+  return inMemoryVaultEnvelope;
+}
+
+/**
  * Encrypts the `savedProviderKeys` map using AES-256-GCM (PBKDF2 100,000 iterations,
- * random 16-byte salt, random 12-byte IV) and stores ONLY ciphertext in `_tavernsmith_vault_enc`.
+ * random 16-byte salt, random 12-byte IV) and flushes the encrypted envelope to `./Saves/_tavernsmith_vault.enc`.
  */
 export async function encryptAndSaveProviderKeys(
   keysMap: Record<string, string>,
-  customPassphrase?: string | null
+  customPassphrase?: string | null,
+  skipDiskFlush = false
 ): Promise<EncryptedVaultEnvelope | null> {
-  // Sanitize map: keep only non-empty trimmed strings
   const sanitized: Record<string, string> = {};
   for (const [k, v] of Object.entries(keysMap || {})) {
     if (typeof v === 'string' && v.trim()) {
@@ -216,9 +217,6 @@ export async function encryptAndSaveProviderKeys(
         : null;
   }
 
-  // Always purge any legacy plaintext key storage
-  safeStorageRemove(LEGACY_PLAINTEXT_CREDENTIALS_KEY);
-
   if (
     typeof window === 'undefined' ||
     !window.crypto ||
@@ -228,9 +226,7 @@ export async function encryptAndSaveProviderKeys(
   }
 
   try {
-    const existingEnvelope = readEncryptedVaultEnvelope();
-    // If vault is currently locked with a custom passphrase and we don't have the passphrase in memory,
-    // do not overwrite the custom-passphrase vault with an empty map.
+    const existingEnvelope = inMemoryVaultEnvelope;
     if (
       existingEnvelope?.hasCustomPassphrase &&
       vaultLockedState &&
@@ -240,8 +236,11 @@ export async function encryptAndSaveProviderKeys(
       return existingEnvelope;
     }
 
-    const { secret, hasCustomPassphrase } =
-      getEffectiveSecret(customPassphrase);
+    const { secret, hasCustomPassphrase, deviceSecretBase64 } =
+      getEffectiveSecret(
+        customPassphrase,
+        existingEnvelope?.deviceSecretBase64
+      );
     const salt = window.crypto.getRandomValues(
       new Uint8Array(SALT_BYTE_LENGTH)
     );
@@ -265,11 +264,17 @@ export async function encryptAndSaveProviderKeys(
       saltBase64: bytesToBase64(salt),
       ivBase64: bytesToBase64(iv),
       ciphertextBase64: bytesToBase64(new Uint8Array(cipherBuffer)),
+      deviceSecretBase64: hasCustomPassphrase ? undefined : deviceSecretBase64,
       updatedAt: new Date().toISOString(),
     };
 
-    safeStorageSet(ENCRYPTED_VAULT_STORAGE_KEY, JSON.stringify(envelope));
+    inMemoryVaultEnvelope = envelope;
     vaultLockedState = false;
+
+    if (!skipDiskFlush && onVaultDiskFlushCallback) {
+      onVaultDiskFlushCallback(envelope);
+    }
+
     return envelope;
   } catch {
     return null;
@@ -277,24 +282,23 @@ export async function encryptAndSaveProviderKeys(
 }
 
 /**
- * Decrypts `_tavernsmith_vault_enc` in memory using AES-256-GCM + PBKDF2 (100,000 iterations).
+ * Decrypts `./Saves/_tavernsmith_vault.enc` in memory using AES-256-GCM + PBKDF2 (100,000 iterations).
  */
 export async function decryptProviderKeysFromVault(
-  passphraseAttempt?: string | null
+  passphraseAttempt?: string | null,
+  envelopeOverride?: unknown
 ): Promise<{
   ok: boolean;
   locked: boolean;
   keys: Record<string, string>;
   error?: string;
 }> {
-  const envelope = readEncryptedVaultEnvelope();
+  if (envelopeOverride !== undefined) {
+    setInMemoryVaultEnvelope(envelopeOverride);
+  }
+  const envelope = inMemoryVaultEnvelope;
 
-  // Check for one-time migration from legacy plaintext storage if no encrypted envelope exists yet
   if (!envelope) {
-    const migratedKeys = consumeAndMigrateLegacyPlaintextKeys();
-    if (Object.keys(migratedKeys).length > 0) {
-      await encryptAndSaveProviderKeys(migratedKeys);
-    }
     vaultLockedState = false;
     return {
       ok: true,
@@ -302,9 +306,6 @@ export async function decryptProviderKeysFromVault(
       keys: { ...inMemoryDecryptedKeys },
     };
   }
-
-  // Always remove any leftover legacy plaintext keys
-  safeStorageRemove(LEGACY_PLAINTEXT_CREDENTIALS_KEY);
 
   if (
     typeof window === 'undefined' ||
@@ -332,14 +333,16 @@ export async function decryptProviderKeysFromVault(
       locked: true,
       keys: {},
       error:
-        'Vault is protected with a custom Passphrase / PIN. Unlock it in Options -> AI Connections.',
+        'Vault is protected with a custom Passphrase / PIN. Unlock it in Options -> AI Connection.',
     };
   }
 
   try {
     const secret = envelope.hasCustomPassphrase
       ? `tavernsmith-pin-v1:${candidatePassphrase}`
-      : `tavernsmith-device-v1:${getOrCreateDeviceSecret()}`;
+      : envelope.deviceSecretBase64
+        ? `tavernsmith-device-v1:${envelope.deviceSecretBase64}:${DEFAULT_DISK_VAULT_SECRET}`
+        : `tavernsmith-device-v1:${DEFAULT_DISK_VAULT_SECRET}`;
 
     const salt = base64ToBytes(envelope.saltBase64);
     const iv = base64ToBytes(envelope.ivBase64);
@@ -383,14 +386,15 @@ export async function decryptProviderKeysFromVault(
         ok: false,
         locked: true,
         keys: {},
-        error: 'Incorrect Vault Passphrase / PIN. Could not decrypt AES-256-GCM vault.',
+        error:
+          'Incorrect Vault Passphrase / PIN. Could not decrypt AES-256-GCM vault.',
       };
     }
     return {
       ok: false,
       locked: false,
       keys: {},
-      error: 'Could not decrypt device key vault.',
+      error: 'Could not decrypt disk key vault.',
     };
   }
 }
@@ -431,7 +435,7 @@ export async function getDecryptedKeyForProvider(
 }
 
 /**
- * Sets or removes a custom Vault Passphrase / PIN and re-encrypts `_tavernsmith_vault_enc`.
+ * Sets or removes a custom Vault Passphrase / PIN and re-encrypts `./Saves/_tavernsmith_vault.enc`.
  */
 export async function updateVaultPassphrase(
   newPassphrase: string | null
@@ -451,8 +455,8 @@ export async function updateVaultPassphrase(
   return {
     ok: true,
     message: clean
-      ? 'AES-256-GCM Vault locked with your custom Passphrase / PIN (PBKDF2 100,000 iterations).'
-      : 'Custom Passphrase removed; vault is now encrypted with automatic AES-256-GCM device key.',
+      ? 'AES-256-GCM Vault locked with your custom Passphrase / PIN and saved to ./Saves/_tavernsmith_vault.enc.'
+      : 'Custom Passphrase removed; vault is now encrypted with automatic AES-256-GCM key in ./Saves/_tavernsmith_vault.enc.',
   };
 }
 
@@ -482,7 +486,7 @@ export function getVaultStatusInfo(): VaultStatusInfo {
 }
 
 /**
- * Persists non-secret `savedProviderModels` separately and migrates any legacy plaintext keys once.
+ * Stores non-secret `savedProviderModels` in memory (persisted via `_tavernsmith_meta.json`).
  */
 export function saveProviderModelsMap(modelsMap: Record<string, string>): void {
   const clean: Record<string, string> = {};
@@ -491,45 +495,9 @@ export function saveProviderModelsMap(modelsMap: Record<string, string>): void {
       clean[k] = v.trim();
     }
   }
-  safeStorageSet(PROVIDER_MODELS_STORAGE_KEY, JSON.stringify(clean));
+  inMemoryProviderModels = clean;
 }
 
 export function loadProviderModelsMap(): Record<string, string> {
-  try {
-    const raw = safeStorageGet(PROVIDER_MODELS_STORAGE_KEY);
-    if (raw) {
-      const parsed = JSON.parse(raw);
-      if (parsed && typeof parsed === 'object') {
-        return { ...parsed };
-      }
-    }
-  } catch {
-    // Ignore parse error
-  }
-  return {};
-}
-
-function consumeAndMigrateLegacyPlaintextKeys(): Record<string, string> {
-  const migrated: Record<string, string> = {};
-  try {
-    const raw = safeStorageGet(LEGACY_PLAINTEXT_CREDENTIALS_KEY);
-    if (raw) {
-      const parsed = JSON.parse(raw);
-      if (parsed && typeof parsed.savedProviderKeys === 'object') {
-        for (const [k, v] of Object.entries(parsed.savedProviderKeys)) {
-          if (typeof v === 'string' && v.trim()) {
-            migrated[k] = v.trim();
-          }
-        }
-      }
-      if (parsed && typeof parsed.savedProviderModels === 'object') {
-        saveProviderModelsMap(parsed.savedProviderModels);
-      }
-      safeStorageRemove(LEGACY_PLAINTEXT_CREDENTIALS_KEY);
-    }
-  } catch {
-    safeStorageRemove(LEGACY_PLAINTEXT_CREDENTIALS_KEY);
-  }
-  inMemoryDecryptedKeys = { ...inMemoryDecryptedKeys, ...migrated };
-  return migrated;
+  return { ...inMemoryProviderModels };
 }

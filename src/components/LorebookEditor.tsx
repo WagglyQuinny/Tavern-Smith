@@ -108,10 +108,6 @@ export const LorebookEditor: React.FC = () => {
     settings,
     updateSettings,
     importFromFiles,
-    scanAndLoadSaveFolder,
-    reconnectNativeSaveFolder,
-    pendingReconnectFolderName,
-    isSyncingFolder,
     checkAndTriggerNameConflict,
   } = useStore();
 
@@ -381,18 +377,6 @@ export const LorebookEditor: React.FC = () => {
       };
     });
     setNewCustomTagInput('');
-  };
-
-  const handleRescanFolderFromRoster = async () => {
-    const res = await scanAndLoadSaveFolder({ silent: false });
-    setImportStatusBanner(res.summary);
-    window.setTimeout(() => setImportStatusBanner(null), 4000);
-  };
-
-  const handleReconnectFolderFromRoster = async () => {
-    const res = await reconnectNativeSaveFolder();
-    setImportStatusBanner(res.message);
-    window.setTimeout(() => setImportStatusBanner(null), 4000);
   };
 
   const handleBindToActiveCharacter = () => {
@@ -891,33 +875,6 @@ export const LorebookEditor: React.FC = () => {
               <span>Import JSON</span>
             </button>
           </div>
-
-          <button
-            type="button"
-            onClick={() => void handleRescanFolderFromRoster()}
-            disabled={isSyncingFolder}
-            className="theme-hover-outline flex w-full items-center justify-center gap-1.5 rounded-lg border border-slate-200 dark:border-zinc-800 bg-slate-50 dark:bg-zinc-900 px-2.5 py-1.5 text-[11px] font-semibold text-slate-700 dark:text-slate-200 cursor-pointer disabled:opacity-50"
-          >
-            <RefreshCw
-              className={`h-3 w-3 ${isSyncingFolder ? 'animate-spin' : ''}`}
-              style={{ color: 'var(--theme-accent)' }}
-            />
-            <span>🔄 Rescan Save Folder</span>
-          </button>
-
-          {pendingReconnectFolderName && (
-            <button
-              type="button"
-              onClick={() => void handleReconnectFolderFromRoster()}
-              style={{ borderColor: 'var(--theme-accent)' }}
-              className="theme-hover-outline flex w-full items-center justify-center gap-1.5 rounded-lg border bg-amber-500/15 px-2.5 py-1.5 text-[11px] font-semibold text-amber-800 dark:text-amber-200 cursor-pointer"
-            >
-              <FolderOpen className="h-3.5 w-3.5 shrink-0" />
-              <span className="truncate">
-                📁 Reconnect Save Folder ({pendingReconnectFolderName})
-              </span>
-            </button>
-          )}
           <input
             ref={lorebookFileInputRef}
             type="file"

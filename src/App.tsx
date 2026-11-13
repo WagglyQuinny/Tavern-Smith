@@ -54,14 +54,6 @@ class AppErrorBoundary extends React.Component<
   };
 
   handleHardResetView = (): void => {
-    try {
-      if (typeof window !== 'undefined' && window.localStorage) {
-        window.localStorage.removeItem('tavernsmith_store_v2');
-        window.localStorage.removeItem('tavernsmith_preferences_v1');
-      }
-    } catch {
-      // Ignore storage restriction
-    }
     purgeBrowserRuntimeCaches();
     this.setState({ hasError: false, errorMessage: '' });
     if (typeof window !== 'undefined') {

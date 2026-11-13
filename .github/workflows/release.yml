@@ -1,4 +1,4 @@
-name: Standalone Release Push & PWA Deploy
+name: Standalone Release Push & Portable Deploy
 
 on:
   push:
@@ -46,52 +46,585 @@ jobs:
               let html = fs.readFileSync(indexPath, "utf8");
               html = html.replace(/\s+crossorigin(?:="[^"]*")?/gi, "");
               fs.writeFileSync(indexPath, html, "utf8");
-              console.log("Stripped crossorigin attributes from dist/index.html for direct file:// compatibility.");
+              console.log("Stripped crossorigin attributes from dist/index.html.");
             }
           '
 
-      - name: Generate Non-Admin Standalone Desktop Launchers Inside dist/
+      - name: Generate Zero-Dependency Local Disk Servers (server.cjs + server.py) & Launchers Inside dist/
         run: |
+          cat << 'EOF' > dist/server.cjs
+          #!/usr/bin/env node
+          const http = require('http');
+          const fs = require('fs');
+          const path = require('path');
+
+          const PORT = Number(process.env.PORT || 4173);
+          const HOST = '127.0.0.1';
+          const ROOT_DIR = __dirname;
+          const DEFAULT_SAVES_REL = './Saves/';
+          const META_FILENAME = '_tavernsmith_meta.json';
+          const VAULT_FILENAME = '_tavernsmith_vault.enc';
+
+          const MIME_TYPES = {
+            '.html': 'text/html; charset=utf-8',
+            '.js': 'application/javascript; charset=utf-8',
+            '.mjs': 'application/javascript; charset=utf-8',
+            '.css': 'text/css; charset=utf-8',
+            '.json': 'application/json; charset=utf-8',
+            '.svg': 'image/svg+xml',
+            '.png': 'image/png',
+            '.jpg': 'image/jpeg',
+            '.jpeg': 'image/jpeg',
+            '.webp': 'image/webp',
+            '.ico': 'image/x-icon',
+          };
+
+          function sanitizeFileName(rawName, fallbackBase = 'Untitled') {
+            const trimmed = (rawName || '').trim().replace(/\.json$/i, '');
+            const safeBase =
+              trimmed
+                .replace(/[<>:"/\\|?*\x00-\x1F]/g, '_')
+                .replace(/\s+/g, '_')
+                .replace(/_+/g, '_')
+                .replace(/^_+|_+$/g, '') || fallbackBase;
+            return `${safeBase}.json`;
+          }
+
+          function resolveSavesDirectories(customSavesDir) {
+            const cleanCustom = (customSavesDir || '').trim();
+            const baseRel = cleanCustom || DEFAULT_SAVES_REL;
+            const rootDir = path.isAbsolute(baseRel)
+              ? baseRel
+              : path.resolve(ROOT_DIR, baseRel);
+            const charactersDir = path.join(rootDir, 'Characters');
+            const lorebooksDir = path.join(rootDir, 'Lorebooks');
+            const metaFilePath = path.join(rootDir, META_FILENAME);
+            const vaultFilePath = path.join(rootDir, VAULT_FILENAME);
+
+            fs.mkdirSync(rootDir, { recursive: true });
+            fs.mkdirSync(charactersDir, { recursive: true });
+            fs.mkdirSync(lorebooksDir, { recursive: true });
+
+            return {
+              savesPath: baseRel,
+              resolvedPath: rootDir,
+              charactersDir,
+              lorebooksDir,
+              metaFilePath,
+              vaultFilePath,
+            };
+          }
+
+          function scanDiskState(customSavesDir) {
+            const dirs = resolveSavesDirectories(customSavesDir);
+            const characters = [];
+            const lorebooks = [];
+
+            if (fs.existsSync(dirs.charactersDir)) {
+              const charFiles = fs
+                .readdirSync(dirs.charactersDir, { withFileTypes: true })
+                .filter((d) => d.isFile() && d.name.toLowerCase().endsWith('.json'))
+                .sort((a, b) => a.name.localeCompare(b.name));
+
+              for (const entry of charFiles) {
+                const fullPath = path.join(dirs.charactersDir, entry.name);
+                try {
+                  const content = fs.readFileSync(fullPath, 'utf-8');
+                  const stat = fs.statSync(fullPath);
+                  const parsed = JSON.parse(content);
+                  characters.push({
+                    fileName: entry.name,
+                    content,
+                    updatedAt: Math.round(stat.mtimeMs || Date.now()),
+                    sizeBytes: stat.size || Buffer.byteLength(content, 'utf-8'),
+                    parsed,
+                  });
+                } catch {
+                  // Ignore unreadable file
+                }
+              }
+            }
+
+            if (fs.existsSync(dirs.lorebooksDir)) {
+              const loreFiles = fs
+                .readdirSync(dirs.lorebooksDir, { withFileTypes: true })
+                .filter((d) => d.isFile() && d.name.toLowerCase().endsWith('.json'))
+                .sort((a, b) => a.name.localeCompare(b.name));
+
+              for (const entry of loreFiles) {
+                const fullPath = path.join(dirs.lorebooksDir, entry.name);
+                try {
+                  const content = fs.readFileSync(fullPath, 'utf-8');
+                  const stat = fs.statSync(fullPath);
+                  const parsed = JSON.parse(content);
+                  lorebooks.push({
+                    fileName: entry.name,
+                    content,
+                    updatedAt: Math.round(stat.mtimeMs || Date.now()),
+                    sizeBytes: stat.size || Buffer.byteLength(content, 'utf-8'),
+                    parsed,
+                  });
+                } catch {
+                  // Ignore unreadable file
+                }
+              }
+            }
+
+            let meta = null;
+            if (fs.existsSync(dirs.metaFilePath)) {
+              try {
+                const content = fs.readFileSync(dirs.metaFilePath, 'utf-8');
+                const stat = fs.statSync(dirs.metaFilePath);
+                const parsed = JSON.parse(content);
+                meta = {
+                  fileName: META_FILENAME,
+                  content,
+                  updatedAt: Math.round(stat.mtimeMs || Date.now()),
+                  sizeBytes: stat.size || Buffer.byteLength(content, 'utf-8'),
+                  parsed,
+                };
+              } catch {
+                meta = null;
+              }
+            }
+
+            let vaultEnc = null;
+            if (fs.existsSync(dirs.vaultFilePath)) {
+              try {
+                const rawVault = fs.readFileSync(dirs.vaultFilePath, 'utf-8').trim();
+                if (rawVault) vaultEnc = rawVault;
+              } catch {
+                vaultEnc = null;
+              }
+            }
+
+            return {
+              ok: true,
+              savesPath: dirs.savesPath,
+              resolvedPath: dirs.resolvedPath,
+              characters,
+              lorebooks,
+              meta,
+              vaultEnc,
+            };
+          }
+
+          function readRequestBody(req) {
+            return new Promise((resolve, reject) => {
+              const chunks = [];
+              req.on('data', (c) => chunks.push(Buffer.isBuffer(c) ? c : Buffer.from(c)));
+              req.on('end', () => resolve(Buffer.concat(chunks).toString('utf-8')));
+              req.on('error', reject);
+            });
+          }
+
+          function sendJson(res, status, payload) {
+            const body = JSON.stringify(payload);
+            res.statusCode = status;
+            res.setHeader('Content-Type', 'application/json; charset=utf-8');
+            res.setHeader('Cache-Control', 'no-store');
+            res.end(body);
+          }
+
+          // Ensure ./Saves/ exists on startup
+          resolveSavesDirectories(DEFAULT_SAVES_REL);
+
+          const server = http.createServer(async (req, res) => {
+            try {
+              const parsedUrl = new URL(req.url || '/', `http://${HOST}:${PORT}`);
+              const pathname = parsedUrl.pathname;
+
+              if (req.method === 'GET' && pathname === '/api/disk/state') {
+                const customDir = parsedUrl.searchParams.get('savesDir') || DEFAULT_SAVES_REL;
+                sendJson(res, 200, scanDiskState(customDir));
+                return;
+              }
+
+              if (req.method === 'POST' && pathname === '/api/disk/save') {
+                const rawBody = await readRequestBody(req);
+                const body = rawBody ? JSON.parse(rawBody) : {};
+                const dirs = resolveSavesDirectories(body.savesDir);
+
+                if (Array.isArray(body.characters)) {
+                  for (const item of body.characters) {
+                    if (!item || typeof item.content !== 'string') continue;
+                    const targetFile = sanitizeFileName(item.fileName || item.name || 'Character', 'Character');
+                    if (item.oldFileName) {
+                      const oldSafe = sanitizeFileName(item.oldFileName, '');
+                      if (oldSafe && oldSafe !== targetFile) {
+                        const oldFull = path.join(dirs.charactersDir, oldSafe);
+                        if (fs.existsSync(oldFull)) {
+                          try { fs.unlinkSync(oldFull); } catch {}
+                        }
+                      }
+                    }
+                    fs.writeFileSync(path.join(dirs.charactersDir, targetFile), item.content, 'utf-8');
+                  }
+                }
+
+                if (Array.isArray(body.lorebooks)) {
+                  for (const item of body.lorebooks) {
+                    if (!item || typeof item.content !== 'string') continue;
+                    const targetFile = sanitizeFileName(item.fileName || item.name || 'Lorebook', 'Lorebook');
+                    if (item.oldFileName) {
+                      const oldSafe = sanitizeFileName(item.oldFileName, '');
+                      if (oldSafe && oldSafe !== targetFile) {
+                        const oldFull = path.join(dirs.lorebooksDir, oldSafe);
+                        if (fs.existsSync(oldFull)) {
+                          try { fs.unlinkSync(oldFull); } catch {}
+                        }
+                      }
+                    }
+                    fs.writeFileSync(path.join(dirs.lorebooksDir, targetFile), item.content, 'utf-8');
+                  }
+                }
+
+                if (body.meta !== undefined && body.meta !== null) {
+                  const metaContent = typeof body.meta === 'string' ? body.meta : JSON.stringify(body.meta, null, 2);
+                  fs.writeFileSync(dirs.metaFilePath, metaContent, 'utf-8');
+                }
+
+                if (typeof body.vaultEnc === 'string') {
+                  if (body.vaultEnc.trim()) {
+                    fs.writeFileSync(dirs.vaultFilePath, body.vaultEnc.trim(), 'utf-8');
+                  } else if (fs.existsSync(dirs.vaultFilePath)) {
+                    try { fs.unlinkSync(dirs.vaultFilePath); } catch {}
+                  }
+                }
+
+                sendJson(res, 200, scanDiskState(body.savesDir));
+                return;
+              }
+
+              if (req.method === 'POST' && pathname === '/api/disk/delete') {
+                const rawBody = await readRequestBody(req);
+                const body = rawBody ? JSON.parse(rawBody) : {};
+                const dirs = resolveSavesDirectories(body.savesDir);
+                const kind = body.kind === 'lorebook' ? 'lorebook' : 'character';
+                const targetFile = path.basename(String(body.fileName || '')).trim();
+                if (targetFile && targetFile.toLowerCase().endsWith('.json')) {
+                  const folderPath = kind === 'lorebook' ? dirs.lorebooksDir : dirs.charactersDir;
+                  const fullPath = path.join(folderPath, targetFile);
+                  if (fs.existsSync(fullPath)) {
+                    fs.unlinkSync(fullPath);
+                  }
+                }
+                sendJson(res, 200, scanDiskState(body.savesDir));
+                return;
+              }
+
+              // Static file serving from dist/
+              let relPath = decodeURIComponent(pathname === '/' ? '/index.html' : pathname);
+              relPath = relPath.replace(/^\/+/, '');
+              let fullStaticPath = path.resolve(ROOT_DIR, relPath);
+              if (!fullStaticPath.startsWith(ROOT_DIR) || !fs.existsSync(fullStaticPath) || fs.statSync(fullStaticPath).isDirectory()) {
+                fullStaticPath = path.join(ROOT_DIR, 'index.html');
+              }
+
+              const ext = path.extname(fullStaticPath).toLowerCase();
+              res.statusCode = 200;
+              res.setHeader('Content-Type', MIME_TYPES[ext] || 'application/octet-stream');
+              res.setHeader('Cache-Control', 'no-store');
+              fs.createReadStream(fullStaticPath).pipe(res);
+            } catch (err) {
+              sendJson(res, 500, { ok: false, error: err && err.message ? err.message : 'Server error' });
+            }
+          });
+
+          server.listen(PORT, HOST, () => {
+            console.log(`TavernSmith local disk server running at http://${HOST}:${PORT}`);
+            console.log(`Direct disk storage active in: ${path.resolve(ROOT_DIR, DEFAULT_SAVES_REL)}`);
+          });
+          EOF
+
+          cat << 'EOF' > dist/server.py
+          #!/usr/bin/env python3
+          import http.server
+          import json
+          import os
+          import re
+          import time
+          import urllib.parse
+
+          PORT = int(os.environ.get("PORT", "4173"))
+          HOST = "127.0.0.1"
+          ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
+          DEFAULT_SAVES_REL = "./Saves/"
+          META_FILENAME = "_tavernsmith_meta.json"
+          VAULT_FILENAME = "_tavernsmith_vault.enc"
+
+          def sanitize_file_name(raw_name, fallback_base="Untitled"):
+              trimmed = re.sub(r"\.json$", "", (raw_name or "").strip(), flags=re.IGNORECASE)
+              safe_base = re.sub(r'[<>:"/\\|?*\x00-\x1F]', "_", trimmed)
+              safe_base = re.sub(r"\s+", "_", safe_base)
+              safe_base = re.sub(r"_+", "_", safe_base).strip("_") or fallback_base
+              return f"{safe_base}.json"
+
+          def resolve_saves_directories(custom_saves_dir=None):
+              clean_custom = (custom_saves_dir or "").strip() or DEFAULT_SAVES_REL
+              root_dir = clean_custom if os.path.isabs(clean_custom) else os.path.abspath(os.path.join(ROOT_DIR, clean_custom))
+              characters_dir = os.path.join(root_dir, "Characters")
+              lorebooks_dir = os.path.join(root_dir, "Lorebooks")
+              meta_file_path = os.path.join(root_dir, META_FILENAME)
+              vault_file_path = os.path.join(root_dir, VAULT_FILENAME)
+
+              os.makedirs(root_dir, exist_ok=True)
+              os.makedirs(characters_dir, exist_ok=True)
+              os.makedirs(lorebooks_dir, exist_ok=True)
+
+              return {
+                  "savesPath": clean_custom,
+                  "resolvedPath": root_dir,
+                  "charactersDir": characters_dir,
+                  "lorebooksDir": lorebooks_dir,
+                  "metaFilePath": meta_file_path,
+                  "vaultFilePath": vault_file_path,
+              }
+
+          def scan_disk_state(custom_saves_dir=None):
+              dirs = resolve_saves_directories(custom_saves_dir)
+              characters = []
+              lorebooks = []
+
+              if os.path.isdir(dirs["charactersDir"]):
+                  for name in sorted(os.listdir(dirs["charactersDir"])):
+                      if not name.lower().endswith(".json"):
+                          continue
+                      full_path = os.path.join(dirs["charactersDir"], name)
+                      if not os.path.isfile(full_path):
+                          continue
+                      try:
+                          with open(full_path, "r", encoding="utf-8") as f:
+                              content = f.read()
+                          stat = os.stat(full_path)
+                          parsed = json.loads(content)
+                          characters.append({
+                              "fileName": name,
+                              "content": content,
+                              "updatedAt": int(stat.st_mtime * 1000),
+                              "sizeBytes": stat.st_size,
+                              "parsed": parsed,
+                          })
+                      except Exception:
+                          pass
+
+              if os.path.isdir(dirs["lorebooksDir"]):
+                  for name in sorted(os.listdir(dirs["lorebooksDir"])):
+                      if not name.lower().endswith(".json"):
+                          continue
+                      full_path = os.path.join(dirs["lorebooksDir"], name)
+                      if not os.path.isfile(full_path):
+                          continue
+                      try:
+                          with open(full_path, "r", encoding="utf-8") as f:
+                              content = f.read()
+                          stat = os.stat(full_path)
+                          parsed = json.loads(content)
+                          lorebooks.append({
+                              "fileName": name,
+                              "content": content,
+                              "updatedAt": int(stat.st_mtime * 1000),
+                              "sizeBytes": stat.st_size,
+                              "parsed": parsed,
+                          })
+                      except Exception:
+                          pass
+
+              meta = None
+              if os.path.isfile(dirs["metaFilePath"]):
+                  try:
+                      with open(dirs["metaFilePath"], "r", encoding="utf-8") as f:
+                          content = f.read()
+                      stat = os.stat(dirs["metaFilePath"])
+                      parsed = json.loads(content)
+                      meta = {
+                          "fileName": META_FILENAME,
+                          "content": content,
+                          "updatedAt": int(stat.st_mtime * 1000),
+                          "sizeBytes": stat.st_size,
+                          "parsed": parsed,
+                      }
+                  except Exception:
+                      meta = None
+
+              vault_enc = None
+              if os.path.isfile(dirs["vaultFilePath"]):
+                  try:
+                      with open(dirs["vaultFilePath"], "r", encoding="utf-8") as f:
+                          raw_vault = f.read().strip()
+                      if raw_vault:
+                          vault_enc = raw_vault
+                  except Exception:
+                      vault_enc = None
+
+              return {
+                  "ok": True,
+                  "savesPath": dirs["savesPath"],
+                  "resolvedPath": dirs["resolvedPath"],
+                  "characters": characters,
+                  "lorebooks": lorebooks,
+                  "meta": meta,
+                  "vaultEnc": vault_enc,
+              }
+
+          resolve_saves_directories(DEFAULT_SAVES_REL)
+
+          class TavernSmithHandler(http.server.SimpleHTTPRequestHandler):
+              def __init__(self, *args, **kwargs):
+                  super().__init__(*args, directory=ROOT_DIR, **kwargs)
+
+              def end_headers(self):
+                  self.send_header("Cache-Control", "no-store")
+                  super().end_headers()
+
+              def send_json(self, status, payload):
+                  body = json.dumps(payload).encode("utf-8")
+                  self.send_response(status)
+                  self.send_header("Content-Type", "application/json; charset=utf-8")
+                  self.send_header("Content-Length", str(len(body)))
+                  self.end_headers()
+                  self.wfile.write(body)
+
+              def do_GET(self):
+                  parsed_url = urllib.parse.urlparse(self.path)
+                  if parsed_url.path == "/api/disk/state":
+                      qs = urllib.parse.parse_qs(parsed_url.query)
+                      custom_dir = qs.get("savesDir", [DEFAULT_SAVES_REL])[0]
+                      self.send_json(200, scan_disk_state(custom_dir))
+                      return
+                  return super().do_GET()
+
+              def do_POST(self):
+                  parsed_url = urllib.parse.urlparse(self.path)
+                  length = int(self.headers.get("Content-Length", "0"))
+                  raw_body = self.rfile.read(length).decode("utf-8") if length > 0 else "{}"
+                  body = json.loads(raw_body or "{}")
+
+                  if parsed_url.path == "/api/disk/save":
+                      dirs = resolve_saves_directories(body.get("savesDir"))
+                      for item in body.get("characters") or []:
+                          if not isinstance(item, dict) or not isinstance(item.get("content"), str):
+                              continue
+                          target_file = sanitize_file_name(item.get("fileName") or item.get("name") or "Character", "Character")
+                          old_name = item.get("oldFileName")
+                          if old_name:
+                              old_safe = sanitize_file_name(old_name, "")
+                              if old_safe and old_safe != target_file:
+                                  old_full = os.path.join(dirs["charactersDir"], old_safe)
+                                  if os.path.isfile(old_full):
+                                      try:
+                                          os.unlink(old_full)
+                                      except Exception:
+                                          pass
+                          with open(os.path.join(dirs["charactersDir"], target_file), "w", encoding="utf-8") as f:
+                              f.write(item["content"])
+
+                      for item in body.get("lorebooks") or []:
+                          if not isinstance(item, dict) or not isinstance(item.get("content"), str):
+                              continue
+                          target_file = sanitize_file_name(item.get("fileName") or item.get("name") or "Lorebook", "Lorebook")
+                          old_name = item.get("oldFileName")
+                          if old_name:
+                              old_safe = sanitize_file_name(old_name, "")
+                              if old_safe and old_safe != target_file:
+                                  old_full = os.path.join(dirs["lorebooksDir"], old_safe)
+                                  if os.path.isfile(old_full):
+                                      try:
+                                          os.unlink(old_full)
+                                      except Exception:
+                                          pass
+                          with open(os.path.join(dirs["lorebooksDir"], target_file), "w", encoding="utf-8") as f:
+                              f.write(item["content"])
+
+                      if body.get("meta") is not None:
+                          meta_val = body["meta"]
+                          meta_content = meta_val if isinstance(meta_val, str) else json.dumps(meta_val, indent=2)
+                          with open(dirs["metaFilePath"], "w", encoding="utf-8") as f:
+                              f.write(meta_content)
+
+                      vault_enc = body.get("vaultEnc")
+                      if isinstance(vault_enc, str):
+                          if vault_enc.strip():
+                              with open(dirs["vaultFilePath"], "w", encoding="utf-8") as f:
+                                  f.write(vault_enc.strip())
+                          elif os.path.isfile(dirs["vaultFilePath"]):
+                              try:
+                                  os.unlink(dirs["vaultFilePath"])
+                              except Exception:
+                                  pass
+
+                      self.send_json(200, scan_disk_state(body.get("savesDir")))
+                      return
+
+                  if parsed_url.path == "/api/disk/delete":
+                      dirs = resolve_saves_directories(body.get("savesDir"))
+                      kind = "lorebook" if body.get("kind") == "lorebook" else "character"
+                      target_file = os.path.basename(str(body.get("fileName") or "")).strip()
+                      if target_file and target_file.lower().endswith(".json"):
+                          folder_path = dirs["lorebooksDir"] if kind == "lorebook" else dirs["charactersDir"]
+                          full_path = os.path.join(folder_path, target_file)
+                          if os.path.isfile(full_path):
+                              try:
+                                  os.unlink(full_path)
+                              except Exception:
+                                  pass
+                      self.send_json(200, scan_disk_state(body.get("savesDir")))
+                      return
+
+                  self.send_json(404, {"ok": False, "error": "Not found"})
+
+          if __name__ == "__main__":
+              print(f"TavernSmith local disk server running at http://{HOST}:{PORT}")
+              print(f"Direct disk storage active in: {os.path.abspath(os.path.join(ROOT_DIR, DEFAULT_SAVES_REL))}")
+              with http.server.ThreadingHTTPServer((HOST, PORT), TavernSmithHandler) as httpd:
+                  httpd.serve_forever()
+          EOF
+
+          chmod +x dist/server.cjs dist/server.py
+
           cat << 'EOF' > dist/Launch-TavernSmith-Windows.bat
           @echo off
           cd /d "%~dp0"
           setlocal
-          title TavernSmith Standalone Launcher (Standard Non-Admin Mode)
+          title TavernSmith Standalone Launcher (Direct ./Saves/ Disk Mode)
           set PORT=4173
           set URL=http://127.0.0.1:%PORT%/?nocache=%RANDOM%
 
+          if not exist "Saves\Characters" mkdir "Saves\Characters"
+          if not exist "Saves\Lorebooks" mkdir "Saves\Lorebooks"
+
           echo ===================================================
           echo   TavernSmith - SillyTavern V2/V3 Character IDE
-          echo   Standard User Launcher (No Admin Required)
+          echo   Direct Local Disk Storage: .\Saves\
           echo ===================================================
           echo.
 
+          where node >nul 2>nul
+          if %ERRORLEVEL% EQU 0 (
+            echo Starting TavernSmith Local Disk Server via Node.js on %URL% ...
+            start "" msedge --app="%URL%" 2>nul || start "" chrome --app="%URL%" 2>nul || start "" "%URL%"
+            node server.cjs
+            goto :eof
+          )
+
           where python >nul 2>nul
           if %ERRORLEVEL% EQU 0 (
-            echo Starting local TavernSmith server via Python on %URL% ...
+            echo Starting TavernSmith Local Disk Server via Python on %URL% ...
             start "" msedge --app="%URL%" 2>nul || start "" chrome --app="%URL%" 2>nul || start "" "%URL%"
-            python -m http.server %PORT% --bind 127.0.0.1
+            python server.py
             goto :eof
           )
 
           where py >nul 2>nul
           if %ERRORLEVEL% EQU 0 (
-            echo Starting local TavernSmith server via Python Launcher on %URL% ...
+            echo Starting TavernSmith Local Disk Server via Python Launcher on %URL% ...
             start "" msedge --app="%URL%" 2>nul || start "" chrome --app="%URL%" 2>nul || start "" "%URL%"
-            py -3 -m http.server %PORT% --bind 127.0.0.1
+            py -3 server.py
             goto :eof
           )
 
-          where npx >nul 2>nul
-          if %ERRORLEVEL% EQU 0 (
-            echo Starting local TavernSmith server via Node.js on %URL% ...
-            start "" msedge --app="%URL%" 2>nul || start "" chrome --app="%URL%" 2>nul || start "" "%URL%"
-            npx --yes serve -l tcp://127.0.0.1:%PORT%
-            goto :eof
-          )
-
-          echo Opening TavernSmith directly in standalone app window (No Admin required)...
-          start "" msedge --app="file:///%~dp0index.html?nocache=%RANDOM%" --allow-file-access-from-files 2>nul || start "" chrome --app="file:///%~dp0index.html?nocache=%RANDOM%" --allow-file-access-from-files 2>nul || start "" "%~dp0index.html"
+          echo ERROR: Please install Node.js (https://nodejs.org) or Python 3 (https://python.org) to run the local ./Saves/ disk server.
+          pause
           EOF
 
           cat << 'EOF' > dist/Launch-TavernSmith-Mac-Linux.command
@@ -100,9 +633,11 @@ jobs:
           PORT=4173
           URL="http://127.0.0.1:${PORT}/?nocache=$(date +%s)"
 
+          mkdir -p "./Saves/Characters" "./Saves/Lorebooks"
+
           echo "==================================================="
           echo "  TavernSmith — SillyTavern V2/V3 Character IDE"
-          echo "  Universal Launcher (macOS Intel/ARM & Linux)"
+          echo "  Direct Local Disk Storage: ./Saves/"
           echo "==================================================="
 
           open_url() {
@@ -113,21 +648,20 @@ jobs:
             fi
           }
 
-          if command -v python3 >/dev/null 2>&1; then
-            echo "Starting local TavernSmith server on ${URL} (Press Ctrl+C to stop)..."
+          if command -v node >/dev/null 2>&1; then
+            echo "Starting TavernSmith Local Disk Server via Node on ${URL} (Press Ctrl+C to stop)..."
             (sleep 1 && open_url "${URL}") &
-            python3 -m http.server "${PORT}" --bind 127.0.0.1
+            node ./server.cjs
+          elif command -v python3 >/dev/null 2>&1; then
+            echo "Starting TavernSmith Local Disk Server via Python 3 on ${URL} (Press Ctrl+C to stop)..."
+            (sleep 1 && open_url "${URL}") &
+            python3 ./server.py
           elif command -v python >/dev/null 2>&1; then
-            echo "Starting local TavernSmith server on ${URL} (Press Ctrl+C to stop)..."
+            echo "Starting TavernSmith Local Disk Server via Python on ${URL} (Press Ctrl+C to stop)..."
             (sleep 1 && open_url "${URL}") &
-            python -m http.server "${PORT}" --bind 127.0.0.1
-          elif command -v npx >/dev/null 2>&1; then
-            echo "Starting local TavernSmith server via Node on ${URL} (Press Ctrl+C to stop)..."
-            (sleep 2 && open_url "${URL}") &
-            npx --yes serve -l "tcp://127.0.0.1:${PORT}"
+            python ./server.py
           else
-            echo "Opening index.html directly in your default browser..."
-            open_url "./index.html"
+            echo "ERROR: Please install Node.js or Python 3 to run the local ./Saves/ disk server."
           fi
           EOF
 
@@ -136,8 +670,12 @@ jobs:
           cat << 'EOF' > dist/README-PORTABLE.txt
           TavernSmith — Portable Ready-to-Run Application
           ===============================================
-          Compatible with Windows (x64/ARM64), macOS (Intel x64 & Apple Silicon M1/M2/M3/M4),
-          Linux, iOS/iPadOS, and Android. Runs as a standard user with ZERO Administrator requirements.
+          100% of your Characters, Lorebooks, Custom Tags, Context Themes, Settings, and
+          AES-256-GCM Encrypted API Keys are stored directly on disk in `./Saves/`:
+            - ./Saves/Characters/
+            - ./Saves/Lorebooks/
+            - ./Saves/_tavernsmith_meta.json
+            - ./Saves/_tavernsmith_vault.enc
 
           1. WINDOWS:
              Double-click "Launch-TavernSmith-Windows.bat" (No Administrator privileges required).
@@ -145,11 +683,6 @@ jobs:
           2. macOS (Intel & Apple Silicon ARM) / LINUX:
              Double-click "Launch-TavernSmith-Mac-Linux.command"
              (or run `./Launch-TavernSmith-Mac-Linux.command` in Terminal).
-
-          3. INSTALL AS NATIVE-LIKE PWA (Desktop, Android, iOS/iPadOS):
-             When opened in Chrome, Edge, Brave, or Safari, click "Install App" in the address bar
-             (or Share -> "Add to Home Screen" on iOS/iPadOS) to run TavernSmith in its own
-             dedicated standalone application window.
           EOF
 
       - name: Package ONLY Compiled Production App (dist/) into TavernSmith-App-Portable.zip
@@ -175,7 +708,7 @@ jobs:
           if (firstReleaseSection) {
             notes = firstReleaseSection.trim();
           } else {
-            notes = `## TavernSmith v${pkg.version}\n\nUniversal Portable Release for Windows, macOS (x64 & Apple Silicon ARM), Linux, iOS, and Android.`;
+            notes = `## TavernSmith v${pkg.version}\n\nUniversal Portable Release for Windows, macOS (x64 & Apple Silicon ARM), and Linux with direct ./Saves/ local disk persistence.`;
           }
 
           fs.writeFileSync('RELEASE_NOTES.md', downloadCallout + notes + '\n', 'utf8');

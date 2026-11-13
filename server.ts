@@ -4,6 +4,11 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { createServer as createViteServer } from 'vite';
 import { GoogleGenAI, GenerateContentResponse } from '@google/genai';
+import {
+  scanSavesDirectoryOnDisk,
+  saveToSavesDirectoryOnDisk,
+  deleteFromSavesDirectoryOnDisk,
+} from './vite.config';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -116,7 +121,54 @@ async function startServer() {
   const app = express();
   const PORT = Number(process.env.PORT) || 3000;
 
-  app.use(express.json({ limit: '10mb' }));
+  // Ensure ./Saves/, ./Saves/Characters/, and ./Saves/Lorebooks/ exist on server startup
+  scanSavesDirectoryOnDisk();
+
+  app.use(express.json({ limit: '50mb' }));
+
+  // GET /api/disk/state — Auto-scan ./Saves/Characters/, ./Saves/Lorebooks/, _tavernsmith_meta.json, _tavernsmith_vault.enc
+  app.get('/api/disk/state', (req, res) => {
+    try {
+      const customSavePath =
+        typeof req.query.customSavePath === 'string'
+          ? req.query.customSavePath
+          : undefined;
+      res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+      res.json(scanSavesDirectoryOnDisk(customSavePath));
+    } catch (err: unknown) {
+      res.status(500).json({
+        ok: false,
+        error: err instanceof Error ? err.message : 'Failed to scan ./Saves/',
+      });
+    }
+  });
+
+  // POST /api/disk/save — Overwrite files in ./Saves/ and immediately re-scan disk
+  app.post('/api/disk/save', (req, res) => {
+    try {
+      res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+      res.json(saveToSavesDirectoryOnDisk(req.body || {}));
+    } catch (err: unknown) {
+      res.status(500).json({
+        ok: false,
+        error: err instanceof Error ? err.message : 'Failed to save to ./Saves/',
+      });
+    }
+  });
+
+  // POST /api/disk/delete — Physically delete file from ./Saves/Characters/ or ./Saves/Lorebooks/ and re-scan
+  app.post('/api/disk/delete', (req, res) => {
+    try {
+      res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+      res.json(deleteFromSavesDirectoryOnDisk(req.body || {}));
+    } catch (err: unknown) {
+      res.status(500).json({
+        ok: false,
+        error:
+          err instanceof Error ? err.message : 'Failed to delete from ./Saves/',
+      });
+    }
+  });
 
   // GET /api/gemini/models — Returns supported Gemini models
   app.get('/api/gemini/models', async (req, res) => {

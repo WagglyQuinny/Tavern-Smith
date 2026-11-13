@@ -13,6 +13,7 @@ import {
   AIPresetId,
   CharacterCardData,
   ContextTheme,
+  DiskStateResponse,
   Lorebook,
   NameConflictRequest,
   SavedFileEntry,
@@ -26,74 +27,32 @@ import {
 import { calculateCardTokenBreakdown } from '../utils/tokenCounter';
 import {
   importCardFromFile,
+  normalizeLorebookObject,
   parseImportedJsonString,
   sanitizeFilename,
   serializeCharacterCard,
+  serializeLorebookCard,
   triggerBrowserDownload,
 } from '../utils/cardIO';
-import {
-  clearDirectoryHandleFromIndexedDB,
-  loadDirectoryHandleFromIndexedDB,
-  queryDirectoryHandlePermission,
-  requestDirectoryHandlePermission,
-  saveDirectoryHandleToIndexedDB,
-  StoredDirectoryRecord,
-} from '../utils/folderDb';
 import { AI_BACKEND_PRESETS, getProviderKeyId } from '../services/aiService';
 import {
   decryptProviderKeysFromVault,
   encryptAndSaveProviderKeys,
   getInMemoryDecryptedKeys,
   loadProviderModelsMap,
+  readEncryptedVaultEnvelope,
+  registerVaultDiskFlushCallback,
   saveProviderModelsMap,
+  VAULT_FILENAME,
 } from '../utils/cryptoVault';
 
-const PREFERENCES_STORAGE_KEY = 'tavernsmith_preferences_v1';
-const SAVE_FOLDER_FILES_STORAGE_KEY = 'tavernsmith_save_folder_files_v1';
-const PROVIDER_CREDENTIALS_STORAGE_KEY = 'tavernsmith_provider_credentials_v1';
-const LEGACY_STORAGE_KEYS = [
-  'tavernsmith_store_v2',
-  'tavernsmith_ide_state_v2',
-  'tavernsmith_ide_state_v1',
-  'tavernsmith_store_v1',
-];
+export { VAULT_FILENAME };
 export const META_FILENAME = '_tavernsmith_meta.json';
-export const UNIFIED_INTERNAL_ROOT = '/TavernSmith_Saves/';
+export const UNIFIED_INTERNAL_ROOT = './Saves/';
 
 /**
- * Safe localStorage wrappers that never throw on `file://` origins, strict privacy modes,
- * or non-admin standard user accounts.
- */
-function safeLocalStorageGet(key: string): string | null {
-  try {
-    if (typeof window === 'undefined' || !window.localStorage) return null;
-    return window.localStorage.getItem(key);
-  } catch {
-    return null;
-  }
-}
-
-function safeLocalStorageSet(key: string, value: string): void {
-  try {
-    if (typeof window === 'undefined' || !window.localStorage) return;
-    window.localStorage.setItem(key, value);
-  } catch {
-    // Ignore quota or SecurityError in restricted origins
-  }
-}
-
-function safeLocalStorageRemove(key: string): void {
-  try {
-    if (typeof window === 'undefined' || !window.localStorage) return;
-    window.localStorage.removeItem(key);
-  } catch {
-    // Ignore SecurityError in restricted origins
-  }
-}
-
-/**
- * Purges all registered Service Workers and browser CacheStorage entries
- * so the browser NEVER caches stale HTML, JS, CSS, or tag schemas across sessions.
+ * Purges any previously registered Service Workers and browser CacheStorage entries
+ * so the browser NEVER caches stale assets.
  */
 export function purgeBrowserRuntimeCaches(): void {
   try {
@@ -1918,8 +1877,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
 };
 
 /**
- * Strips plaintext API keys from `AIBackendConfig` before writing preferences to `localStorage`.
- * All API keys are stored exclusively in the AES-256-GCM encrypted vault (`_tavernsmith_vault_enc`).
+ * Strips plaintext API keys from `AIBackendConfig` before writing non-secret settings to `_tavernsmith_meta.json`.
+ * All API keys are stored exclusively in the AES-256-GCM encrypted vault (`./Saves/_tavernsmith_vault.enc`).
  */
 function stripApiKeysForStorage(config: AIBackendConfig): AIBackendConfig {
   return {
@@ -1929,49 +1888,16 @@ function stripApiKeysForStorage(config: AIBackendConfig): AIBackendConfig {
   };
 }
 
-/**
- * Loads per-provider models and in-memory decrypted keys from the AES-256-GCM vault,
- * and migrates any legacy plaintext credentials into `_tavernsmith_vault_enc`.
- */
-function loadPersistedProviderCredentials(): {
-  savedProviderKeys: Record<string, string>;
-  savedProviderModels: Record<string, string>;
-} {
-  const modelsMap = loadProviderModelsMap();
-  const keysMap = getInMemoryDecryptedKeys();
-  try {
-    const raw = safeLocalStorageGet(PROVIDER_CREDENTIALS_STORAGE_KEY);
-    if (raw) {
-      const parsed = JSON.parse(raw);
-      if (parsed && typeof parsed.savedProviderModels === 'object') {
-        Object.assign(modelsMap, parsed.savedProviderModels);
-        saveProviderModelsMap(modelsMap);
-      }
-      if (parsed && typeof parsed.savedProviderKeys === 'object') {
-        Object.assign(keysMap, parsed.savedProviderKeys);
-        void encryptAndSaveProviderKeys(keysMap);
-      }
-      safeLocalStorageRemove(PROVIDER_CREDENTIALS_STORAGE_KEY);
-    }
-  } catch {
-    // Ignore parse errors
-  }
-  return { savedProviderKeys: keysMap, savedProviderModels: modelsMap };
-}
-
 function savePersistedProviderCredentials(
   savedProviderKeys: Record<string, string>,
   savedProviderModels: Record<string, string>
 ): void {
   saveProviderModelsMap(savedProviderModels);
-  safeLocalStorageRemove(PROVIDER_CREDENTIALS_STORAGE_KEY);
   void encryptAndSaveProviderKeys(savedProviderKeys);
 }
 
 /**
  * Synchronizes `savedProviderKeys` and `savedProviderModels` whenever `AIBackendConfig` updates.
- * - When `preset` changes, saves the previous provider's key/model and loads the newly selected provider's saved key/model.
- * - When `apiKey` or `modelName` changes on the active preset, updates the map for both `preset` and `getProviderKeyId(preset)`.
  */
 export function syncAIConfigProviderCredentials(
   prev: AIBackendConfig,
@@ -1986,7 +1912,6 @@ export function syncAIConfigProviderCredentials(
     ...(next.savedProviderModels || {}),
   };
 
-  // Always record previous preset's state before switching
   const prevProviderId = getProviderKeyId(prev.preset);
   if (prev.apiKey !== undefined) {
     keysMap[prevProviderId] = prev.apiKey;
@@ -2001,7 +1926,6 @@ export function syncAIConfigProviderCredentials(
   const presetMeta = AI_BACKEND_PRESETS.find((p) => p.id === next.preset);
 
   if (next.preset !== prev.preset) {
-    // Switching between AI backends -> automatically restore saved key & model for target provider!
     const restoredKey =
       keysMap[nextProviderId] ?? keysMap[next.preset] ?? '';
     const restoredModel =
@@ -2026,7 +1950,6 @@ export function syncAIConfigProviderCredentials(
     };
   }
 
-  // Updating apiKey or modelName on the same preset -> persist immediately
   keysMap[nextProviderId] = next.apiKey;
   keysMap[next.preset] = next.apiKey;
   if (next.modelName) {
@@ -2103,8 +2026,8 @@ export function formatSafeTimestamp(
 }
 
 /**
- * Builds the complete unified file tree (`Characters/`, `Lorebooks/`, and root `_tavernsmith_meta.json`)
- * from the active workspace state so the Storage Manager never shows "0 saved files".
+ * Builds the file tree representation (`Characters/`, `Lorebooks/`, `_tavernsmith_meta.json`, `_tavernsmith_vault.enc`)
+ * when constructing an export bundle or previewing disk files.
  */
 export function buildUnifiedSavedFiles(
   characters: CharacterCardData[],
@@ -2118,7 +2041,6 @@ export function buildUnifiedSavedFiles(
   const nowIso = timestampIso || new Date().toISOString();
   const entries: SavedFileEntry[] = [];
 
-  // 1. Characters/ subfolder
   for (const char of characters) {
     const fileName = `${sanitizeFilename(char.name)}.json`;
     const charJson = JSON.stringify(
@@ -2144,24 +2066,9 @@ export function buildUnifiedSavedFiles(
     });
   }
 
-  // 2. Lorebooks/ subfolder
   for (const lb of lorebooks) {
     const fileName = `${sanitizeFilename(lb.name)}.json`;
-    const loreJson = JSON.stringify(
-      {
-        id: lb.id,
-        name: lb.name,
-        description: lb.description,
-        scan_depth: lb.scan_depth,
-        token_budget: lb.token_budget,
-        recursive_scanning: lb.recursive_scanning,
-        modification_date: lb.modification_date,
-        entries: lb.entries,
-        tags: lb.tags || [],
-      },
-      null,
-      2
-    );
+    const loreJson = JSON.stringify(serializeLorebookCard(lb), null, 2);
     const updatedIso = lb.modification_date
       ? new Date(
           lb.modification_date < 10_000_000_000
@@ -2180,7 +2087,6 @@ export function buildUnifiedSavedFiles(
     });
   }
 
-  // 3. Root _tavernsmith_meta.json (stores ONLY custom user tags + themes, never built-in DEFAULT_TAGS)
   const customTagsOnly = extractCustomUserTags(tags);
   const metaPayload: TavernSmithMetaPayload = {
     schema: 'tavernsmith_meta_v1',
@@ -2200,103 +2106,21 @@ export function buildUnifiedSavedFiles(
     content: metaJson,
   });
 
-  return entries;
-}
-
-interface PersistedPreferencesState {
-  activeCharacterId: string;
-  activeLorebookId: string;
-  aiConfig: AIBackendConfig;
-  settings: AppSettings;
-  saveLogs: SaveLogEntry[];
-  lastSavedAt: string | null;
-}
-
-interface InitialWorkspaceBootstrap {
-  characters: CharacterCardData[];
-  activeCharacterId: string;
-  lorebooks: Lorebook[];
-  activeLorebookId: string;
-  themes: ContextTheme[];
-  tags: TagDefinition[];
-  aiConfig: AIBackendConfig;
-  settings: AppSettings;
-  savedFiles: SavedFileEntry[];
-  saveLogs: SaveLogEntry[];
-  lastSavedAt: string | null;
-}
-
-/**
- * Re-reads Characters (`Characters/*.json`), Lorebooks (`Lorebooks/*.json`), and user custom
- * metadata (`_tavernsmith_meta.json`) directly from the Save Folder file entries.
- * Always loads `DEFAULT_TAGS` fresh from source code and merges only user-created custom tags on top.
- */
-function reconstructWorkspaceFromSaveFiles(files: SavedFileEntry[]): {
-  characters: CharacterCardData[];
-  lorebooks: Lorebook[];
-  themes: ContextTheme[];
-  tags: TagDefinition[];
-  activeThemeIdFromMeta?: string;
-} {
-  const loadedCharacters: CharacterCardData[] = [];
-  const loadedLorebooks: Lorebook[] = [];
-  let loadedThemes: ContextTheme[] = DEFAULT_CONTEXT_THEMES;
-  let customMetaTags: TagDefinition[] = [];
-  let activeThemeIdFromMeta: string | undefined;
-
-  for (const entry of files) {
-    if (!entry || typeof entry.content !== 'string') continue;
-    try {
-      if (entry.kind === 'meta' || entry.fileName === META_FILENAME) {
-        const parsedMeta = JSON.parse(
-          entry.content
-        ) as Partial<TavernSmithMetaPayload>;
-        if (
-          Array.isArray(parsedMeta.contextThemes) &&
-          parsedMeta.contextThemes.length > 0
-        ) {
-          const mapByName = new Map<string, ContextTheme>();
-          for (const t of DEFAULT_CONTEXT_THEMES) {
-            mapByName.set(t.name.trim().toLowerCase(), t);
-          }
-          for (const incoming of parsedMeta.contextThemes) {
-            if (incoming && incoming.name) {
-              mapByName.set(incoming.name.trim().toLowerCase(), incoming);
-            }
-          }
-          loadedThemes = Array.from(mapByName.values());
-        }
-        if (Array.isArray(parsedMeta.tags)) {
-          customMetaTags = parsedMeta.tags;
-        }
-        if (parsedMeta.activeThemeId) {
-          activeThemeIdFromMeta = parsedMeta.activeThemeId;
-        }
-        continue;
-      }
-
-      const parsedAsset = parseImportedJsonString(
-        entry.content,
-        undefined,
-        entry.fileName
-      );
-      if (parsedAsset.kind === 'character') {
-        loadedCharacters.push(parsedAsset.character);
-      } else if (parsedAsset.kind === 'lorebook') {
-        loadedLorebooks.push(parsedAsset.lorebook);
-      }
-    } catch {
-      // Ignore malformed file entry
-    }
+  const vaultEnvelope = readEncryptedVaultEnvelope();
+  if (vaultEnvelope) {
+    const vaultJson = JSON.stringify(vaultEnvelope, null, 2);
+    entries.push({
+      id: `/${VAULT_FILENAME}`,
+      folderPath: '/',
+      fileName: VAULT_FILENAME,
+      kind: 'vault',
+      sizeBytes: new Blob([vaultJson]).size,
+      updatedAt: vaultEnvelope.updatedAt || nowIso,
+      content: vaultJson,
+    });
   }
 
-  return {
-    characters: loadedCharacters,
-    lorebooks: loadedLorebooks,
-    themes: loadedThemes,
-    tags: mergeWithDefaultTags(customMetaTags),
-    activeThemeIdFromMeta,
-  };
+  return entries;
 }
 
 interface StoreContextValue {
@@ -2366,19 +2190,9 @@ interface StoreContextValue {
   saveNow: (mode?: 'manual' | 'autosave') => void;
   saveAndSyncNow: () => Promise<{ ok: boolean; message: string }>;
   resetWorkspaceToDefaults: () => void;
-  // Unified Save Folder, Two-Way Live Sync & Storage Management
+  // Direct Disk `./Saves/` State & File Management
   savedFiles: SavedFileEntry[];
-  saveLogs: SaveLogEntry[];
-  nativeDirectoryName: string | null;
-  pendingReconnectFolderName: string | null;
-  isSyncingFolder: boolean;
-  selectNativeSaveFolder: () => Promise<{ ok: boolean; message: string }>;
-  reconnectNativeSaveFolder: () => Promise<{ ok: boolean; message: string }>;
-  scanAndLoadSaveFolder: (options?: {
-    dirHandleOverride?: any;
-    folderPathOverride?: string;
-    silent?: boolean;
-  }) => Promise<{ ok: boolean; summary: string }>;
+  diskResolvedPath: string;
   loadSavedFileIntoWorkspace: (file: SavedFileEntry) => {
     ok: boolean;
     message: string;
@@ -2387,7 +2201,6 @@ interface StoreContextValue {
   setActiveSaveFolder: (folderPath: string) => void;
   deleteSavedFile: (fileId: string) => void;
   exportSaveFolderBundle: (folderPath?: string) => void;
-  storageBytesUsed: number;
   // Unified PNG & JSON Card Importer
   importFromFiles: (
     files: FileList | File[]
@@ -2470,290 +2283,33 @@ export function createBlankLorebook(partial?: Partial<Lorebook>): Lorebook {
   };
 }
 
-function loadInitialState(): InitialWorkspaceBootstrap {
-  purgeBrowserRuntimeCaches();
-
-  const nowIso = new Date().toISOString();
-  const nowDisplay = formatSafeTimestamp(nowIso);
-  const dedicatedCreds = loadPersistedProviderCredentials();
-
-  try {
-    // 1. One-time migration from legacy monolithic `tavernsmith_store_v2` into Save Folder files, then delete legacy keys
-    const legacyRaw = safeLocalStorageGet('tavernsmith_store_v2');
-    if (legacyRaw) {
-      try {
-        const legacyParsed = JSON.parse(legacyRaw);
-        const migratedFiles = buildUnifiedSavedFiles(
-          Array.isArray(legacyParsed.characters) ? legacyParsed.characters : [],
-          Array.isArray(legacyParsed.lorebooks) ? legacyParsed.lorebooks : [],
-          Array.isArray(legacyParsed.themes) && legacyParsed.themes.length > 0
-            ? legacyParsed.themes
-            : DEFAULT_CONTEXT_THEMES,
-          extractCustomUserTags(legacyParsed.tags),
-          legacyParsed.settings?.activeThemeId || DEFAULT_SETTINGS.activeThemeId,
-          legacyParsed.settings?.cardSpecVersion || DEFAULT_SETTINGS.cardSpecVersion,
-          nowIso
-        );
-        if (!safeLocalStorageGet(SAVE_FOLDER_FILES_STORAGE_KEY)) {
-          safeLocalStorageSet(
-            SAVE_FOLDER_FILES_STORAGE_KEY,
-            JSON.stringify(migratedFiles)
-          );
-        }
-        if (!safeLocalStorageGet(PREFERENCES_STORAGE_KEY)) {
-          const migratedPrefs: PersistedPreferencesState = {
-            activeCharacterId: legacyParsed.activeCharacterId || '',
-            activeLorebookId: legacyParsed.activeLorebookId || '',
-            aiConfig: legacyParsed.aiConfig || DEFAULT_AI_CONFIG,
-            settings: {
-              ...DEFAULT_SETTINGS,
-              ...(legacyParsed.settings || {}),
-            },
-            saveLogs: Array.isArray(legacyParsed.saveLogs)
-              ? legacyParsed.saveLogs
-              : [],
-            lastSavedAt: legacyParsed.lastSavedAt || nowDisplay,
-          };
-          safeLocalStorageSet(
-            PREFERENCES_STORAGE_KEY,
-            JSON.stringify(migratedPrefs)
-          );
-        }
-      } catch {
-        // Ignore malformed legacy state
-      }
-    }
-
-    for (const oldKey of LEGACY_STORAGE_KEYS) {
-      safeLocalStorageRemove(oldKey);
-    }
-
-    // 2. Read saved files from Save Folder storage (`Characters/`, `Lorebooks/`, `_tavernsmith_meta.json`)
-    let persistedFiles: SavedFileEntry[] = [];
-    const rawFiles = safeLocalStorageGet(SAVE_FOLDER_FILES_STORAGE_KEY);
-    if (rawFiles) {
-      const parsedFiles = JSON.parse(rawFiles);
-      if (Array.isArray(parsedFiles)) {
-        persistedFiles = parsedFiles;
-      }
-    }
-
-    const {
-      characters,
-      lorebooks,
-      themes,
-      tags,
-      activeThemeIdFromMeta,
-    } = reconstructWorkspaceFromSaveFiles(persistedFiles);
-
-    // 3. Read essential user preferences (Appearance mode, active Save Folder, AI Provider keys/models)
-    const rawPrefs = safeLocalStorageGet(PREFERENCES_STORAGE_KEY);
-    const parsedPrefs = rawPrefs
-      ? (JSON.parse(rawPrefs) as Partial<PersistedPreferencesState>)
-      : {};
-
-    const settings: AppSettings = {
-      ...DEFAULT_SETTINGS,
-      ...(parsedPrefs.settings || {}),
-      activeSaveFolder: UNIFIED_INTERNAL_ROOT,
-      availableSaveFolders: [UNIFIED_INTERNAL_ROOT],
-      mainSidebarOpen:
-        parsedPrefs.settings?.mainSidebarOpen !== undefined
-          ? parsedPrefs.settings.mainSidebarOpen
-          : true,
-      hideNsfwTags: Boolean(parsedPrefs.settings?.hideNsfwTags),
-    };
-
-    if (
-      activeThemeIdFromMeta &&
-      themes.some((t) => t.id === activeThemeIdFromMeta)
-    ) {
-      settings.activeThemeId = activeThemeIdFromMeta;
-    } else if (!themes.some((t) => t.id === settings.activeThemeId)) {
-      settings.activeThemeId = themes[0].id;
-    }
-
-    const activeCharacterId =
-      parsedPrefs.activeCharacterId &&
-      characters.some((c) => c.id === parsedPrefs.activeCharacterId)
-        ? parsedPrefs.activeCharacterId
-        : characters[0]?.id || '';
-
-    const activeLorebookId =
-      parsedPrefs.activeLorebookId &&
-      lorebooks.some((l) => l.id === parsedPrefs.activeLorebookId)
-        ? parsedPrefs.activeLorebookId
-        : lorebooks[0]?.id || '';
-
-    const mergedProviderKeys: Record<string, string> = {
-      ...dedicatedCreds.savedProviderKeys,
-      ...(parsedPrefs.aiConfig?.savedProviderKeys || {}),
-    };
-    const mergedProviderModels: Record<string, string> = {
-      ...dedicatedCreds.savedProviderModels,
-      ...(parsedPrefs.aiConfig?.savedProviderModels || {}),
-    };
-
-    const activePreset =
-      parsedPrefs.aiConfig?.preset || DEFAULT_AI_CONFIG.preset;
-    const activeProviderKey = getProviderKeyId(activePreset);
-    const currentApiKey =
-      parsedPrefs.aiConfig?.apiKey ||
-      mergedProviderKeys[activeProviderKey] ||
-      mergedProviderKeys[activePreset] ||
-      '';
-    const rawModelCandidate =
-      parsedPrefs.aiConfig?.modelName ||
-      mergedProviderModels[activeProviderKey] ||
-      mergedProviderModels[activePreset] ||
-      DEFAULT_AI_CONFIG.modelName;
-
-    const currentModelName =
-      activePreset === 'gemini' &&
-      (rawModelCandidate.startsWith('gemini-1.') ||
-        rawModelCandidate.startsWith('gemini-2.') ||
-        rawModelCandidate === 'gemini-pro')
-        ? 'gemini-3.8-flash'
-        : rawModelCandidate;
-
-    const rawUrlCandidate =
-      parsedPrefs.aiConfig?.url || DEFAULT_AI_CONFIG.url;
-    const normalizedUrl =
-      activePreset === 'gemini' ||
-      rawUrlCandidate.includes('generativelanguage.googleapis.com')
-        ? '/api/gemini'
-        : rawUrlCandidate;
-
-    if (currentApiKey) {
-      mergedProviderKeys[activeProviderKey] = currentApiKey;
-      mergedProviderKeys[activePreset] = currentApiKey;
-    }
-    if (currentModelName) {
-      mergedProviderModels[activeProviderKey] = currentModelName;
-      mergedProviderModels[activePreset] = currentModelName;
-    }
-
-    // If any legacy plaintext keys were present in preferences, encrypt them into the AES-256-GCM vault
-    if (Object.values(mergedProviderKeys).some((k) => Boolean(k && k.trim()))) {
-      void encryptAndSaveProviderKeys(mergedProviderKeys);
-    }
-    if (Object.keys(mergedProviderModels).length > 0) {
-      saveProviderModelsMap(mergedProviderModels);
-    }
-
-    const hydratedAiConfig: AIBackendConfig = {
-      ...DEFAULT_AI_CONFIG,
-      ...(parsedPrefs.aiConfig || {}),
-      url: normalizedUrl,
-      apiKey: currentApiKey,
-      modelName: currentModelName,
-      savedProviderKeys: mergedProviderKeys,
-      savedProviderModels: mergedProviderModels,
-    };
-
-    const unifiedFiles = buildUnifiedSavedFiles(
-      characters,
-      lorebooks,
-      themes,
-      tags,
-      settings.activeThemeId,
-      settings.cardSpecVersion,
-      nowIso
-    );
-
-    return {
-      characters,
-      activeCharacterId,
-      lorebooks,
-      activeLorebookId,
-      themes,
-      tags,
-      aiConfig: hydratedAiConfig,
-      settings,
-      savedFiles: unifiedFiles,
-      saveLogs: Array.isArray(parsedPrefs.saveLogs) ? parsedPrefs.saveLogs : [],
-      lastSavedAt: parsedPrefs.lastSavedAt || nowDisplay,
-    };
-  } catch {
-    // Fallback to clean defaults if storage is restricted
-  }
-
-  const initialFiles = buildUnifiedSavedFiles(
-    [],
-    [],
-    DEFAULT_CONTEXT_THEMES,
-    mergeWithDefaultTags([]),
-    DEFAULT_SETTINGS.activeThemeId,
-    DEFAULT_SETTINGS.cardSpecVersion,
-    nowIso
-  );
-
-  const defaultProviderKey = getProviderKeyId(DEFAULT_AI_CONFIG.preset);
-  return {
-    characters: [],
-    activeCharacterId: '',
-    lorebooks: [],
-    activeLorebookId: '',
-    themes: DEFAULT_CONTEXT_THEMES,
-    tags: mergeWithDefaultTags([]),
-    aiConfig: {
-      ...DEFAULT_AI_CONFIG,
-      apiKey:
-        dedicatedCreds.savedProviderKeys[defaultProviderKey] ||
-        dedicatedCreds.savedProviderKeys[DEFAULT_AI_CONFIG.preset] ||
-        '',
-      modelName:
-        dedicatedCreds.savedProviderModels[defaultProviderKey] ||
-        dedicatedCreds.savedProviderModels[DEFAULT_AI_CONFIG.preset] ||
-        DEFAULT_AI_CONFIG.modelName,
-      savedProviderKeys: dedicatedCreds.savedProviderKeys,
-      savedProviderModels: dedicatedCreds.savedProviderModels,
-    },
-    settings: DEFAULT_SETTINGS,
-    savedFiles: initialFiles,
-    saveLogs: [
-      {
-        id: 'log-init',
-        timestamp: nowDisplay,
-        mode: 'autosave',
-        folderPath: UNIFIED_INTERNAL_ROOT,
-        filesWritten: [META_FILENAME],
-        nativeSynced: false,
-      },
-    ],
-    lastSavedAt: nowDisplay,
-  };
-}
-
 export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
   children,
 }) => {
-  const initial = useMemo(() => loadInitialState(), []);
-
   const [activeTab, setActiveTab] = useState<WorkspaceTab>('character');
-  const [characters, setCharacters] = useState<CharacterCardData[]>(
-    initial.characters
+  const [characters, setCharacters] = useState<CharacterCardData[]>([]);
+  const [activeCharacterId, setActiveCharacterId] = useState<string>('');
+  const [lorebooks, setLorebooks] = useState<Lorebook[]>([]);
+  const [activeLorebookId, setActiveLorebookId] = useState<string>('');
+  const [themes, setThemes] = useState<ContextTheme[]>(DEFAULT_CONTEXT_THEMES);
+  const [tags, setTags] = useState<TagDefinition[]>(() =>
+    mergeWithDefaultTags([])
   );
-  const [activeCharacterId, setActiveCharacterId] = useState<string>(
-    initial.activeCharacterId
-  );
-  const [lorebooks, setLorebooks] = useState<Lorebook[]>(initial.lorebooks);
-  const [activeLorebookId, setActiveLorebookId] = useState<string>(
-    initial.activeLorebookId
-  );
-  const [themes, setThemes] = useState<ContextTheme[]>(initial.themes);
-  const [tags, setTags] = useState<TagDefinition[]>(initial.tags);
-  const [aiConfigState, setAiConfigState] = useState<AIBackendConfig>(
-    initial.aiConfig
-  );
-  const [settings, setSettings] = useState<AppSettings>(initial.settings);
-  const [saveLogs, setSaveLogs] = useState<SaveLogEntry[]>(initial.saveLogs);
-  const [lastSavedAt, setLastSavedAt] = useState<string | null>(
-    initial.lastSavedAt
-  );
+  const [aiConfigState, setAiConfigState] =
+    useState<AIBackendConfig>(DEFAULT_AI_CONFIG);
+  const [settings, setSettings] = useState<AppSettings>(DEFAULT_SETTINGS);
+  const [lastSavedAt, setLastSavedAt] = useState<string | null>(null);
   const [isDirty, setIsDirty] = useState<boolean>(false);
+  const [diskFiles, setDiskFiles] = useState<SavedFileEntry[]>([]);
+  const [diskResolvedPath, setDiskResolvedPath] =
+    useState<string>('./Saves/');
 
-  // Wrapped setAiConfig that automatically persists & restores per-provider API keys and models
+  // Track the exact on-disk `.json` filename for each Character ID and Lorebook ID
+  // so renaming a Character or Lorebook deletes `oldFileName` before writing the new file.
+  const charDiskFileNamesRef = useRef<Map<string, string>>(new Map());
+  const loreDiskFileNamesRef = useRef<Map<string, string>>(new Map());
+  const initialDiskHydrationDoneRef = useRef<boolean>(false);
+
   const setAiConfig: React.Dispatch<React.SetStateAction<AIBackendConfig>> =
     useCallback((updater) => {
       setAiConfigState((prev) => {
@@ -2778,79 +2334,7 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
     );
   }, []);
 
-  // Hydrate AES-256-GCM encrypted provider keys (`_tavernsmith_vault_enc`) into memory on startup
-  useEffect(() => {
-    let cancelled = false;
-    decryptProviderKeysFromVault()
-      .then((res) => {
-        if (cancelled || !res.ok) return;
-        setAiConfigState((prev) => {
-          const mergedKeys: Record<string, string> = {
-            ...res.keys,
-            ...(prev.savedProviderKeys || {}),
-          };
-          const activeProviderId = getProviderKeyId(prev.preset);
-          const restoredActiveKey =
-            prev.apiKey ||
-            mergedKeys[activeProviderId] ||
-            mergedKeys[prev.preset] ||
-            '';
-          if (restoredActiveKey) {
-            mergedKeys[activeProviderId] = restoredActiveKey;
-            mergedKeys[prev.preset] = restoredActiveKey;
-          }
-          return {
-            ...prev,
-            apiKey: restoredActiveKey,
-            savedProviderKeys: mergedKeys,
-          };
-        });
-      })
-      .catch(() => {
-        // Ignore if vault requires custom passphrase unlock
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
   const aiConfig = aiConfigState;
-
-  // Native FileSystemDirectoryHandle & IndexedDB Two-Way Sync State
-  const nativeDirHandleRef = useRef<any>(null);
-  const pendingReconnectRecordRef = useRef<StoredDirectoryRecord | null>(null);
-  const [nativeDirectoryName, setNativeDirectoryName] = useState<string | null>(
-    null
-  );
-  const [pendingReconnectFolderName, setPendingReconnectFolderName] = useState<
-    string | null
-  >(null);
-  const [isSyncingFolder, setIsSyncingFolder] = useState<boolean>(false);
-
-  const savedFiles = useMemo<SavedFileEntry[]>(
-    () =>
-      buildUnifiedSavedFiles(
-        characters,
-        lorebooks,
-        themes,
-        tags,
-        settings.activeThemeId,
-        settings.cardSpecVersion
-      ),
-    [
-      characters,
-      lorebooks,
-      themes,
-      tags,
-      settings.activeThemeId,
-      settings.cardSpecVersion,
-    ]
-  );
-
-  const savedFilesRef = useRef<SavedFileEntry[]>(savedFiles);
-  useEffect(() => {
-    savedFilesRef.current = savedFiles;
-  }, [savedFiles]);
 
   const character = useMemo(() => {
     return (
@@ -2906,7 +2390,9 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
   }, [activeTheme.color]);
 
   useEffect(() => {
-    setIsDirty(true);
+    if (initialDiskHydrationDoneRef.current) {
+      setIsDirty(true);
+    }
   }, [
     characters,
     activeCharacterId,
@@ -3014,6 +2500,290 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
     },
     [tags]
   );
+
+  /**
+   * Hydrates React state from the server's `/api/disk/*` response (`DiskStateResponse`),
+   * strictly mapping `./Saves/Characters/*.json` -> `characters[]` and `./Saves/Lorebooks/*.json` -> `lorebooks[]`.
+   */
+  const applyDiskStateToWorkspace = useCallback(
+    async (
+      diskState: DiskStateResponse,
+      options?: { isInitialMount?: boolean }
+    ) => {
+      if (!diskState || !diskState.ok) return;
+
+      if (diskState.resolvedPath || diskState.diskRoot) {
+        setDiskResolvedPath(diskState.resolvedPath || diskState.diskRoot);
+      }
+
+      if (Array.isArray(diskState.files)) {
+        setDiskFiles(diskState.files);
+      }
+
+      // 1. Reconstruct Tags & Themes from `./Saves/_tavernsmith_meta.json`
+      let mergedTags = mergeWithDefaultTags(
+        extractCustomUserTags(latestWorkspaceRef.current.tags)
+      );
+
+      if (diskState.meta && typeof diskState.meta === 'object') {
+        const meta = diskState.meta;
+
+        if (Array.isArray(meta.tags)) {
+          mergedTags = mergeWithDefaultTags(extractCustomUserTags(meta.tags));
+          setTags(mergedTags);
+        }
+
+        if (
+          Array.isArray(meta.contextThemes) &&
+          meta.contextThemes.length > 0
+        ) {
+          const mapByName = new Map<string, ContextTheme>();
+          for (const t of DEFAULT_CONTEXT_THEMES) {
+            mapByName.set(t.name.trim().toLowerCase(), t);
+          }
+          for (const incoming of meta.contextThemes) {
+            if (incoming && incoming.name) {
+              const key = incoming.name.trim().toLowerCase();
+              const existing = mapByName.get(key);
+              mapByName.set(key, {
+                ...existing,
+                ...incoming,
+                id: existing?.id || incoming.id || `theme-${Date.now()}`,
+              });
+            }
+          }
+          setThemes(Array.from(mapByName.values()));
+        }
+
+        if (options?.isInitialMount && meta.settings) {
+          setSettings((prev) => ({
+            ...prev,
+            ...meta.settings,
+            activeThemeId:
+              meta.activeThemeId ||
+              meta.settings?.activeThemeId ||
+              prev.activeThemeId,
+            activeSaveFolder:
+              meta.settings?.activeSaveFolder || UNIFIED_INTERNAL_ROOT,
+          }));
+        } else if (meta.activeThemeId && options?.isInitialMount) {
+          setSettings((prev) => ({
+            ...prev,
+            activeThemeId: meta.activeThemeId,
+          }));
+        }
+
+        if (options?.isInitialMount && meta.aiConfig) {
+          const incomingAi = meta.aiConfig;
+          if (
+            incomingAi.savedProviderModels &&
+            typeof incomingAi.savedProviderModels === 'object'
+          ) {
+            saveProviderModelsMap(incomingAi.savedProviderModels);
+          }
+          setAiConfigState((prev) => ({
+            ...prev,
+            ...incomingAi,
+            apiKey: prev.apiKey,
+            savedProviderKeys: prev.savedProviderKeys,
+          }));
+        }
+      }
+
+      // 2. Parse `./Saves/Characters/*.json` strictly as `characters[]`
+      const nextCharFileNames = new Map<string, string>();
+      const parsedCharacters: CharacterCardData[] = [];
+      if (Array.isArray(diskState.characters)) {
+        for (const rawCharObj of diskState.characters) {
+          if (!rawCharObj || typeof rawCharObj !== 'object') continue;
+          if (rawCharObj._tavernsmithType === 'lorebook') continue;
+          try {
+            const diskFileName =
+              typeof rawCharObj._diskFileName === 'string'
+                ? rawCharObj._diskFileName
+                : 'Character.json';
+            const parsedRes = parseImportedJsonString(
+              JSON.stringify(rawCharObj),
+              undefined,
+              diskFileName,
+              'character'
+            );
+            if (parsedRes.kind === 'character') {
+              parsedRes.character.isNsfw = isCharacterNsfw(
+                parsedRes.character,
+                mergedTags
+              );
+              parsedCharacters.push(parsedRes.character);
+              if (parsedRes.character.id) {
+                nextCharFileNames.set(parsedRes.character.id, diskFileName);
+              }
+            }
+          } catch {
+            // Skip malformed character JSON
+          }
+        }
+      }
+      charDiskFileNamesRef.current = nextCharFileNames;
+      setCharacters(parsedCharacters);
+      setActiveCharacterId((prevId) => {
+        if (prevId && parsedCharacters.some((c) => c.id === prevId)) {
+          return prevId;
+        }
+        if (
+          options?.isInitialMount &&
+          diskState.meta?.activeCharacterId &&
+          parsedCharacters.some(
+            (c) => c.id === diskState.meta?.activeCharacterId
+          )
+        ) {
+          return diskState.meta.activeCharacterId;
+        }
+        return parsedCharacters[0]?.id || '';
+      });
+
+      // 3. Parse `./Saves/Lorebooks/*.json` strictly as `lorebooks[]`
+      const nextLoreFileNames = new Map<string, string>();
+      const parsedLorebooks: Lorebook[] = [];
+      if (Array.isArray(diskState.lorebooks)) {
+        for (const rawLoreObj of diskState.lorebooks) {
+          if (!rawLoreObj || typeof rawLoreObj !== 'object') continue;
+          if (rawLoreObj._tavernsmithType === 'character') continue;
+          try {
+            const diskFileName =
+              typeof rawLoreObj._diskFileName === 'string'
+                ? rawLoreObj._diskFileName
+                : 'Lorebook.json';
+            const fallbackTitle = diskFileName.replace(/\.json$/i, '');
+            const normalizedBook = normalizeLorebookObject(
+              rawLoreObj,
+              fallbackTitle
+            );
+            normalizedBook.isNsfw = isLorebookNsfw(normalizedBook, mergedTags);
+            parsedLorebooks.push(normalizedBook);
+            if (normalizedBook.id) {
+              nextLoreFileNames.set(normalizedBook.id, diskFileName);
+            }
+          } catch {
+            // Skip malformed lorebook JSON
+          }
+        }
+      }
+      loreDiskFileNamesRef.current = nextLoreFileNames;
+      setLorebooks(parsedLorebooks);
+      setActiveLorebookId((prevId) => {
+        if (prevId && parsedLorebooks.some((l) => l.id === prevId)) {
+          return prevId;
+        }
+        if (
+          options?.isInitialMount &&
+          diskState.meta?.activeLorebookId &&
+          parsedLorebooks.some(
+            (l) => l.id === diskState.meta?.activeLorebookId
+          )
+        ) {
+          return diskState.meta.activeLorebookId;
+        }
+        return parsedLorebooks[0]?.id || '';
+      });
+
+      // 4. Hydrate AES-256-GCM Encrypted Vault from `./Saves/_tavernsmith_vault.enc`
+      if (diskState.vault && typeof diskState.vault === 'object') {
+        try {
+          const decrypted = await decryptProviderKeysFromVault(
+            undefined,
+            diskState.vault
+          );
+          if (decrypted.ok) {
+            setAiConfigState((prev) => {
+              const mergedKeys: Record<string, string> = {
+                ...decrypted.keys,
+                ...(prev.savedProviderKeys || {}),
+              };
+              const activeProviderId = getProviderKeyId(prev.preset);
+              const restoredActiveKey =
+                prev.apiKey ||
+                mergedKeys[activeProviderId] ||
+                mergedKeys[prev.preset] ||
+                '';
+              if (restoredActiveKey) {
+                mergedKeys[activeProviderId] = restoredActiveKey;
+                mergedKeys[prev.preset] = restoredActiveKey;
+              }
+              return {
+                ...prev,
+                apiKey: restoredActiveKey,
+                savedProviderKeys: mergedKeys,
+              };
+            });
+          }
+        } catch {
+          // Vault may be locked with custom PIN
+        }
+      }
+
+      if (diskState.updatedAt) {
+        setLastSavedAt(formatSafeTimestamp(diskState.updatedAt));
+      }
+    },
+    []
+  );
+
+  // Auto-Scan `./Saves/` on App Startup
+  useEffect(() => {
+    let cancelled = false;
+    purgeBrowserRuntimeCaches();
+
+    (async () => {
+      try {
+        const res = await fetch('/api/disk/state', {
+          method: 'GET',
+          headers: { Accept: 'application/json' },
+          cache: 'no-store',
+        });
+        if (!res.ok || cancelled) return;
+        const data = (await res.json()) as DiskStateResponse;
+        if (cancelled) return;
+        await applyDiskStateToWorkspace(data, { isInitialMount: true });
+      } catch {
+        // Ignore network error if server is still booting
+      } finally {
+        if (!cancelled) {
+          initialDiskHydrationDoneRef.current = true;
+          setIsDirty(false);
+        }
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [applyDiskStateToWorkspace]);
+
+  // Register Vault Disk Flush Callback so any key/PIN change in Options immediately writes `./Saves/_tavernsmith_vault.enc`
+  useEffect(() => {
+    registerVaultDiskFlushCallback((envelope) => {
+      void fetch('/api/disk/save', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          vault: envelope,
+          customSavePath: latestWorkspaceRef.current.settings.activeSaveFolder,
+        }),
+      })
+        .then((r) => r.json())
+        .then((diskState: DiskStateResponse) => {
+          if (diskState && diskState.ok && Array.isArray(diskState.files)) {
+            setDiskFiles(diskState.files);
+          }
+        })
+        .catch(() => {
+          // Ignore transient network error
+        });
+    });
+    return () => {
+      registerVaultDiskFlushCallback(null);
+    };
+  }, []);
 
   // Duplicate Character / Lorebook Name Conflict State & Handlers
   const [nameConflictRequest, setNameConflictRequest] =
@@ -3248,8 +3018,15 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
     [tags]
   );
 
+  // Real Disk Delete & Auto-Rescan for Character (`POST /api/disk/delete`)
   const deleteCharacter = useCallback(
     (id: string) => {
+      const target = characters.find((c) => c.id === id);
+      const diskFileName =
+        charDiskFileNamesRef.current.get(id) ||
+        (target ? `${sanitizeFilename(target.name)}.json` : '');
+      charDiskFileNamesRef.current.delete(id);
+
       setCharacters((prev) => {
         const remaining = prev.filter((c) => c.id !== id);
         if (remaining.length === 0) {
@@ -3261,8 +3038,34 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
         }
         return remaining;
       });
+
+      if (diskFileName) {
+        void fetch('/api/disk/delete', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            folder: 'Characters',
+            fileName: diskFileName,
+            customSavePath: settings.activeSaveFolder,
+          }),
+        })
+          .then((r) => r.json())
+          .then((diskState: DiskStateResponse) => {
+            if (diskState && diskState.ok) {
+              void applyDiskStateToWorkspace(diskState);
+            }
+          })
+          .catch(() => {
+            // Ignore transient network error
+          });
+      }
     },
-    [activeCharacterId]
+    [
+      characters,
+      activeCharacterId,
+      settings.activeSaveFolder,
+      applyDiskStateToWorkspace,
+    ]
   );
 
   const createNewLorebook = useCallback(
@@ -3296,8 +3099,15 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
     [tags]
   );
 
+  // Real Disk Delete & Auto-Rescan for Lorebook (`POST /api/disk/delete`)
   const deleteLorebook = useCallback(
     (id: string) => {
+      const target = lorebooks.find((l) => l.id === id);
+      const diskFileName =
+        loreDiskFileNamesRef.current.get(id) ||
+        (target ? `${sanitizeFilename(target.name)}.json` : '');
+      loreDiskFileNamesRef.current.delete(id);
+
       setLorebooks((prev) => {
         const remaining = prev.filter((l) => l.id !== id);
         if (remaining.length === 0) {
@@ -3309,786 +3119,308 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
         }
         return remaining;
       });
-    },
-    [activeLorebookId]
-  );
 
-  const scanNativeDirectoryHandle = async (
-    dirHandle: any,
-    subfolderPrefix: '' | 'Characters/' | 'Lorebooks/',
-    loadedCharacters: CharacterCardData[],
-    loadedLorebooks: Lorebook[],
-    syncedFileNames: string[],
-    onMetaLoaded: (meta: TavernSmithMetaPayload) => void
-  ) => {
-    if (!dirHandle || typeof dirHandle.entries !== 'function') return;
-
-    try {
-      for await (const [entryName, entryHandle] of dirHandle.entries()) {
-        if (!entryHandle || entryHandle.kind !== 'file') continue;
-        const lowerName = String(entryName).toLowerCase();
-        if (!lowerName.endsWith('.json') && !lowerName.endsWith('.png')) {
-          continue;
-        }
-        if (lowerName.endsWith('_backupbundle.json')) {
-          continue;
-        }
-
-        try {
-          const file: File = await entryHandle.getFile();
-          const fileLastModSec = Math.floor(
-            (file.lastModified || Date.now()) / 1000
-          );
-          const updatedIso = new Date(
-            file.lastModified || Date.now()
-          ).toISOString();
-
-          if (entryName === META_FILENAME) {
-            const text = await file.text();
-            const parsedMeta = JSON.parse(text) as Partial<TavernSmithMetaPayload>;
-            if (
-              parsedMeta &&
-              (Array.isArray(parsedMeta.tags) ||
-                Array.isArray(parsedMeta.contextThemes))
-            ) {
-              onMetaLoaded({
-                schema: 'tavernsmith_meta_v1',
-                updatedAt: parsedMeta.updatedAt || updatedIso,
-                activeThemeId:
-                  parsedMeta.activeThemeId || DEFAULT_SETTINGS.activeThemeId,
-                contextThemes: Array.isArray(parsedMeta.contextThemes)
-                  ? parsedMeta.contextThemes
-                  : [],
-                tags: Array.isArray(parsedMeta.tags) ? parsedMeta.tags : [],
-              });
-              syncedFileNames.push(`${subfolderPrefix}${META_FILENAME}`);
+      if (diskFileName) {
+        void fetch('/api/disk/delete', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            folder: 'Lorebooks',
+            fileName: diskFileName,
+            customSavePath: settings.activeSaveFolder,
+          }),
+        })
+          .then((r) => r.json())
+          .then((diskState: DiskStateResponse) => {
+            if (diskState && diskState.ok) {
+              void applyDiskStateToWorkspace(diskState);
             }
-            continue;
-          }
-
-          const parsedAsset = await importCardFromFile(file);
-          if (parsedAsset.kind === 'character') {
-            parsedAsset.character.modification_date =
-              parsedAsset.character.modification_date || fileLastModSec;
-            loadedCharacters.push(parsedAsset.character);
-            if (parsedAsset.embeddedLorebook) {
-              parsedAsset.embeddedLorebook.modification_date =
-                parsedAsset.embeddedLorebook.modification_date || fileLastModSec;
-              loadedLorebooks.push(parsedAsset.embeddedLorebook);
-            }
-            syncedFileNames.push(`${subfolderPrefix}${entryName}`);
-          } else if (parsedAsset.kind === 'lorebook') {
-            parsedAsset.lorebook.modification_date =
-              parsedAsset.lorebook.modification_date || fileLastModSec;
-            loadedLorebooks.push(parsedAsset.lorebook);
-            syncedFileNames.push(`${subfolderPrefix}${entryName}`);
-          }
-        } catch {
-          // Ignore non-card PNGs or unrelated JSON files
-        }
-      }
-    } catch {
-      // Ignore directory iteration permission errors
-    }
-  };
-
-  const writeFilesToNativeDirectory = useCallback(
-    async (
-      rootHandle: any,
-      charsToWrite: CharacterCardData[],
-      booksToWrite: Lorebook[],
-      fallbackBook: Lorebook,
-      themesToWrite: ContextTheme[],
-      tagsToWrite: TagDefinition[],
-      activeThemeIdToWrite: string,
-      specVersion: 'v2' | 'v3',
-      nowIso: string
-    ) => {
-      if (!rootHandle) return;
-      try {
-        const charsDirHandle = await rootHandle.getDirectoryHandle(
-          'Characters',
-          { create: true }
-        );
-        const loreDirHandle = await rootHandle.getDirectoryHandle(
-          'Lorebooks',
-          { create: true }
-        );
-
-        for (const c of charsToWrite) {
-          const cFileName = `${sanitizeFilename(c.name)}.json`;
-          const cContent = JSON.stringify(
-            serializeCharacterCard(
-              c,
-              specVersion,
-              c.character_book || fallbackBook
-            ),
-            null,
-            2
-          );
-          const cHandle = await charsDirHandle.getFileHandle(cFileName, {
-            create: true,
+          })
+          .catch(() => {
+            // Ignore transient network error
           });
-          const cWritable = await cHandle.createWritable();
-          await cWritable.write(cContent);
-          await cWritable.close();
-        }
-
-        for (const lb of booksToWrite) {
-          const lFileName = `${sanitizeFilename(lb.name)}.json`;
-          const lContent = JSON.stringify(
-            {
-              id: lb.id,
-              name: lb.name,
-              description: lb.description,
-              scan_depth: lb.scan_depth,
-              token_budget: lb.token_budget,
-              recursive_scanning: lb.recursive_scanning,
-              modification_date: lb.modification_date,
-              isNsfw: Boolean(lb.isNsfw),
-              entries: lb.entries,
-              tags: lb.tags || [],
-            },
-            null,
-            2
-          );
-          const lHandle = await loreDirHandle.getFileHandle(lFileName, {
-            create: true,
-          });
-          const lWritable = await lHandle.createWritable();
-          await lWritable.write(lContent);
-          await lWritable.close();
-        }
-
-        const metaPayload: TavernSmithMetaPayload = {
-          schema: 'tavernsmith_meta_v1',
-          updatedAt: nowIso,
-          activeThemeId: activeThemeIdToWrite,
-          contextThemes: themesToWrite,
-          tags: extractCustomUserTags(tagsToWrite),
-        };
-        const metaSerialized = JSON.stringify(metaPayload, null, 2);
-        const mHandle = await rootHandle.getFileHandle(META_FILENAME, {
-          create: true,
-        });
-        const mWritable = await mHandle.createWritable();
-        await mWritable.write(metaSerialized);
-        await mWritable.close();
-      } catch {
-        // Ignore transient native permission loss
       }
     },
-    []
+    [
+      lorebooks,
+      activeLorebookId,
+      settings.activeSaveFolder,
+      applyDiskStateToWorkspace,
+    ]
   );
+
+  // Keep a live ref of all workspace state for atomic saves
+  const latestWorkspaceRef = useRef({
+    characters,
+    activeCharacterId,
+    lorebooks,
+    activeLorebookId,
+    lorebook,
+    themes,
+    tags,
+    aiConfig,
+    settings,
+    lastSavedAt,
+    isDirty,
+  });
+
+  useEffect(() => {
+    latestWorkspaceRef.current = {
+      characters,
+      activeCharacterId,
+      lorebooks,
+      activeLorebookId,
+      lorebook,
+      themes,
+      tags,
+      aiConfig,
+      settings,
+      lastSavedAt,
+      isDirty,
+    };
+  }, [
+    characters,
+    activeCharacterId,
+    lorebooks,
+    activeLorebookId,
+    lorebook,
+    themes,
+    tags,
+    aiConfig,
+    settings,
+    lastSavedAt,
+    isDirty,
+  ]);
 
   /**
-   * Scans the Save Folder and applies Smart Cache-to-Folder Sync (Newest Wins):
-   * - Compares `updatedAt` / `modification_date` of any cached item against the stored file in the Save Folder
-   *   ONLY if they share the exact same name.
-   * - If the cached version is newer than the folder file, overwrites the stored folder file with the newer cached version
-   *   and immediately clears the browser cache copy (`SAVE_FOLDER_FILES_STORAGE_KEY`) so old cached items never resurface.
+   * Executes a direct disk save (`POST /api/disk/save`) writing:
+   * - Characters strictly to `./Saves/Characters/[SanitizedName].json` (deleting `oldFileName` if renamed)
+   * - Lorebooks strictly to `./Saves/Lorebooks/[SanitizedName].json` (deleting `oldFileName` if renamed)
+   * - Tags, themes, and app settings to `./Saves/_tavernsmith_meta.json`
+   * - AES-256-GCM encrypted API keys to `./Saves/_tavernsmith_vault.enc`
+   * And immediately re-scans `./Saves/` in one atomic round-trip!
    */
-  const scanAndLoadSaveFolder = useCallback(
-    async (options?: {
-      dirHandleOverride?: any;
-      folderPathOverride?: string;
-      silent?: boolean;
-    }): Promise<{ ok: boolean; summary: string }> => {
-      const rootHandle = options?.dirHandleOverride ?? nativeDirHandleRef.current;
-      const folderDisplay = rootHandle
-        ? `/${rootHandle.name || 'SaveFolder'}/`
-        : UNIFIED_INTERNAL_ROOT;
+  const executeDiskSaveAndRescan = useCallback(
+    async (
+      mode: 'manual' | 'autosave' = 'manual',
+      overrideState?: {
+        characters?: CharacterCardData[];
+        lorebooks?: Lorebook[];
+      }
+    ): Promise<{ ok: boolean; message: string }> => {
+      const snap = latestWorkspaceRef.current;
+      const charsToSave = overrideState?.characters ?? snap.characters;
+      const booksToSave = overrideState?.lorebooks ?? snap.lorebooks;
 
-      setIsSyncingFolder(true);
-
-      const loadedCharacters: CharacterCardData[] = [];
-      const loadedLorebooks: Lorebook[] = [];
-      let loadedMeta: TavernSmithMetaPayload | null = null;
-      const syncedFileNames: string[] = [];
-
-      // Read any temporary browser cached items so we can compare timestamps (Newest Wins) when syncing with a Save Folder
-      let cachedCharacters: CharacterCardData[] = [];
-      let cachedLorebooks: Lorebook[] = [];
-      let cachedMeta: TavernSmithMetaPayload | null = null;
-      const rawCache = safeLocalStorageGet(SAVE_FOLDER_FILES_STORAGE_KEY);
-      if (rawCache) {
-        try {
-          const parsedCacheEntries = JSON.parse(rawCache) as SavedFileEntry[];
-          if (Array.isArray(parsedCacheEntries)) {
-            for (const entry of parsedCacheEntries) {
-              if (entry.kind === 'meta' || entry.fileName === META_FILENAME) {
-                cachedMeta = JSON.parse(entry.content) as TavernSmithMetaPayload;
-              } else {
-                const asset = parseImportedJsonString(
-                  entry.content,
-                  undefined,
-                  entry.fileName
-                );
-                const entrySec = entry.updatedAt
-                  ? Math.floor(new Date(entry.updatedAt).getTime() / 1000)
-                  : 0;
-                if (asset.kind === 'character') {
-                  asset.character.modification_date = Math.max(
-                    asset.character.modification_date || 0,
-                    entrySec
-                  );
-                  cachedCharacters.push(asset.character);
-                } else if (asset.kind === 'lorebook') {
-                  asset.lorebook.modification_date = Math.max(
-                    asset.lorebook.modification_date || 0,
-                    entrySec
-                  );
-                  cachedLorebooks.push(asset.lorebook);
-                }
-              }
-            }
+      if (mode === 'manual') {
+        const seenCharNames = new Map<string, string>();
+        for (const c of charsToSave) {
+          const lower = (c.name || '').trim().toLowerCase();
+          if (!lower) continue;
+          const prevId = seenCharNames.get(lower);
+          if (prevId && prevId !== c.id) {
+            setNameConflictRequest({
+              kind: 'character',
+              itemId: c.id!,
+              conflictingName: c.name,
+              suggestedNames: buildSuggestedUniqueNames(
+                c.name,
+                charsToSave.map((ch) => ch.name)
+              ),
+              sourceAction: 'save',
+            });
+            return {
+              ok: false,
+              message: `Duplicate character name "${c.name}" detected. Please resolve before saving.`,
+            };
           }
-        } catch {
-          // Ignore malformed cache
+          seenCharNames.set(lower, c.id!);
+        }
+
+        const seenBookNames = new Map<string, string>();
+        for (const l of booksToSave) {
+          const lower = (l.name || '').trim().toLowerCase();
+          if (!lower) continue;
+          const prevId = seenBookNames.get(lower);
+          if (prevId && prevId !== l.id) {
+            setNameConflictRequest({
+              kind: 'lorebook',
+              itemId: l.id!,
+              conflictingName: l.name,
+              suggestedNames: buildSuggestedUniqueNames(
+                l.name,
+                booksToSave.map((lb) => lb.name)
+              ),
+              sourceAction: 'save',
+            });
+            return {
+              ok: false,
+              message: `Duplicate lorebook name "${l.name}" detected. Please resolve before saving.`,
+            };
+          }
+          seenBookNames.set(lower, l.id!);
         }
       }
 
-      try {
-        if (rootHandle && typeof rootHandle.entries === 'function') {
-          const perm = await queryDirectoryHandlePermission(rootHandle, 'read');
-          if (perm === 'granted') {
-            let charsDirHandle: any = null;
-            let loreDirHandle: any = null;
-            try {
-              charsDirHandle = await rootHandle.getDirectoryHandle(
-                'Characters',
-                { create: true }
-              );
-              loreDirHandle = await rootHandle.getDirectoryHandle(
-                'Lorebooks',
-                { create: true }
-              );
-            } catch {
-              try {
-                charsDirHandle =
-                  await rootHandle.getDirectoryHandle('Characters');
-              } catch {
-                // Ignore
-              }
-              try {
-                loreDirHandle =
-                  await rootHandle.getDirectoryHandle('Lorebooks');
-              } catch {
-                // Ignore
-              }
-            }
+      const nowIso = new Date().toISOString();
 
-            await scanNativeDirectoryHandle(
-              rootHandle,
-              '',
-              loadedCharacters,
-              loadedLorebooks,
-              syncedFileNames,
-              (meta) => {
-                loadedMeta = meta;
-              }
-            );
-
-            if (charsDirHandle) {
-              await scanNativeDirectoryHandle(
-                charsDirHandle,
-                'Characters/',
-                loadedCharacters,
-                loadedLorebooks,
-                syncedFileNames,
-                (meta) => {
-                  loadedMeta = meta;
-                }
-              );
-            }
-
-            if (loreDirHandle) {
-              await scanNativeDirectoryHandle(
-                loreDirHandle,
-                'Lorebooks/',
-                loadedCharacters,
-                loadedLorebooks,
-                syncedFileNames,
-                (meta) => {
-                  loadedMeta = meta;
-                }
-              );
-            }
-
-            // SMART CACHE-TO-FOLDER SYNC (NEWEST WINS):
-            // Compare cached items against stored folder files ONLY if they share the exact same name.
-            // If cached version is newer, overwrite folder file with newer cached version, then clear browser cache copy.
-            const newerCachedCharsToFlush: CharacterCardData[] = [];
-            for (const cachedChar of cachedCharacters) {
-              const cachedNameLower = (cachedChar.name || '').trim().toLowerCase();
-              const folderIdx = loadedCharacters.findIndex(
-                (fc) => (fc.name || '').trim().toLowerCase() === cachedNameLower
-              );
-              if (folderIdx !== -1) {
-                const folderChar = loadedCharacters[folderIdx];
-                const cachedTime = cachedChar.modification_date || 0;
-                const folderTime = folderChar.modification_date || 0;
-                if (cachedTime > folderTime) {
-                  loadedCharacters[folderIdx] = {
-                    ...folderChar,
-                    ...cachedChar,
-                    id: folderChar.id || cachedChar.id,
-                  };
-                  newerCachedCharsToFlush.push(loadedCharacters[folderIdx]);
-                }
-              }
-            }
-
-            const newerCachedBooksToFlush: Lorebook[] = [];
-            for (const cachedBook of cachedLorebooks) {
-              const cachedNameLower = (cachedBook.name || '').trim().toLowerCase();
-              const folderIdx = loadedLorebooks.findIndex(
-                (fb) => (fb.name || '').trim().toLowerCase() === cachedNameLower
-              );
-              if (folderIdx !== -1) {
-                const folderBook = loadedLorebooks[folderIdx];
-                const cachedTime = cachedBook.modification_date || 0;
-                const folderTime = folderBook.modification_date || 0;
-                if (cachedTime > folderTime) {
-                  loadedLorebooks[folderIdx] = {
-                    ...folderBook,
-                    ...cachedBook,
-                    id: folderBook.id || cachedBook.id,
-                  };
-                  newerCachedBooksToFlush.push(loadedLorebooks[folderIdx]);
-                }
-              }
-            }
-
-            if (loadedMeta && cachedMeta) {
-              const folderMetaTime = new Date(
-                (loadedMeta as TavernSmithMetaPayload).updatedAt || 0
-              ).getTime();
-              const cachedMetaTime = new Date(cachedMeta.updatedAt || 0).getTime();
-              if (cachedMetaTime > folderMetaTime) {
-                loadedMeta = cachedMeta;
-              }
-            } else if (!loadedMeta && cachedMeta) {
-              loadedMeta = cachedMeta;
-            }
-
-            if (
-              newerCachedCharsToFlush.length > 0 ||
-              newerCachedBooksToFlush.length > 0
-            ) {
-              const nowIso = new Date().toISOString();
-              const snap = latestWorkspaceRef.current;
-              await writeFilesToNativeDirectory(
-                rootHandle,
-                newerCachedCharsToFlush,
-                newerCachedBooksToFlush,
-                snap.lorebook,
-                snap.themes,
-                snap.tags,
-                snap.settings.activeThemeId,
-                snap.settings.cardSpecVersion,
-                nowIso
-              );
-            }
-
-            // Immediately clear the browser cache copy once synced with the Save Folder so stale cached items never resurface
-            safeLocalStorageRemove(SAVE_FOLDER_FILES_STORAGE_KEY);
-          }
-        } else {
-          for (const entry of savedFilesRef.current) {
-            try {
-              if (
-                entry.fileName === META_FILENAME ||
-                entry.kind === 'meta'
-              ) {
-                const parsedMeta = JSON.parse(
-                  entry.content
-                ) as Partial<TavernSmithMetaPayload>;
-                if (
-                  parsedMeta &&
-                  (Array.isArray(parsedMeta.tags) ||
-                    Array.isArray(parsedMeta.contextThemes))
-                ) {
-                  loadedMeta = {
-                    schema: 'tavernsmith_meta_v1',
-                    updatedAt: parsedMeta.updatedAt || entry.updatedAt,
-                    activeThemeId:
-                      parsedMeta.activeThemeId ||
-                      DEFAULT_SETTINGS.activeThemeId,
-                    contextThemes: Array.isArray(parsedMeta.contextThemes)
-                      ? parsedMeta.contextThemes
-                      : [],
-                    tags: Array.isArray(parsedMeta.tags) ? parsedMeta.tags : [],
-                  };
-                  syncedFileNames.push(entry.fileName);
-                }
-                continue;
-              }
-
-              const parsedAsset = parseImportedJsonString(
-                entry.content,
-                undefined,
-                entry.fileName
-              );
-              if (parsedAsset.kind === 'character') {
-                loadedCharacters.push(parsedAsset.character);
-                if (parsedAsset.embeddedLorebook) {
-                  loadedLorebooks.push(parsedAsset.embeddedLorebook);
-                }
-                syncedFileNames.push(`Characters/${entry.fileName}`);
-              } else if (parsedAsset.kind === 'lorebook') {
-                loadedLorebooks.push(parsedAsset.lorebook);
-                syncedFileNames.push(`Lorebooks/${entry.fileName}`);
-              }
-            } catch {
-              // Ignore unparseable entry
-            }
-          }
-        }
-
-        let mergedTagsList = mergeWithDefaultTags(
-          extractCustomUserTags(latestWorkspaceRef.current.tags)
+      const characterPayloads = charsToSave.map((c) => {
+        const fileName = `${sanitizeFilename(c.name)}.json`;
+        const oldFileName = c.id
+          ? charDiskFileNamesRef.current.get(c.id)
+          : undefined;
+        const payload = serializeCharacterCard(
+          c,
+          snap.settings.cardSpecVersion,
+          c.character_book
         );
+        return {
+          fileName,
+          oldFileName,
+          payload,
+        };
+      });
 
-        if (loadedMeta) {
-          const metaSnapshot: TavernSmithMetaPayload = loadedMeta;
-          if (metaSnapshot.contextThemes.length > 0) {
-            setThemes((prevThemes) => {
-              const mapByName = new Map<string, ContextTheme>();
-              for (const t of prevThemes) {
-                mapByName.set(t.name.trim().toLowerCase(), t);
-              }
-              for (const incoming of metaSnapshot.contextThemes) {
-                if (incoming && incoming.name) {
-                  const key = incoming.name.trim().toLowerCase();
-                  const existing = mapByName.get(key);
-                  mapByName.set(key, {
-                    ...existing,
-                    ...incoming,
-                    id: existing?.id || incoming.id || `theme-${Date.now()}`,
-                  });
-                }
-              }
-              return Array.from(mapByName.values());
-            });
-          }
+      const lorebookPayloads = booksToSave.map((lb) => {
+        const fileName = `${sanitizeFilename(lb.name)}.json`;
+        const oldFileName = lb.id
+          ? loreDiskFileNamesRef.current.get(lb.id)
+          : undefined;
+        const payload = serializeLorebookCard(lb);
+        return {
+          fileName,
+          oldFileName,
+          payload,
+        };
+      });
 
-          if (metaSnapshot.tags.length > 0) {
-            setTags((prevTags) => {
-              const customCurrent = extractCustomUserTags(prevTags);
-              const customIncoming = extractCustomUserTags(metaSnapshot.tags);
-              mergedTagsList = mergeWithDefaultTags([
-                ...customCurrent,
-                ...customIncoming,
-              ]);
-              return mergedTagsList;
-            });
-          } else {
-            setTags((prevTags) => {
-              mergedTagsList = mergeWithDefaultTags(
-                extractCustomUserTags(prevTags)
-              );
-              return mergedTagsList;
-            });
-          }
-        }
+      const metaPayload: TavernSmithMetaPayload = {
+        schema: 'tavernsmith_meta_v1',
+        updatedAt: nowIso,
+        activeThemeId: snap.settings.activeThemeId,
+        contextThemes: snap.themes,
+        tags: extractCustomUserTags(snap.tags),
+        settings: snap.settings,
+        aiConfig: stripApiKeysForStorage(snap.aiConfig),
+        activeCharacterId: snap.activeCharacterId,
+        activeLorebookId: snap.activeLorebookId,
+      };
 
-        if (loadedCharacters.length > 0) {
-          setCharacters((prevChars) => {
-            const nextList = [...prevChars];
-            for (const incoming of loadedCharacters) {
-              const idx = nextList.findIndex(
-                (c) =>
-                  c.name.trim().toLowerCase() ===
-                  incoming.name.trim().toLowerCase()
-              );
-              if (idx !== -1) {
-                const existing = nextList[idx];
-                const incomingMod = incoming.modification_date || 0;
-                const existingMod = existing.modification_date || 0;
-                const winner = incomingMod >= existingMod ? incoming : existing;
-                const merged: CharacterCardData = {
-                  ...existing,
-                  ...winner,
-                  id: existing.id,
-                  avatar: winner.avatar || existing.avatar,
-                };
-                merged.isNsfw = isCharacterNsfw(merged, mergedTagsList);
-                nextList[idx] = merged;
-              } else {
-                incoming.isNsfw = isCharacterNsfw(incoming, mergedTagsList);
-                nextList.unshift(incoming);
-              }
-            }
-            return nextList;
-          });
+      let vaultEnvelope = readEncryptedVaultEnvelope();
+      const inMemKeys = getInMemoryDecryptedKeys();
+      if (!vaultEnvelope && Object.keys(inMemKeys).length > 0) {
+        vaultEnvelope = await encryptAndSaveProviderKeys(
+          inMemKeys,
+          undefined,
+          true
+        );
+      }
+
+      try {
+        const res = await fetch('/api/disk/save', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            characters: characterPayloads,
+            lorebooks: lorebookPayloads,
+            meta: metaPayload,
+            vault: vaultEnvelope || undefined,
+            customSavePath: snap.settings.activeSaveFolder,
+          }),
+        });
+
+        if (!res.ok) {
+          throw new Error(`HTTP ${res.status}`);
         }
 
-        if (loadedLorebooks.length > 0) {
-          setLorebooks((prevBooks) => {
-            const nextList = [...prevBooks];
-            for (const incoming of loadedLorebooks) {
-              const idx = nextList.findIndex(
-                (b) =>
-                  b.name.trim().toLowerCase() ===
-                  incoming.name.trim().toLowerCase()
-              );
-              if (idx !== -1) {
-                const existing = nextList[idx];
-                const incomingMod = incoming.modification_date || 0;
-                const existingMod = existing.modification_date || 0;
-                const winner = incomingMod >= existingMod ? incoming : existing;
-                const merged: Lorebook = {
-                  ...existing,
-                  ...winner,
-                  id: existing.id,
-                };
-                merged.isNsfw = isLorebookNsfw(merged, mergedTagsList);
-                nextList[idx] = merged;
-              } else {
-                incoming.isNsfw = isLorebookNsfw(incoming, mergedTagsList);
-                nextList.unshift(incoming);
-              }
-            }
-            return nextList;
-          });
-        }
-
-        if (!options?.silent && syncedFileNames.length > 0) {
-          const nowDisplay = formatSafeTimestamp(new Date().toISOString());
-          const syncLog: SaveLogEntry = {
-            id: `sync-${Date.now()}`,
-            timestamp: nowDisplay,
-            mode: 'sync',
-            folderPath: folderDisplay,
-            filesWritten: syncedFileNames,
-            nativeSynced: Boolean(rootHandle),
-          };
-          setSaveLogs((prev) => [syncLog, ...prev.slice(0, 19)]);
-        }
-
-        const summaryParts: string[] = [];
-        if (loadedCharacters.length > 0) {
-          summaryParts.push(
-            `${loadedCharacters.length} character${loadedCharacters.length === 1 ? '' : 's'} (Characters/)`
-          );
-        }
-        if (loadedLorebooks.length > 0) {
-          summaryParts.push(
-            `${loadedLorebooks.length} lorebook${loadedLorebooks.length === 1 ? '' : 's'} (Lorebooks/)`
-          );
-        }
-        if (loadedMeta) {
-          const m: TavernSmithMetaPayload = loadedMeta;
-          summaryParts.push(
-            `${m.tags.length} custom tags & ${m.contextThemes.length} themes (${META_FILENAME})`
-          );
-        }
+        const diskState = (await res.json()) as DiskStateResponse;
+        await applyDiskStateToWorkspace(diskState);
+        setIsDirty(false);
 
         return {
           ok: true,
-          summary:
-            summaryParts.length > 0
-              ? `Synced ${summaryParts.join(', ')} from ${folderDisplay}`
-              : `Scanned ${folderDisplay} (all subfolders up to date).`,
+          message: `Saved to ${diskState.diskRoot || './Saves/'} (${characterPayloads.length} Characters, ${lorebookPayloads.length} Lorebooks).`,
         };
       } catch {
         return {
           ok: false,
-          summary: `Could not scan ${folderDisplay} in this environment.`,
+          message: 'Could not reach local disk API (/api/disk/save).',
         };
-      } finally {
-        setIsSyncingFolder(false);
       }
     },
-    [writeFilesToNativeDirectory]
+    [applyDiskStateToWorkspace]
   );
 
-  // On App Launch: Purge runtime caches, re-read Save Folder files (`Characters/`, `Lorebooks/`, `_tavernsmith_meta.json`),
-  // and check IndexedDB for a linked Local PC FileSystemDirectoryHandle.
+  const saveNow = useCallback(
+    (mode: 'manual' | 'autosave' = 'manual') => {
+      void executeDiskSaveAndRescan(mode);
+    },
+    [executeDiskSaveAndRescan]
+  );
+
+  const saveAndSyncNow = useCallback(async (): Promise<{
+    ok: boolean;
+    message: string;
+  }> => {
+    return executeDiskSaveAndRescan('manual');
+  }, [executeDiskSaveAndRescan]);
+
+  // Auto-Save Timer -> Saves and auto-rescans `./Saves/` on disk
   useEffect(() => {
-    let cancelled = false;
-    purgeBrowserRuntimeCaches();
+    if (!settings.autoSaveEnabled) return;
+    const intervalMs = Math.max(5, settings.autoSaveIntervalSec) * 1000;
 
-    (async () => {
-      try {
-        await scanAndLoadSaveFolder({ silent: true });
-        if (cancelled) return;
-
-        const storedRecord = await loadDirectoryHandleFromIndexedDB();
-        if (cancelled) return;
-
-        if (storedRecord && storedRecord.handle) {
-          const perm = await queryDirectoryHandlePermission(
-            storedRecord.handle,
-            'readwrite'
-          );
-          if (cancelled) return;
-
-          if (perm === 'granted') {
-            nativeDirHandleRef.current = storedRecord.handle;
-            const folderPath = `/${storedRecord.folderName}/`;
-            setNativeDirectoryName(storedRecord.folderName);
-            setPendingReconnectFolderName(null);
-            setSettings((prev) => ({
-              ...prev,
-              activeSaveFolder: folderPath,
-              availableSaveFolders: [folderPath],
-            }));
-            await scanAndLoadSaveFolder({
-              dirHandleOverride: storedRecord.handle,
-              folderPathOverride: folderPath,
-              silent: true,
-            });
-            return;
-          } else {
-            pendingReconnectRecordRef.current = storedRecord;
-            setPendingReconnectFolderName(storedRecord.folderName);
-          }
-        }
-      } catch {
-        // Ignore any startup IndexedDB/FileSystem error in restricted environments
+    const timerId = window.setInterval(() => {
+      if (latestWorkspaceRef.current.isDirty) {
+        void executeDiskSaveAndRescan('autosave');
       }
-    })();
+    }, intervalMs);
 
     return () => {
-      cancelled = true;
+      window.clearInterval(timerId);
     };
-  }, [scanAndLoadSaveFolder]);
+  }, [
+    settings.autoSaveEnabled,
+    settings.autoSaveIntervalSec,
+    executeDiskSaveAndRescan,
+  ]);
 
-  const reconnectNativeSaveFolder = useCallback(async (): Promise<{
-    ok: boolean;
-    message: string;
-  }> => {
-    try {
-      const record = pendingReconnectRecordRef.current;
-      if (!record || !record.handle) {
-        return {
-          ok: false,
-          message: 'No stored local directory handle found. Please select a folder.',
-        };
-      }
-
-      const perm = await requestDirectoryHandlePermission(
-        record.handle,
-        'readwrite'
-      );
-      if (perm !== 'granted') {
-        return {
-          ok: false,
-          message: `Permission to access "${record.folderName}" was not granted.`,
-        };
-      }
-
-      nativeDirHandleRef.current = record.handle;
-      const folderPath = `/${record.folderName}/`;
-      setNativeDirectoryName(record.folderName);
-      setPendingReconnectFolderName(null);
-      pendingReconnectRecordRef.current = null;
-
+  const createSaveFolder = useCallback(
+    (rawPath: string) => {
+      const clean = rawPath.trim() || UNIFIED_INTERNAL_ROOT;
       setSettings((prev) => ({
         ...prev,
-        activeSaveFolder: folderPath,
-        availableSaveFolders: [folderPath],
+        activeSaveFolder: clean,
+        availableSaveFolders: Array.from(
+          new Set([UNIFIED_INTERNAL_ROOT, clean])
+        ),
       }));
-
-      const syncRes = await scanAndLoadSaveFolder({
-        dirHandleOverride: record.handle,
-        folderPathOverride: folderPath,
-        silent: false,
-      });
-
-      return {
-        ok: true,
-        message: `Reconnected Local PC Hard Drive Folder "${record.folderName}/". ${syncRes.summary}`,
-      };
-    } catch {
-      return {
-        ok: false,
-        message: 'Could not reconnect local folder in this browser context.',
-      };
-    }
-  }, [scanAndLoadSaveFolder]);
-
-  const selectNativeSaveFolder = useCallback(async (): Promise<{
-    ok: boolean;
-    message: string;
-  }> => {
-    const win = window as unknown as {
-      showDirectoryPicker?: (opts?: { mode?: string }) => Promise<any>;
-    };
-
-    if (typeof win.showDirectoryPicker !== 'function') {
-      return {
-        ok: false,
-        message:
-          'Native OS directory picker is not supported in this browser or preview iframe. Open TavernSmith in a standalone browser tab to link a Local PC Hard Drive folder.',
-      };
-    }
-
-    try {
-      const rootHandle = await win.showDirectoryPicker({ mode: 'readwrite' });
-      nativeDirHandleRef.current = rootHandle;
-      const folderName = rootHandle.name || 'TavernSmith_Saves';
-      const folderPath = `/${folderName}/`;
-      setNativeDirectoryName(folderName);
-      setPendingReconnectFolderName(null);
-      pendingReconnectRecordRef.current = null;
-
-      await rootHandle.getDirectoryHandle('Characters', { create: true });
-      await rootHandle.getDirectoryHandle('Lorebooks', { create: true });
-
-      await saveDirectoryHandleToIndexedDB(rootHandle, folderPath);
-
-      setSettings((prev) => ({
-        ...prev,
-        activeSaveFolder: folderPath,
-        availableSaveFolders: [folderPath],
-      }));
-
-      const syncRes = await scanAndLoadSaveFolder({
-        dirHandleOverride: rootHandle,
-        folderPathOverride: folderPath,
-        silent: false,
-      });
-
-      return {
-        ok: true,
-        message: `Linked Local PC Hard Drive Folder "${folderName}/" with automatic Characters/ and Lorebooks/ subfolders. ${syncRes.summary}`,
-      };
-    } catch (err: unknown) {
-      if (err instanceof DOMException && err.name === 'AbortError') {
-        return { ok: false, message: 'Folder selection cancelled.' };
-      }
-      return {
-        ok: false,
-        message:
-          'Browser preview iframe restricted the native OS folder picker. Open TavernSmith in a new standalone tab to link a Local PC Hard Drive folder (currently using Browser Internal Storage).',
-      };
-    }
-  }, [scanAndLoadSaveFolder]);
-
-  const createSaveFolder = useCallback((rawPath: string) => {
-    const clean = rawPath.trim();
-    if (!clean) return;
-    setSettings((prev) => ({
-      ...prev,
-      activeSaveFolder: clean.startsWith('/') ? clean : `/${clean}/`,
-    }));
-  }, []);
+      void fetch(
+        `/api/disk/state?customSavePath=${encodeURIComponent(clean)}`,
+        {
+          method: 'GET',
+          headers: { Accept: 'application/json' },
+          cache: 'no-store',
+        }
+      )
+        .then((r) => r.json())
+        .then((diskState: DiskStateResponse) => {
+          if (diskState && diskState.ok) {
+            void applyDiskStateToWorkspace(diskState);
+          }
+        })
+        .catch(() => {
+          // Ignore error
+        });
+    },
+    [applyDiskStateToWorkspace]
+  );
 
   const setActiveSaveFolder = useCallback(
     (folderPath: string) => {
-      setSettings((prev) => ({
-        ...prev,
-        activeSaveFolder: folderPath,
-      }));
-      void scanAndLoadSaveFolder({
-        folderPathOverride: folderPath,
-        silent: false,
-      });
+      createSaveFolder(folderPath);
     },
-    [scanAndLoadSaveFolder]
+    [createSaveFolder]
   );
 
   const loadSavedFileIntoWorkspace = useCallback(
@@ -4113,10 +3445,25 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
           };
         }
 
+        if (file.kind === 'vault' || file.fileName === VAULT_FILENAME) {
+          return {
+            ok: true,
+            message: `AES-256-GCM key vault (${VAULT_FILENAME}) is active.`,
+          };
+        }
+
+        const forcedKind =
+          file.kind === 'lorebook' || file.folderPath === 'Lorebooks/'
+            ? 'lorebook'
+            : file.kind === 'character' || file.folderPath === 'Characters/'
+              ? 'character'
+              : undefined;
+
         const parsed = parseImportedJsonString(
           file.content,
           undefined,
-          file.fileName
+          file.fileName,
+          forcedKind
         );
         if (parsed.kind === 'character') {
           parsed.character.isNsfw = isCharacterNsfw(parsed.character, tags);
@@ -4134,7 +3481,7 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
           setActiveTab('character');
           return {
             ok: true,
-            message: `Loaded character "${parsed.character.name}" into Character Workbench.`,
+            message: `Opened character "${parsed.character.name}" from ./Saves/Characters/${file.fileName}.`,
           };
         } else if (parsed.kind === 'lorebook') {
           parsed.lorebook.isNsfw = isLorebookNsfw(parsed.lorebook, tags);
@@ -4152,7 +3499,7 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
           setActiveTab('lorebook');
           return {
             ok: true,
-            message: `Loaded lorebook "${parsed.lorebook.name}" into Lorebook Workbench.`,
+            message: `Opened lorebook "${parsed.lorebook.name}" from ./Saves/Lorebooks/${file.fileName}.`,
           };
         }
         return { ok: false, message: 'Unrecognized file format.' };
@@ -4163,64 +3510,68 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
     [characters, lorebooks, tags]
   );
 
+  // Real Disk Delete & Auto-Rescan from Options File List
   const deleteSavedFile = useCallback(
     (fileId: string) => {
-      const target = savedFiles.find((f) => f.id === fileId);
+      const target = diskFiles.find((f) => f.id === fileId);
       if (!target) return;
+      if (target.kind !== 'character' && target.kind !== 'lorebook') return;
 
-      if (target.kind === 'character') {
-        const match = characters.find(
-          (c) => `${sanitizeFilename(c.name)}.json` === target.fileName
-        );
-        if (match && match.id) {
-          deleteCharacter(match.id);
-        }
-        if (nativeDirHandleRef.current) {
-          const rootHandle = nativeDirHandleRef.current;
-          (async () => {
-            try {
-              const charsDir = await rootHandle.getDirectoryHandle('Characters');
-              await charsDir.removeEntry(target.fileName);
-            } catch {
-              // Ignore if not present on disk
-            }
-          })();
-        }
-      } else if (target.kind === 'lorebook') {
-        const match = lorebooks.find(
-          (l) => `${sanitizeFilename(l.name)}.json` === target.fileName
-        );
-        if (match && match.id) {
-          deleteLorebook(match.id);
-        }
-        if (nativeDirHandleRef.current) {
-          const rootHandle = nativeDirHandleRef.current;
-          (async () => {
-            try {
-              const loreDir = await rootHandle.getDirectoryHandle('Lorebooks');
-              await loreDir.removeEntry(target.fileName);
-            } catch {
-              // Ignore if not present on disk
-            }
-          })();
-        }
-      }
+      const folder = target.kind === 'lorebook' ? 'Lorebooks' : 'Characters';
+      void fetch('/api/disk/delete', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          folder,
+          fileName: target.fileName,
+          customSavePath: settings.activeSaveFolder,
+        }),
+      })
+        .then((r) => r.json())
+        .then((diskState: DiskStateResponse) => {
+          if (diskState && diskState.ok) {
+            void applyDiskStateToWorkspace(diskState);
+          }
+        })
+        .catch(() => {
+          // Ignore network error
+        });
     },
-    [savedFiles, characters, lorebooks, deleteCharacter, deleteLorebook]
+    [diskFiles, settings.activeSaveFolder, applyDiskStateToWorkspace]
   );
 
+  const savedFiles = useMemo<SavedFileEntry[]>(() => {
+    if (diskFiles.length > 0) {
+      return diskFiles;
+    }
+    return buildUnifiedSavedFiles(
+      characters,
+      lorebooks,
+      themes,
+      tags,
+      settings.activeThemeId,
+      settings.cardSpecVersion
+    );
+  }, [
+    diskFiles,
+    characters,
+    lorebooks,
+    themes,
+    tags,
+    settings.activeThemeId,
+    settings.cardSpecVersion,
+  ]);
+
   const exportSaveFolderBundle = useCallback(() => {
-    const rootLabel = nativeDirectoryName
-      ? `/${nativeDirectoryName}/`
-      : UNIFIED_INTERNAL_ROOT;
     const bundle = {
       bundleVersion: '2.0.0',
       exportedAt: new Date().toISOString(),
-      saveFolderRoot: rootLabel,
+      saveFolderRoot: settings.activeSaveFolder || UNIFIED_INTERNAL_ROOT,
       structure: {
         charactersSubfolder: 'Characters/',
         lorebooksSubfolder: 'Lorebooks/',
         metaFile: META_FILENAME,
+        vaultFile: VAULT_FILENAME,
       },
       fileCount: savedFiles.length,
       files: savedFiles.map((f) => ({
@@ -4229,20 +3580,20 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
         subfolder: f.folderPath,
         kind: f.kind,
         updatedAt: f.updatedAt,
-        data: JSON.parse(f.content),
+        data: (() => {
+          try {
+            return JSON.parse(f.content);
+          } catch {
+            return f.content;
+          }
+        })(),
       })),
     };
     const blob = new Blob([JSON.stringify(bundle, null, 2)], {
       type: 'application/json',
     });
-    const folderSlug = sanitizeFilename(
-      nativeDirectoryName || 'TavernSmith_Saves'
-    );
-    triggerBrowserDownload(
-      blob,
-      `TavernSmith_${folderSlug}_BackupBundle.json`
-    );
-  }, [savedFiles, nativeDirectoryName]);
+    triggerBrowserDownload(blob, 'TavernSmith_Saves_BackupBundle.json');
+  }, [savedFiles, settings.activeSaveFolder]);
 
   const bindLorebookToCharacter = useCallback(
     (characterId: string, lorebookToBind: Lorebook) => {
@@ -4260,358 +3611,6 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
     []
   );
 
-  const saveNow = useCallback(
-    (mode: 'manual' | 'autosave' = 'manual') => {
-      // Check for duplicate Character or Lorebook names on manual save
-      if (mode === 'manual') {
-        const seenCharNames = new Map<string, string>();
-        for (const c of characters) {
-          const lower = (c.name || '').trim().toLowerCase();
-          if (!lower) continue;
-          const prevId = seenCharNames.get(lower);
-          if (prevId && prevId !== c.id) {
-            setNameConflictRequest({
-              kind: 'character',
-              itemId: c.id!,
-              conflictingName: c.name,
-              suggestedNames: buildSuggestedUniqueNames(
-                c.name,
-                characters.map((ch) => ch.name)
-              ),
-              sourceAction: 'save',
-            });
-            return;
-          }
-          seenCharNames.set(lower, c.id!);
-        }
-
-        const seenBookNames = new Map<string, string>();
-        for (const l of lorebooks) {
-          const lower = (l.name || '').trim().toLowerCase();
-          if (!lower) continue;
-          const prevId = seenBookNames.get(lower);
-          if (prevId && prevId !== l.id) {
-            setNameConflictRequest({
-              kind: 'lorebook',
-              itemId: l.id!,
-              conflictingName: l.name,
-              suggestedNames: buildSuggestedUniqueNames(
-                l.name,
-                lorebooks.map((lb) => lb.name)
-              ),
-              sourceAction: 'save',
-            });
-            return;
-          }
-          seenBookNames.set(lower, l.id!);
-        }
-      }
-
-      const nowIso = new Date().toISOString();
-      const displayTime = formatSafeTimestamp(nowIso);
-      const rootFolderDisplay = nativeDirectoryName
-        ? `/${nativeDirectoryName}/`
-        : UNIFIED_INTERNAL_ROOT;
-
-      const latestFiles = buildUnifiedSavedFiles(
-        characters,
-        lorebooks,
-        themes,
-        tags,
-        settings.activeThemeId,
-        settings.cardSpecVersion,
-        nowIso
-      );
-      savedFilesRef.current = latestFiles;
-
-      // Only persist in browser fallback storage when NO Local PC Save Folder is connected
-      if (nativeDirHandleRef.current) {
-        void writeFilesToNativeDirectory(
-          nativeDirHandleRef.current,
-          characters,
-          lorebooks,
-          lorebook,
-          themes,
-          tags,
-          settings.activeThemeId,
-          settings.cardSpecVersion,
-          nowIso
-        ).then(() => {
-          safeLocalStorageRemove(SAVE_FOLDER_FILES_STORAGE_KEY);
-        });
-      } else {
-        safeLocalStorageSet(
-          SAVE_FOLDER_FILES_STORAGE_KEY,
-          JSON.stringify(latestFiles)
-        );
-      }
-
-      const filesWrittenList: string[] = [];
-      for (const c of characters) {
-        filesWrittenList.push(`Characters/${sanitizeFilename(c.name)}.json`);
-      }
-      for (const l of lorebooks) {
-        filesWrittenList.push(`Lorebooks/${sanitizeFilename(l.name)}.json`);
-      }
-      filesWrittenList.push(META_FILENAME);
-
-      const newLog: SaveLogEntry = {
-        id: `savelog-${Date.now()}`,
-        timestamp: displayTime,
-        mode,
-        folderPath: rootFolderDisplay,
-        filesWritten: filesWrittenList,
-        nativeSynced: Boolean(nativeDirHandleRef.current),
-      };
-
-      setSaveLogs((prev) => {
-        const updatedLogs = [newLog, ...prev.slice(0, 19)];
-        const prefsPayload: PersistedPreferencesState = {
-          activeCharacterId,
-          activeLorebookId,
-          aiConfig: stripApiKeysForStorage(aiConfig),
-          settings,
-          saveLogs: updatedLogs,
-          lastSavedAt: displayTime,
-        };
-        safeLocalStorageSet(
-          PREFERENCES_STORAGE_KEY,
-          JSON.stringify(prefsPayload)
-        );
-        return updatedLogs;
-      });
-
-      if (mode === 'manual') {
-        purgeBrowserRuntimeCaches();
-      }
-
-      setLastSavedAt(displayTime);
-      setIsDirty(false);
-    },
-    [
-      characters,
-      activeCharacterId,
-      lorebooks,
-      activeLorebookId,
-      lorebook,
-      themes,
-      tags,
-      aiConfig,
-      settings,
-      nativeDirectoryName,
-      writeFilesToNativeDirectory,
-    ]
-  );
-
-  const saveAndSyncNow = useCallback(async (): Promise<{
-    ok: boolean;
-    message: string;
-  }> => {
-    saveNow('manual');
-    if (nativeDirHandleRef.current) {
-      await scanAndLoadSaveFolder({
-        dirHandleOverride: nativeDirHandleRef.current,
-        silent: true,
-      });
-      safeLocalStorageRemove(SAVE_FOLDER_FILES_STORAGE_KEY);
-    }
-    purgeBrowserRuntimeCaches();
-    setIsDirty(false);
-    return {
-      ok: true,
-      message: nativeDirectoryName
-        ? `Saved & synced to Local PC Folder (${nativeDirectoryName}/) and cleared temporary browser cache.`
-        : `Saved & synced to Save Folder (${UNIFIED_INTERNAL_ROOT}) and cleared temporary runtime cache.`,
-    };
-  }, [saveNow, scanAndLoadSaveFolder, nativeDirectoryName]);
-
-  // Only persist user data in localStorage fallback when NO Local PC Save Folder is configured,
-  // and NEVER cache built-in DEFAULT_TAGS or UI code in localStorage.
-  useEffect(() => {
-    if (!nativeDirHandleRef.current) {
-      safeLocalStorageSet(
-        SAVE_FOLDER_FILES_STORAGE_KEY,
-        JSON.stringify(savedFiles)
-      );
-    } else {
-      safeLocalStorageRemove(SAVE_FOLDER_FILES_STORAGE_KEY);
-    }
-    const prefsPayload: PersistedPreferencesState = {
-      activeCharacterId,
-      activeLorebookId,
-      aiConfig: stripApiKeysForStorage(aiConfig),
-      settings,
-      saveLogs,
-      lastSavedAt,
-    };
-    safeLocalStorageSet(PREFERENCES_STORAGE_KEY, JSON.stringify(prefsPayload));
-  }, [
-    activeCharacterId,
-    activeLorebookId,
-    aiConfig,
-    settings,
-    savedFiles,
-    saveLogs,
-    lastSavedAt,
-  ]);
-
-  // Keep a live ref of all workspace state including `isDirty` for `beforeunload` / `pagehide`
-  const latestWorkspaceRef = useRef({
-    characters,
-    activeCharacterId,
-    lorebooks,
-    activeLorebookId,
-    lorebook,
-    themes,
-    tags,
-    aiConfig,
-    settings,
-    saveLogs,
-    lastSavedAt,
-    isDirty,
-  });
-
-  useEffect(() => {
-    latestWorkspaceRef.current = {
-      characters,
-      activeCharacterId,
-      lorebooks,
-      activeLorebookId,
-      lorebook,
-      themes,
-      tags,
-      aiConfig,
-      settings,
-      saveLogs,
-      lastSavedAt,
-      isDirty,
-    };
-  }, [
-    characters,
-    activeCharacterId,
-    lorebooks,
-    activeLorebookId,
-    lorebook,
-    themes,
-    tags,
-    aiConfig,
-    settings,
-    saveLogs,
-    lastSavedAt,
-    isDirty,
-  ]);
-
-  // Attach lifecycle listeners for `beforeunload`, `pagehide`, and `visibilitychange`:
-  // - Prompts the user before closing the tab/window if unsaved changes exist (`isDirty`)
-  // - Flushes data to Save Folder and wipes temporary browser cache
-  useEffect(() => {
-    const flushForceSaveOnClose = (purgeCache: boolean) => {
-      try {
-        const snap = latestWorkspaceRef.current;
-        const nowIso = new Date().toISOString();
-        const displayTime = formatSafeTimestamp(nowIso);
-
-        const latestFiles = buildUnifiedSavedFiles(
-          snap.characters,
-          snap.lorebooks,
-          snap.themes,
-          snap.tags,
-          snap.settings.activeThemeId,
-          snap.settings.cardSpecVersion,
-          nowIso
-        );
-        savedFilesRef.current = latestFiles;
-
-        if (nativeDirHandleRef.current) {
-          void writeFilesToNativeDirectory(
-            nativeDirHandleRef.current,
-            snap.characters,
-            snap.lorebooks,
-            snap.lorebook,
-            snap.themes,
-            snap.tags,
-            snap.settings.activeThemeId,
-            snap.settings.cardSpecVersion,
-            nowIso
-          );
-          safeLocalStorageRemove(SAVE_FOLDER_FILES_STORAGE_KEY);
-        } else {
-          safeLocalStorageSet(
-            SAVE_FOLDER_FILES_STORAGE_KEY,
-            JSON.stringify(latestFiles)
-          );
-        }
-
-        const prefsPayload: PersistedPreferencesState = {
-          activeCharacterId: snap.activeCharacterId,
-          activeLorebookId: snap.activeLorebookId,
-          aiConfig: stripApiKeysForStorage(snap.aiConfig),
-          settings: snap.settings,
-          saveLogs: snap.saveLogs,
-          lastSavedAt: displayTime,
-        };
-        safeLocalStorageSet(
-          PREFERENCES_STORAGE_KEY,
-          JSON.stringify(prefsPayload)
-        );
-        savePersistedProviderCredentials(
-          snap.aiConfig.savedProviderKeys || {},
-          snap.aiConfig.savedProviderModels || {}
-        );
-      } catch {
-        // Ignore storage errors during unload
-      }
-
-      if (purgeCache) {
-        purgeBrowserRuntimeCaches();
-      }
-    };
-
-    const handleBeforeUnload = (e: BeforeUnloadEvent) => {
-      const snap = latestWorkspaceRef.current;
-      flushForceSaveOnClose(true);
-      if (snap.isDirty) {
-        e.preventDefault();
-        e.returnValue =
-          'You have unsaved changes in TavernSmith. Save & Sync before exiting?';
-        return e.returnValue;
-      }
-    };
-
-    const handlePageHide = () => {
-      flushForceSaveOnClose(true);
-    };
-
-    const handleVisibilityChange = () => {
-      if (typeof document !== 'undefined' && document.visibilityState === 'hidden') {
-        flushForceSaveOnClose(false);
-      }
-    };
-
-    window.addEventListener('beforeunload', handleBeforeUnload);
-    window.addEventListener('pagehide', handlePageHide);
-    document.addEventListener('visibilitychange', handleVisibilityChange);
-
-    return () => {
-      window.removeEventListener('beforeunload', handleBeforeUnload);
-      window.removeEventListener('pagehide', handlePageHide);
-      document.removeEventListener('visibilitychange', handleVisibilityChange);
-    };
-  }, [writeFilesToNativeDirectory]);
-
-  useEffect(() => {
-    if (!settings.autoSaveEnabled) return;
-    const intervalMs = Math.max(5, settings.autoSaveIntervalSec) * 1000;
-
-    const timerId = window.setInterval(() => {
-      saveNow('autosave');
-    }, intervalMs);
-
-    return () => {
-      window.clearInterval(timerId);
-    };
-  }, [settings.autoSaveEnabled, settings.autoSaveIntervalSec, saveNow]);
-
   const importFromFiles = useCallback(
     async (
       files: FileList | File[]
@@ -4622,11 +3621,16 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
       let lastCharId: string | null = null;
       let lastBookId: string | null = null;
 
+      const nextCharacters = [...latestWorkspaceRef.current.characters];
+      const nextLorebooks = [...latestWorkspaceRef.current.lorebooks];
+
       for (const file of list) {
         if (file.name === META_FILENAME) {
           try {
             const text = await file.text();
-            const parsedMeta = JSON.parse(text) as Partial<TavernSmithMetaPayload>;
+            const parsedMeta = JSON.parse(
+              text
+            ) as Partial<TavernSmithMetaPayload>;
             if (Array.isArray(parsedMeta.tags) && parsedMeta.tags.length > 0) {
               setTags((prev) => {
                 const byName = new Map(
@@ -4665,69 +3669,57 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
         const result = await importCardFromFile(file);
         if (result.kind === 'character') {
           result.character.isNsfw = isCharacterNsfw(result.character, tags);
-          setCharacters((prev) => {
-            const conflict = prev.some(
-              (c) =>
-                c.id !== result.character.id &&
-                (c.name || '').trim().toLowerCase() ===
-                  (result.character.name || '').trim().toLowerCase()
-            );
-            if (conflict) {
-              const allNames = prev.map((c) => c.name || 'Untitled');
-              window.setTimeout(() => {
-                setNameConflictRequest({
-                  kind: 'character',
-                  itemId: result.character.id!,
-                  conflictingName: result.character.name,
-                  suggestedNames: buildSuggestedUniqueNames(
-                    result.character.name,
-                    allNames
-                  ),
-                  sourceAction: 'import',
-                });
-              }, 0);
-            }
-            return [result.character, ...prev];
-          });
+          const existingIdx = nextCharacters.findIndex(
+            (c) =>
+              (c.name || '').trim().toLowerCase() ===
+              (result.character.name || '').trim().toLowerCase()
+          );
+          if (existingIdx !== -1) {
+            result.character.id = nextCharacters[existingIdx].id;
+            nextCharacters[existingIdx] = result.character;
+          } else {
+            nextCharacters.unshift(result.character);
+          }
           lastCharId = result.character.id!;
           importedChars++;
+
           if (result.embeddedLorebook) {
             const book = result.embeddedLorebook;
             book.isNsfw = isLorebookNsfw(book, tags);
-            setLorebooks((prev) => [book, ...prev]);
+            const existingBookIdx = nextLorebooks.findIndex(
+              (l) =>
+                (l.name || '').trim().toLowerCase() ===
+                (book.name || '').trim().toLowerCase()
+            );
+            if (existingBookIdx !== -1) {
+              book.id = nextLorebooks[existingBookIdx].id;
+              nextLorebooks[existingBookIdx] = book;
+            } else {
+              nextLorebooks.unshift(book);
+            }
             lastBookId = book.id!;
             importedBooks++;
           }
         } else if (result.kind === 'lorebook') {
           result.lorebook.isNsfw = isLorebookNsfw(result.lorebook, tags);
-          setLorebooks((prev) => {
-            const conflict = prev.some(
-              (l) =>
-                l.id !== result.lorebook.id &&
-                (l.name || '').trim().toLowerCase() ===
-                  (result.lorebook.name || '').trim().toLowerCase()
-            );
-            if (conflict) {
-              const allNames = prev.map((l) => l.name || 'Untitled Lorebook');
-              window.setTimeout(() => {
-                setNameConflictRequest({
-                  kind: 'lorebook',
-                  itemId: result.lorebook.id!,
-                  conflictingName: result.lorebook.name,
-                  suggestedNames: buildSuggestedUniqueNames(
-                    result.lorebook.name,
-                    allNames
-                  ),
-                  sourceAction: 'import',
-                });
-              }, 0);
-            }
-            return [result.lorebook, ...prev];
-          });
+          const existingBookIdx = nextLorebooks.findIndex(
+            (l) =>
+              (l.name || '').trim().toLowerCase() ===
+              (result.lorebook.name || '').trim().toLowerCase()
+          );
+          if (existingBookIdx !== -1) {
+            result.lorebook.id = nextLorebooks[existingBookIdx].id;
+            nextLorebooks[existingBookIdx] = result.lorebook;
+          } else {
+            nextLorebooks.unshift(result.lorebook);
+          }
           lastBookId = result.lorebook.id!;
           importedBooks++;
         }
       }
+
+      setCharacters(nextCharacters);
+      setLorebooks(nextLorebooks);
 
       if (lastCharId) {
         setActiveCharacterId(lastCharId);
@@ -4735,15 +3727,22 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
         setActiveLorebookId(lastBookId);
       }
 
+      if (importedChars > 0 || importedBooks > 0) {
+        await executeDiskSaveAndRescan('manual', {
+          characters: nextCharacters,
+          lorebooks: nextLorebooks,
+        });
+      }
+
       const parts: string[] = [];
       if (importedChars > 0) {
         parts.push(
-          `${importedChars} character${importedChars === 1 ? '' : 's'} (saved to Characters/)`
+          `${importedChars} character${importedChars === 1 ? '' : 's'} (saved to ./Saves/Characters/)`
         );
       }
       if (importedBooks > 0) {
         parts.push(
-          `${importedBooks} lorebook${importedBooks === 1 ? '' : 's'} (saved to Lorebooks/)`
+          `${importedBooks} lorebook${importedBooks === 1 ? '' : 's'} (saved to ./Saves/Lorebooks/)`
         );
       }
 
@@ -4755,7 +3754,7 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
             : 'Restored metadata or no new card files found.',
       };
     },
-    [tags]
+    [tags, executeDiskSaveAndRescan]
   );
 
   const updateSettings = useCallback((partial: Partial<AppSettings>) => {
@@ -4780,57 +3779,21 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
   }, []);
 
   const resetWorkspaceToDefaults = useCallback(() => {
-    safeLocalStorageRemove(PREFERENCES_STORAGE_KEY);
-    safeLocalStorageRemove(SAVE_FOLDER_FILES_STORAGE_KEY);
-    for (const oldKey of LEGACY_STORAGE_KEYS) {
-      safeLocalStorageRemove(oldKey);
-    }
     purgeBrowserRuntimeCaches();
-    void clearDirectoryHandleFromIndexedDB();
-    nativeDirHandleRef.current = null;
-    pendingReconnectRecordRef.current = null;
-    setNativeDirectoryName(null);
-    setPendingReconnectFolderName(null);
-    setCharacters([]);
-    setActiveCharacterId('');
-    setLorebooks([]);
-    setActiveLorebookId('');
     setThemes(DEFAULT_CONTEXT_THEMES);
     setTags(mergeWithDefaultTags([]));
-    // Preserve saved provider API keys across workspace resets so users never lose keys!
-    const creds = loadPersistedProviderCredentials();
+    const inMemKeys = getInMemoryDecryptedKeys();
+    const inMemModels = loadProviderModelsMap();
     setAiConfigState({
       ...DEFAULT_AI_CONFIG,
-      savedProviderKeys: creds.savedProviderKeys,
-      savedProviderModels: creds.savedProviderModels,
+      savedProviderKeys: inMemKeys,
+      savedProviderModels: inMemModels,
     });
     setSettings(DEFAULT_SETTINGS);
     const nowDisplay = formatSafeTimestamp(new Date().toISOString());
-    setSaveLogs([
-      {
-        id: `log-reset-${Date.now()}`,
-        timestamp: nowDisplay,
-        mode: 'manual',
-        folderPath: UNIFIED_INTERNAL_ROOT,
-        filesWritten: [META_FILENAME],
-        nativeSynced: false,
-      },
-    ]);
     setLastSavedAt(nowDisplay);
     setIsDirty(false);
   }, []);
-
-  const storageBytesUsed = useMemo(() => {
-    try {
-      const rawPrefs = safeLocalStorageGet(PREFERENCES_STORAGE_KEY) || '';
-      const rawFiles = safeLocalStorageGet(SAVE_FOLDER_FILES_STORAGE_KEY) || '';
-      const localBytes = new Blob([rawPrefs, rawFiles]).size;
-      const filesBytes = savedFiles.reduce((acc, f) => acc + f.sizeBytes, 0);
-      return Math.max(localBytes, filesBytes);
-    } catch {
-      return savedFiles.reduce((acc, f) => acc + f.sizeBytes, 0);
-    }
-  }, [savedFiles]);
 
   const tokenBreakdown = useMemo(
     () =>
@@ -4891,19 +3854,12 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
       saveAndSyncNow,
       resetWorkspaceToDefaults,
       savedFiles,
-      saveLogs,
-      nativeDirectoryName,
-      pendingReconnectFolderName,
-      isSyncingFolder,
-      selectNativeSaveFolder,
-      reconnectNativeSaveFolder,
-      scanAndLoadSaveFolder,
+      diskResolvedPath,
       loadSavedFileIntoWorkspace,
       createSaveFolder,
       setActiveSaveFolder,
       deleteSavedFile,
       exportSaveFolderBundle,
-      storageBytesUsed,
       importFromFiles,
     }),
     [
@@ -4948,19 +3904,12 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
       saveAndSyncNow,
       resetWorkspaceToDefaults,
       savedFiles,
-      saveLogs,
-      nativeDirectoryName,
-      pendingReconnectFolderName,
-      isSyncingFolder,
-      selectNativeSaveFolder,
-      reconnectNativeSaveFolder,
-      scanAndLoadSaveFolder,
+      diskResolvedPath,
       loadSavedFileIntoWorkspace,
       createSaveFolder,
       setActiveSaveFolder,
       deleteSavedFile,
       exportSaveFolderBundle,
-      storageBytesUsed,
       importFromFiles,
     ]
   );
@@ -4975,3 +3924,4 @@ export function useStore(): StoreContextValue {
   }
   return ctx;
 }
+
