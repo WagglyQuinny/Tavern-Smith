@@ -48,8 +48,6 @@ import {
   detectModelCompatibilityFormat,
   doesBackendSupportVision,
   getProviderKeyId,
-  isModelVisionCapable,
-  resolveEffectiveFormat,
   testBackendConnection,
 } from '../services/aiService';
 import {
@@ -77,7 +75,6 @@ export const OptionsView: React.FC = () => {
     aiConfig,
     setAiConfig,
     switchAIPreset,
-    saveNow,
     saveAndSyncNow,
     resetWorkspaceToDefaults,
     lastSavedAt,
@@ -139,11 +136,6 @@ export const OptionsView: React.FC = () => {
   const autoDetectedFormat = useMemo(
     () => detectModelCompatibilityFormat(aiConfig.modelName, aiConfig.preset),
     [aiConfig.modelName, aiConfig.preset]
-  );
-
-  const effectiveFormat = useMemo(
-    () => resolveEffectiveFormat(aiConfig),
-    [aiConfig]
   );
 
   const allSelectableModels = useMemo(() => {
@@ -1308,11 +1300,12 @@ export const OptionsView: React.FC = () => {
           </div>
         </div>
 
-        {/* Right Column: Expanded AI Backend Connection Manager & Model Scanner */}
+        {/* Right Column: Streamlined AI Connection Manager */}
         <div
           style={{ borderColor: 'var(--theme-accent)' }}
-          className="rounded-xl border bg-white dark:bg-slate-900 p-5 space-y-5 min-w-0"
+          className="rounded-xl border bg-white dark:bg-slate-900 p-5 space-y-4 min-w-0"
         >
+          {/* Card Header */}
           <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 dark:border-slate-800 pb-3">
             <div className="flex items-center gap-2">
               <Server
@@ -1320,597 +1313,486 @@ export const OptionsView: React.FC = () => {
                 style={{ color: 'var(--theme-accent)' }}
               />
               <h2 className="text-sm font-semibold text-slate-900 dark:text-white">
-                AI Connections, Model Scanner &amp; Thinking Parser
+                AI Connection
               </h2>
               <Tooltip
                 title="Multi-Provider AI Engine"
-                content="Connect to LM Studio, Ollama, KoboldCPP, Google Gemini, xAI Grok, Meta Llama 4 (OpenRouter / Groq / Meta Direct), or custom OpenAI-compatible servers. Automatically strips <think> blocks."
+                content="Connect to local or cloud AI endpoints. Automatically strips <think> blocks."
               />
             </div>
 
-            <button
-              type="button"
-              onClick={handleScanModels}
-              disabled={testingConnection}
-              style={{ borderColor: 'var(--theme-accent)' }}
-              className="theme-hover-outline flex items-center gap-1.5 rounded-lg border bg-slate-50 dark:bg-slate-800 px-3 py-1.5 text-xs font-semibold text-slate-900 dark:text-white disabled:opacity-50 cursor-pointer"
-            >
-              <RefreshCw
-                className={`h-3.5 w-3.5 ${
-                  testingConnection ? 'animate-spin' : ''
-                }`}
-              />
-              <span>
-                {testingConnection
-                  ? 'Scanning...'
-                  : '🔄 Scan Available Models'}
+            {testResult?.ok && (
+              <span className="inline-flex items-center gap-1 rounded-md border border-emerald-500/40 bg-emerald-500/10 px-2 py-0.5 font-mono text-[10px] font-semibold text-emerald-700 dark:text-emerald-300">
+                <CheckCircle2 className="h-3 w-3 shrink-0" />
+                <span>Connected</span>
               </span>
-            </button>
+            )}
           </div>
 
-          {/* Expanded 9 Provider Presets Grid */}
-          <div className="space-y-2">
-            <label className="text-xs font-medium text-slate-700 dark:text-slate-300">
-              One-Click Provider Presets
-            </label>
-            <div
-              style={{
-                gridTemplateColumns:
-                  'repeat(auto-fit, minmax(min(100%, 170px), 1fr))',
-              }}
-              className="grid gap-2"
-            >
-              {AI_BACKEND_PRESETS.map((preset) => {
-                const isSelected = aiConfig.preset === preset.id;
-                const providerKey = getProviderKeyId(preset.id);
-                const hasSavedKey = Boolean(
-                  (
-                    aiConfig.savedProviderKeys?.[preset.id] ||
-                    aiConfig.savedProviderKeys?.[providerKey] ||
-                    ''
-                  ).trim()
-                );
-                return (
-                  <button
-                    key={preset.id}
-                    type="button"
-                    onClick={() => handleSelectPreset(preset.id)}
-                    style={
-                      isSelected
-                        ? { borderColor: 'var(--theme-accent)' }
-                        : undefined
-                    }
-                    className={`theme-hover-outline rounded-lg border p-2.5 text-left transition-colors cursor-pointer ${
-                      isSelected
-                        ? 'bg-slate-50 dark:bg-slate-800/90'
-                        : 'border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-950/50'
-                    }`}
-                  >
-                    <div className="flex items-center justify-between gap-1">
-                      <span className="text-xs font-semibold text-slate-900 dark:text-white truncate">
-                        {preset.label}
-                      </span>
-                      {hasSavedKey && (
-                        <span className="rounded bg-emerald-500/15 px-1.5 py-0.5 font-mono text-[9px] font-bold text-emerald-700 dark:text-emerald-300 shrink-0">
-                          Key Saved ✓
-                        </span>
-                      )}
-                    </div>
-                    <div className="mt-0.5 font-mono text-[10px] text-slate-500 dark:text-slate-400 truncate">
-                      {preset.requiresKey
-                        ? hasSavedKey
-                          ? 'Saved Key Auto-Loaded'
-                          : 'Auth Token Required'
-                        : 'Local · No Key'}
-                    </div>
-                  </button>
-                );
-              })}
+          {/* Row 1: Provider Dropdown + Endpoint URL */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div className="space-y-1">
+              <label
+                htmlFor="ai-provider-select"
+                className="block text-xs font-medium text-slate-700 dark:text-slate-300"
+              >
+                Provider
+              </label>
+              <select
+                id="ai-provider-select"
+                value={aiConfig.preset}
+                onChange={(e) =>
+                  handleSelectPreset(e.target.value as AIPresetId)
+                }
+                className="theme-focus-ring w-full rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 px-3 py-2 text-xs font-medium text-slate-900 dark:text-white cursor-pointer"
+              >
+                {AI_BACKEND_PRESETS.map((preset) => {
+                  const providerKey = getProviderKeyId(preset.id);
+                  const hasSavedKey = Boolean(
+                    (
+                      aiConfig.savedProviderKeys?.[preset.id] ||
+                      aiConfig.savedProviderKeys?.[providerKey] ||
+                      ''
+                    ).trim()
+                  );
+                  const suffix = hasSavedKey
+                    ? ' · Key Saved ✓'
+                    : !preset.requiresKey
+                      ? ' · Local'
+                      : '';
+                  return (
+                    <option key={preset.id} value={preset.id}>
+                      {preset.label}
+                      {suffix}
+                    </option>
+                  );
+                })}
+              </select>
             </div>
-            <p className="text-[11px] text-slate-500 dark:text-slate-400">
-              {currentPresetMeta.description}
-            </p>
+
+            <div className="space-y-1">
+              <label className="flex items-center gap-1.5 text-xs font-medium text-slate-700 dark:text-slate-300">
+                <span>Endpoint URL</span>
+                <Tooltip content="Base URL for OpenAI-compatible /v1, Ollama, or Gemini endpoints." />
+              </label>
+              <input
+                type="url"
+                value={aiConfig.url}
+                onChange={(e) => {
+                  setAiConfig((prev) => ({ ...prev, url: e.target.value }));
+                  setTestResult(null);
+                }}
+                placeholder="http://localhost:1234/v1"
+                className="theme-focus-ring font-mono w-full rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 px-3 py-2 text-xs text-slate-900 dark:text-white"
+              />
+            </div>
           </div>
 
-          {/* Endpoint URL, Bearer Credential Input & Prominent "⚡ Connect & Test" Button */}
-          <div className="space-y-3">
-            <div
-              style={{
-                gridTemplateColumns:
-                  'repeat(auto-fit, minmax(min(100%, 210px), 1fr))',
-              }}
-              className="grid gap-3 items-end"
-            >
-              <div className="space-y-1.5">
-                <label className="flex items-center gap-1.5 text-xs font-medium text-slate-700 dark:text-slate-300">
-                  <span>Base Endpoint URL</span>
-                  <Tooltip content="Endpoint base URL for /v1/chat/completions, Ollama /api/tags, or Gemini /v1beta/openai." />
-                </label>
-                <input
-                  type="url"
-                  value={aiConfig.url}
-                  onChange={(e) =>
-                    setAiConfig((prev) => ({ ...prev, url: e.target.value }))
-                  }
-                  placeholder="http://localhost:1234/v1"
-                  className="theme-focus-ring font-mono w-full rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 px-3 py-2 text-xs text-slate-900 dark:text-white"
+          {/* Row 2: Full-Width API Key Input + Connect Action */}
+          <div className="space-y-2">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <label className="flex items-center gap-1.5 text-xs font-medium text-slate-700 dark:text-slate-300">
+                <KeyRound
+                  className="h-3.5 w-3.5"
+                  style={{ color: 'var(--theme-accent)' }}
                 />
-              </div>
+                <span>
+                  {aiConfig.preset === 'gemini'
+                    ? 'Gemini API Key (Optional)'
+                    : currentPresetMeta.requiresKey
+                      ? `${currentPresetMeta.label} API Key`
+                      : 'API Key (Optional)'}
+                </span>
+                <Tooltip content="Encrypted locally with AES-256-GCM. Never exported into cards or lorebooks." />
+              </label>
 
-              {/* API Key Input Field — ALWAYS Unblocked & Editable for ALL Providers Including Google Gemini */}
-              <div className="space-y-1.5">
-                <div className="flex items-center justify-between gap-2">
-                  <label className="flex items-center gap-1.5 text-xs font-medium text-slate-700 dark:text-slate-300">
-                    <KeyRound
-                      className="h-3.5 w-3.5"
-                      style={{ color: 'var(--theme-accent)' }}
-                    />
-                    <span>
-                      {aiConfig.preset === 'gemini'
-                        ? 'Google Gemini API Key (Custom Key Prioritized)'
-                        : currentPresetMeta.requiresKey
-                          ? `${currentPresetMeta.label} API Key`
-                          : 'Bearer API Key (Optional for Local)'}
-                    </span>
-                    <Tooltip content="Encrypted at rest using AES-256-GCM (PBKDF2 100k iterations, 12B IV, 16B Salt) in _tavernsmith_vault_enc. Never written in plaintext or exported into Character/Lorebook files." />
-                  </label>
-                  <span className="inline-flex items-center gap-1 font-mono text-[10px] text-emerald-600 dark:text-emerald-400">
-                    <Lock className="h-2.5 w-2.5" />
-                    <span>AES-256-GCM Vault</span>
-                  </span>
-                </div>
+              {aiConfig.preset === 'gemini' && (
+                <span className="font-mono text-[10px] text-slate-500 dark:text-slate-400">
+                  {aiConfig.apiKey.trim()
+                    ? 'Custom key active'
+                    : 'Using /api/gemini fallback'}
+                </span>
+              )}
+            </div>
 
-                <div className="flex items-center gap-1.5">
-                  <div className="relative flex-1 min-w-0">
-                    <input
-                      type={showApiKey ? 'text' : 'password'}
-                      value={aiConfig.apiKey}
-                      onChange={(e) =>
-                        setAiConfig((prev) => ({
-                          ...prev,
-                          apiKey: e.target.value,
-                        }))
-                      }
-                      placeholder={
-                        aiConfig.preset === 'gemini'
-                          ? 'Enter Gemini API key (AIza...) or leave empty for /api/gemini fallback'
-                          : currentPresetMeta.requiresKey
-                            ? `Enter ${currentPresetMeta.label} API key...`
-                            : 'Optional local bearer token...'
-                      }
-                      autoComplete="off"
-                      spellCheck={false}
-                      className="theme-focus-ring font-mono w-full rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 pl-3 pr-9 py-2 text-xs text-slate-900 dark:text-white"
-                    />
-                    <button
-                      type="button"
-                      onClick={handleToggleRevealApiKey}
-                      title={
-                        showApiKey
-                          ? 'Hide API Key'
-                          : 'Decrypt & Reveal API Key in Memory'
-                      }
-                      className="absolute right-2 top-1/2 -translate-y-1/2 rounded p-1 text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 cursor-pointer"
-                    >
-                      {showApiKey ? (
-                        <EyeOff className="h-3.5 w-3.5" />
-                      ) : (
-                        <Eye className="h-3.5 w-3.5" />
-                      )}
-                    </button>
-                  </div>
-
-                  <button
-                    type="button"
-                    onClick={handleSaveOrUpdateApiKey}
-                    style={{ borderColor: 'var(--theme-accent)' }}
-                    title="Encrypt with AES-256-GCM and save key for this provider"
-                    className="theme-hover-outline shrink-0 rounded-lg border bg-white dark:bg-slate-900 px-2.5 py-2 text-[11px] font-semibold text-slate-800 dark:text-slate-200 cursor-pointer whitespace-nowrap"
-                  >
-                    Save / Update Key
-                  </button>
-
-                  {aiConfig.apiKey && (
-                    <button
-                      type="button"
-                      onClick={handleClearApiKey}
-                      title="Clear saved API key for this provider"
-                      className="shrink-0 rounded-lg border border-rose-500/30 bg-rose-500/10 hover:bg-rose-500/20 px-2.5 py-2 text-[11px] font-semibold text-rose-600 dark:text-rose-300 cursor-pointer whitespace-nowrap"
-                    >
-                      Clear Key
-                    </button>
-                  )}
-                </div>
-
-                {/* Gemini Key Priority vs Server Fallback Indicator */}
-                {aiConfig.preset === 'gemini' && (
-                  <div className="flex flex-wrap items-center justify-between gap-2 pt-0.5 text-[10px] font-mono">
-                    {aiConfig.apiKey.trim() ? (
-                      <span className="inline-flex items-center gap-1 text-emerald-600 dark:text-emerald-400 font-semibold">
-                        <CheckCircle2 className="h-3 w-3 shrink-0" />
-                        <span>
-                          Custom Gemini API Key Active — Prioritized directly for all Gemini calls
-                        </span>
-                      </span>
-                    ) : (
-                      <span className="inline-flex items-center gap-1 text-slate-500 dark:text-slate-400">
-                        <ShieldCheck className="h-3 w-3 shrink-0 text-emerald-500" />
-                        <span>
-                          Key field empty — Using automatic server proxy fallback (/api/gemini)
-                        </span>
-                      </span>
-                    )}
-                  </div>
-                )}
-
-                {keyActionMessage && (
-                  <div className="text-[11px] font-mono font-semibold text-emerald-600 dark:text-emerald-400">
-                    ✓ {keyActionMessage}
-                  </div>
-                )}
-              </div>
-
-              <div>
+            <div className="flex flex-wrap sm:flex-nowrap items-center gap-2">
+              <div className="relative flex-1 min-w-[220px]">
+                <input
+                  type={showApiKey ? 'text' : 'password'}
+                  value={aiConfig.apiKey}
+                  onChange={(e) =>
+                    setAiConfig((prev) => ({
+                      ...prev,
+                      apiKey: e.target.value,
+                    }))
+                  }
+                  placeholder={
+                    aiConfig.preset === 'gemini'
+                      ? 'AIza... (or leave blank for server fallback)'
+                      : currentPresetMeta.requiresKey
+                        ? `Paste ${currentPresetMeta.label} key...`
+                        : 'Optional local token...'
+                  }
+                  autoComplete="off"
+                  spellCheck={false}
+                  className="theme-focus-ring font-mono w-full rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 pl-3 pr-9 py-2 text-xs text-slate-900 dark:text-white"
+                />
                 <button
                   type="button"
-                  onClick={handleScanModels}
-                  disabled={testingConnection}
-                  style={{ borderColor: 'var(--theme-accent)' }}
-                  className="theme-hover-outline w-full flex items-center justify-center gap-1.5 rounded-lg border bg-slate-900 dark:bg-white px-4 py-2 text-xs font-semibold text-white dark:text-slate-900 disabled:opacity-50 cursor-pointer whitespace-nowrap"
+                  onClick={handleToggleRevealApiKey}
+                  title={showApiKey ? 'Hide Key' : 'Show Key'}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 rounded p-1 text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 cursor-pointer"
                 >
-                  {testingConnection ? (
-                    <RefreshCw
-                      className="h-3.5 w-3.5 animate-spin"
-                      style={{ color: 'var(--theme-accent)' }}
-                    />
+                  {showApiKey ? (
+                    <EyeOff className="h-3.5 w-3.5" />
                   ) : (
-                    <Zap
-                      className="h-3.5 w-3.5"
-                      style={{ color: 'var(--theme-accent)' }}
-                    />
+                    <Eye className="h-3.5 w-3.5" />
                   )}
-                  <span>
-                    {testingConnection ? 'Testing...' : '⚡ Connect & Test'}
-                  </span>
                 </button>
               </div>
-            </div>
 
-            {/* AES-256-GCM Encrypted API Key Vault & Optional Passphrase / PIN Bar */}
-            <div className="rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-950/60 p-2.5 space-y-2">
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <div className="flex items-center gap-2 text-[11px]">
-                  {!vaultStatus.isLocked ? (
-                    <Unlock className="h-3.5 w-3.5 text-emerald-500 shrink-0" />
-                  ) : (
-                    <Lock className="h-3.5 w-3.5 text-amber-500 shrink-0" />
-                  )}
-                  <span className="font-semibold text-slate-800 dark:text-slate-200">
-                    Encrypted Key Vault (`_tavernsmith_vault_enc`)
-                  </span>
-                  <span className="font-mono text-[10px] text-slate-500 dark:text-slate-400">
-                    AES-256-GCM • PBKDF2-SHA256 (100k iter) • 12B IV + 16B Salt •{' '}
-                    {vaultStatus.hasCustomPassphrase
-                      ? 'Passphrase/PIN Protected'
-                      : 'Auto Device-Key Mode'}
-                  </span>
-                </div>
-
-                <div className="flex items-center gap-1.5">
-                  <button
-                    type="button"
-                    onClick={() =>
-                      setShowVaultPassphraseBar((prev) => !prev)
-                    }
-                    className="rounded-md border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-2.5 py-1 text-[10px] font-semibold text-slate-700 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white cursor-pointer"
-                  >
-                    {showVaultPassphraseBar
-                      ? 'Hide Vault PIN / Passphrase'
-                      : vaultStatus.hasCustomPassphrase
-                        ? 'Unlock / Manage Vault PIN'
-                        : 'Set Optional Vault Passphrase / PIN'}
-                  </button>
-                  {vaultStatus.hasCustomPassphrase && !vaultStatus.isLocked && (
-                    <button
-                      type="button"
-                      onClick={handleLockVaultInMemory}
-                      title="Wipe decrypted keys from RAM until unlocked again"
-                      className="rounded-md border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-2 py-1 text-[10px] font-mono text-slate-600 dark:text-slate-400 hover:text-amber-600 dark:hover:text-amber-300 cursor-pointer"
-                    >
-                      Lock Session
-                    </button>
-                  )}
-                </div>
-              </div>
-
-              {(showVaultPassphraseBar ||
-                (vaultStatus.hasCustomPassphrase && vaultStatus.isLocked)) && (
-                <div className="flex flex-wrap items-center gap-2 pt-1 border-t border-slate-200/70 dark:border-slate-800/70">
-                  <input
-                    type="password"
-                    value={vaultPassphraseInput}
-                    onChange={(e) => setVaultPassphraseInput(e.target.value)}
-                    placeholder={
-                      vaultStatus.hasCustomPassphrase && vaultStatus.isLocked
-                        ? 'Enter Vault Passphrase / PIN to unlock keys...'
-                        : 'Enter new Vault Passphrase / PIN (PBKDF2-SHA256)...'
-                    }
-                    autoComplete="off"
-                    className="theme-focus-ring font-mono flex-1 min-w-[210px] rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-2.5 py-1.5 text-xs text-slate-900 dark:text-white"
-                  />
-                  <button
-                    type="button"
-                    onClick={handleApplyVaultPassphrase}
-                    style={{ borderColor: 'var(--theme-accent)' }}
-                    className="theme-hover-outline rounded-lg border bg-slate-900 dark:bg-white px-3 py-1.5 text-[11px] font-semibold text-white dark:text-slate-900 cursor-pointer"
-                  >
-                    {vaultStatus.hasCustomPassphrase && vaultStatus.isLocked
-                      ? 'Unlock Vault'
-                      : 'Encrypt with Passphrase / PIN'}
-                  </button>
-                  {vaultStatus.hasCustomPassphrase && (
-                    <button
-                      type="button"
-                      onClick={handleRemoveVaultPassphrase}
-                      className="rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-2.5 py-1.5 text-[11px] font-medium text-slate-600 dark:text-slate-300 hover:text-rose-500 cursor-pointer"
-                    >
-                      Switch to Auto Device-Key
-                    </button>
-                  )}
-                </div>
-              )}
-
-              {vaultMessage && (
-                <div className="text-[11px] font-mono text-emerald-600 dark:text-emerald-400">
-                  {vaultMessage}
-                </div>
-              )}
-            </div>
-
-            {/* Live Connection Reliability Status Banner */}
-            {testResult && (
-              <div
-                className={`flex items-start gap-2.5 rounded-lg border p-3 text-xs ${
-                  testResult.ok
-                    ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-800 dark:text-emerald-200'
-                    : 'border-rose-500/40 bg-rose-500/10 text-rose-800 dark:text-rose-200'
-                }`}
+              <button
+                type="button"
+                onClick={handleSaveOrUpdateApiKey}
+                style={{ borderColor: 'var(--theme-accent)' }}
+                title="Save encrypted key"
+                className="theme-hover-outline shrink-0 rounded-lg border bg-white dark:bg-slate-900 px-3 py-2 text-xs font-semibold text-slate-800 dark:text-slate-200 cursor-pointer whitespace-nowrap"
               >
-                {testResult.ok ? (
-                  <CheckCircle2 className="h-4 w-4 text-emerald-500 shrink-0 mt-0.5" />
+                Save Key
+              </button>
+
+              {aiConfig.apiKey && (
+                <button
+                  type="button"
+                  onClick={handleClearApiKey}
+                  title="Clear saved key"
+                  className="shrink-0 rounded-lg border border-rose-500/30 bg-rose-500/10 hover:bg-rose-500/20 px-2.5 py-2 text-xs font-semibold text-rose-600 dark:text-rose-300 cursor-pointer whitespace-nowrap"
+                >
+                  Clear
+                </button>
+              )}
+
+              <button
+                type="button"
+                onClick={handleScanModels}
+                disabled={testingConnection}
+                style={{ borderColor: 'var(--theme-accent)' }}
+                className="theme-hover-outline shrink-0 flex items-center justify-center gap-1.5 rounded-lg border bg-slate-900 dark:bg-white px-4 py-2 text-xs font-semibold text-white dark:text-slate-900 disabled:opacity-50 cursor-pointer whitespace-nowrap"
+              >
+                {testingConnection ? (
+                  <RefreshCw
+                    className="h-3.5 w-3.5 animate-spin"
+                    style={{ color: 'var(--theme-accent)' }}
+                  />
                 ) : (
-                  <AlertCircle className="h-4 w-4 text-rose-500 shrink-0 mt-0.5" />
+                  <Zap
+                    className="h-3.5 w-3.5"
+                    style={{ color: 'var(--theme-accent)' }}
+                  />
                 )}
-                <div className="space-y-1">
-                  <div className="font-semibold">{testResult.message}</div>
-                  {!testResult.ok && (
-                    <div className="text-[11px] opacity-90">
-                      {testResult.corsHint ||
-                        'Verify your API key, confirm the endpoint server is online, or enable CORS for localhost servers (LM Studio / Ollama).'}
-                    </div>
-                  )}
-                </div>
+                <span>{testingConnection ? 'Connecting...' : 'Connect'}</span>
+              </button>
+            </div>
+
+            {keyActionMessage && (
+              <div className="text-[11px] font-mono font-semibold text-emerald-600 dark:text-emerald-400">
+                ✓ {keyActionMessage}
               </div>
             )}
           </div>
 
-          {/* Searchable Model Selector & Custom Model Input */}
-          <div
-            style={{
-              borderColor:
-                'color-mix(in srgb, var(--theme-accent) 28%, transparent)',
-            }}
-            className="rounded-lg border bg-slate-50/70 dark:bg-slate-950/60 p-3.5 space-y-3"
-          >
+          {/* Compact AES-256 Key Vault Bar */}
+          <div className="rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-950/60 px-3 py-2 space-y-2">
             <div className="flex flex-wrap items-center justify-between gap-2">
-              <div className="flex flex-wrap items-center gap-2">
-                <label className="text-xs font-semibold text-slate-800 dark:text-slate-200">
-                  Model Selection &amp; Live Scanner ({allSelectableModels.length}{' '}
-                  listed)
-                </label>
-                {doesBackendSupportVision(aiConfig) ? (
-                  <span
-                    style={{
-                      borderColor:
-                        'color-mix(in srgb, var(--theme-accent) 45%, transparent)',
-                    }}
-                    className="inline-flex items-center gap-1 rounded-md border bg-emerald-500/15 px-2 py-0.5 font-mono text-[10px] font-bold text-emerald-700 dark:text-emerald-300"
-                  >
-                    <span>👁️ Vision Supported</span>
-                    <span className="opacity-80">
-                      ({isModelVisionCapable(aiConfig.modelName) ? 'Auto' : 'Forced'})
-                    </span>
-                  </span>
+              <div className="flex items-center gap-2 text-[11px]">
+                {!vaultStatus.isLocked ? (
+                  <Unlock className="h-3.5 w-3.5 text-emerald-500 shrink-0" />
                 ) : (
-                  <span className="inline-flex items-center gap-1 rounded-md border border-slate-200 dark:border-slate-800 bg-white/70 dark:bg-slate-900/70 px-2 py-0.5 font-mono text-[10px] text-slate-500 dark:text-slate-400">
-                    Text-Only Model
-                  </span>
+                  <Lock className="h-3.5 w-3.5 text-amber-500 shrink-0" />
                 )}
+                <span className="font-semibold text-slate-800 dark:text-slate-200">
+                  AES-256 Key Vault
+                </span>
+                <span className="font-mono text-[10px] text-slate-500 dark:text-slate-400">
+                  {vaultStatus.hasCustomPassphrase
+                    ? 'PIN Protected'
+                    : 'Auto Device Key'}
+                </span>
               </div>
-              <div className="relative w-52">
-                <Search className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 h-3 w-3 text-slate-400" />
-                <input
-                  type="text"
-                  value={modelSearchQuery}
-                  onChange={(e) => setModelSearchQuery(e.target.value)}
-                  placeholder="Filter models..."
-                  className="theme-focus-ring w-full rounded-md border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 pl-7 pr-2.5 py-1 text-xs text-slate-900 dark:text-white"
-                />
+
+              <div className="flex items-center gap-1.5">
+                <button
+                  type="button"
+                  onClick={() => setShowVaultPassphraseBar((prev) => !prev)}
+                  className="rounded-md border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-2.5 py-1 text-[10px] font-semibold text-slate-700 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white cursor-pointer"
+                >
+                  {showVaultPassphraseBar
+                    ? 'Hide PIN'
+                    : vaultStatus.hasCustomPassphrase
+                      ? 'Unlock / PIN'
+                      : 'Set PIN'}
+                </button>
+                {vaultStatus.hasCustomPassphrase && !vaultStatus.isLocked && (
+                  <button
+                    type="button"
+                    onClick={handleLockVaultInMemory}
+                    className="rounded-md border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-2 py-1 text-[10px] font-mono text-slate-600 dark:text-slate-400 hover:text-amber-600 dark:hover:text-amber-300 cursor-pointer"
+                  >
+                    Lock
+                  </button>
+                )}
               </div>
             </div>
 
+            {(showVaultPassphraseBar ||
+              (vaultStatus.hasCustomPassphrase && vaultStatus.isLocked)) && (
+              <div className="flex flex-wrap items-center gap-2 pt-1.5 border-t border-slate-200/70 dark:border-slate-800/70">
+                <input
+                  type="password"
+                  value={vaultPassphraseInput}
+                  onChange={(e) => setVaultPassphraseInput(e.target.value)}
+                  placeholder={
+                    vaultStatus.hasCustomPassphrase && vaultStatus.isLocked
+                      ? 'Enter PIN to unlock...'
+                      : 'New vault PIN / passphrase...'
+                  }
+                  autoComplete="off"
+                  className="theme-focus-ring font-mono flex-1 min-w-[180px] rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-2.5 py-1.5 text-xs text-slate-900 dark:text-white"
+                />
+                <button
+                  type="button"
+                  onClick={handleApplyVaultPassphrase}
+                  style={{ borderColor: 'var(--theme-accent)' }}
+                  className="theme-hover-outline rounded-lg border bg-slate-900 dark:bg-white px-3 py-1.5 text-[11px] font-semibold text-white dark:text-slate-900 cursor-pointer"
+                >
+                  {vaultStatus.hasCustomPassphrase && vaultStatus.isLocked
+                    ? 'Unlock'
+                    : 'Save PIN'}
+                </button>
+                {vaultStatus.hasCustomPassphrase && (
+                  <button
+                    type="button"
+                    onClick={handleRemoveVaultPassphrase}
+                    className="rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-2.5 py-1.5 text-[11px] font-medium text-slate-600 dark:text-slate-300 hover:text-rose-500 cursor-pointer"
+                  >
+                    Remove PIN
+                  </button>
+                )}
+              </div>
+            )}
+
+            {vaultMessage && (
+              <div className="text-[11px] font-mono text-emerald-600 dark:text-emerald-400">
+                {vaultMessage}
+              </div>
+            )}
+          </div>
+
+          {/* Connection Status Banner */}
+          {testResult && (
+            <div
+              className={`flex items-start gap-2 rounded-lg border px-3 py-2 text-xs ${
+                testResult.ok
+                  ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-800 dark:text-emerald-200'
+                  : 'border-rose-500/40 bg-rose-500/10 text-rose-800 dark:text-rose-200'
+              }`}
+            >
+              {testResult.ok ? (
+                <CheckCircle2 className="h-4 w-4 text-emerald-500 shrink-0 mt-0.5" />
+              ) : (
+                <AlertCircle className="h-4 w-4 text-rose-500 shrink-0 mt-0.5" />
+              )}
+              <div className="space-y-0.5">
+                <div className="font-semibold">{testResult.message}</div>
+                {!testResult.ok && (
+                  <div className="text-[11px] opacity-90">
+                    {testResult.corsHint ||
+                      'Check your API key, endpoint URL, or local server CORS settings.'}
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* Model Selection, Live Scanner & Parser — Revealed ONLY after API connects */}
+          {testResult?.ok && (
             <div
               style={{
-                gridTemplateColumns:
-                  'repeat(auto-fit, minmax(min(100%, 220px), 1fr))',
+                borderColor:
+                  'color-mix(in srgb, var(--theme-accent) 28%, transparent)',
               }}
-              className="grid gap-3"
+              className="rounded-lg border bg-slate-50/70 dark:bg-slate-950/60 p-3.5 space-y-3"
             >
-              <div className="space-y-1">
-                <span className="text-[11px] text-slate-500 dark:text-slate-400">
-                  Scanned &amp; Preset Models Dropdown
-                </span>
-                <select
-                  value={
-                    allSelectableModels.includes(aiConfig.modelName)
-                      ? aiConfig.modelName
-                      : ''
-                  }
-                  onChange={(e) => {
-                    if (e.target.value) {
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="flex flex-wrap items-center gap-2">
+                  <label className="text-xs font-semibold text-slate-800 dark:text-slate-200">
+                    Model Selection ({allSelectableModels.length})
+                  </label>
+                  {doesBackendSupportVision(aiConfig) ? (
+                    <span
+                      style={{
+                        borderColor:
+                          'color-mix(in srgb, var(--theme-accent) 45%, transparent)',
+                      }}
+                      className="inline-flex items-center gap-1 rounded-md border bg-emerald-500/15 px-2 py-0.5 font-mono text-[10px] font-bold text-emerald-700 dark:text-emerald-300"
+                    >
+                      👁️ Vision
+                    </span>
+                  ) : (
+                    <span className="inline-flex items-center gap-1 rounded-md border border-slate-200 dark:border-slate-800 bg-white/70 dark:bg-slate-900/70 px-2 py-0.5 font-mono text-[10px] text-slate-500 dark:text-slate-400">
+                      Text-Only
+                    </span>
+                  )}
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <div className="relative w-44">
+                    <Search className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 h-3 w-3 text-slate-400" />
+                    <input
+                      type="text"
+                      value={modelSearchQuery}
+                      onChange={(e) => setModelSearchQuery(e.target.value)}
+                      placeholder="Filter models..."
+                      className="theme-focus-ring w-full rounded-md border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 pl-7 pr-2.5 py-1 text-xs text-slate-900 dark:text-white"
+                    />
+                  </div>
+                  <button
+                    type="button"
+                    onClick={handleScanModels}
+                    disabled={testingConnection}
+                    title="Rescan available models"
+                    className="rounded-md border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-1.5 text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white cursor-pointer"
+                  >
+                    <RefreshCw
+                      className={`h-3.5 w-3.5 ${
+                        testingConnection ? 'animate-spin' : ''
+                      }`}
+                    />
+                  </button>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div className="space-y-1">
+                  <span className="text-[11px] text-slate-500 dark:text-slate-400">
+                    Available Models
+                  </span>
+                  <select
+                    value={
+                      allSelectableModels.includes(aiConfig.modelName)
+                        ? aiConfig.modelName
+                        : ''
+                    }
+                    onChange={(e) => {
+                      if (e.target.value) {
+                        setAiConfig((prev) => ({
+                          ...prev,
+                          modelName: e.target.value,
+                        }));
+                      }
+                    }}
+                    className="theme-focus-ring font-mono w-full rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-3 py-2 text-xs text-slate-900 dark:text-white cursor-pointer"
+                  >
+                    {!allSelectableModels.includes(aiConfig.modelName) && (
+                      <option value="">
+                        Custom: {aiConfig.modelName || 'Select model'}
+                      </option>
+                    )}
+                    {allSelectableModels.map((m) => (
+                      <option key={m} value={m}>
+                        {m}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div className="space-y-1">
+                  <span className="text-[11px] text-slate-500 dark:text-slate-400">
+                    Custom Model ID
+                  </span>
+                  <input
+                    type="text"
+                    value={aiConfig.modelName}
+                    onChange={(e) =>
                       setAiConfig((prev) => ({
                         ...prev,
                         modelName: e.target.value,
-                      }));
+                      }))
                     }
-                  }}
-                  className="theme-focus-ring font-mono w-full rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-3 py-2 text-xs text-slate-900 dark:text-white cursor-pointer"
+                    placeholder="e.g., gemini-3.8-flash"
+                    className="theme-focus-ring font-mono w-full rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-3 py-2 text-xs text-slate-900 dark:text-white"
+                  />
+                </div>
+              </div>
+
+              {/* Parser Format & Vision Toggle in a single compact row */}
+              <div className="flex flex-wrap items-center justify-between gap-3 pt-2 border-t border-slate-200/80 dark:border-slate-800/80">
+                <div className="flex items-center gap-2">
+                  <Cpu
+                    className="h-3.5 w-3.5 shrink-0"
+                    style={{ color: 'var(--theme-accent)' }}
+                  />
+                  <label className="text-[11px] text-slate-500 dark:text-slate-400 whitespace-nowrap">
+                    Parser:
+                  </label>
+                  <select
+                    value={aiConfig.compatibilityFormat || 'auto'}
+                    onChange={(e) =>
+                      setAiConfig((prev) => ({
+                        ...prev,
+                        compatibilityFormat: e.target
+                          .value as ModelCompatibilityFormat,
+                      }))
+                    }
+                    className="theme-focus-ring font-mono rounded-md border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-2 py-1 text-xs text-slate-900 dark:text-white cursor-pointer"
+                  >
+                    <option value="auto">
+                      Auto ({COMPATIBILITY_FORMAT_LABELS[autoDetectedFormat]})
+                    </option>
+                    {(
+                      Object.keys(COMPATIBILITY_FORMAT_LABELS) as Array<
+                        Exclude<ModelCompatibilityFormat, 'auto'>
+                      >
+                    ).map((fmtKey) => (
+                      <option key={fmtKey} value={fmtKey}>
+                        {COMPATIBILITY_FORMAT_LABELS[fmtKey]}
+                      </option>
+                    ))}
+                  </select>
+                  <Tooltip content="Automatically strips <think> and reasoning blocks from model output." />
+                </div>
+
+                <label
+                  htmlFor="force-enable-vision-checkbox"
+                  className="flex items-center gap-1.5 text-xs font-medium text-slate-700 dark:text-slate-300 cursor-pointer select-none"
                 >
-                  {!allSelectableModels.includes(aiConfig.modelName) && (
-                    <option value="">
-                      Custom: {aiConfig.modelName || 'Select a model'}
-                    </option>
-                  )}
-                  {allSelectableModels.map((m) => (
-                    <option key={m} value={m}>
-                      {m}
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              <div className="space-y-1">
-                <span className="text-[11px] text-slate-500 dark:text-slate-400">
-                  Active Model Identifier (Custom Override)
-                </span>
-                <input
-                  type="text"
-                  value={aiConfig.modelName}
-                  onChange={(e) =>
-                    setAiConfig((prev) => ({
-                      ...prev,
-                      modelName: e.target.value,
-                    }))
-                  }
-                  placeholder="e.g., meta-llama/llama-4-maverick"
-                  className="theme-focus-ring font-mono w-full rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-3 py-2 text-xs text-slate-900 dark:text-white"
-                />
-              </div>
-            </div>
-
-            {/* Automatic Model Compatibility & Thinking Format Selection */}
-            <div className="flex flex-wrap items-center justify-between gap-3 pt-2 border-t border-slate-200/80 dark:border-slate-800/80">
-              <div className="flex items-center gap-2 text-xs">
-                <Cpu
-                  className="h-3.5 w-3.5 shrink-0"
-                  style={{ color: 'var(--theme-accent)' }}
-                />
-                <span className="text-slate-600 dark:text-slate-400">
-                  Auto-Detected Format:
-                </span>
-                <span className="font-mono font-semibold text-slate-900 dark:text-white">
-                  {COMPATIBILITY_FORMAT_LABELS[autoDetectedFormat]}
-                </span>
-                <Tooltip content="TavernSmith automatically detects Reasoning/Thinking models (DeepSeek R1, Qwen QwQ, Gemini Thinking, Grok Reasoning) and strips <think>...</think> blocks from output." />
-              </div>
-
-              <div className="flex items-center gap-2">
-                <label className="text-[11px] text-slate-500 dark:text-slate-400 whitespace-nowrap">
-                  Format Override:
+                  <input
+                    id="force-enable-vision-checkbox"
+                    type="checkbox"
+                    checked={Boolean(aiConfig.forceEnableVision)}
+                    onChange={(e) =>
+                      setAiConfig((prev) => ({
+                        ...prev,
+                        forceEnableVision: e.target.checked,
+                      }))
+                    }
+                    className="h-3.5 w-3.5 rounded cursor-pointer"
+                    style={{ accentColor: 'var(--theme-accent)' }}
+                  />
+                  <span>Force Vision</span>
+                  <Tooltip content="Enable vision input (512px JPEG) for custom local GGUF vision models." />
                 </label>
-                <select
-                  value={aiConfig.compatibilityFormat || 'auto'}
-                  onChange={(e) =>
-                    setAiConfig((prev) => ({
-                      ...prev,
-                      compatibilityFormat: e.target
-                        .value as ModelCompatibilityFormat,
-                    }))
-                  }
-                  className="theme-focus-ring font-mono rounded-md border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-2.5 py-1 text-xs text-slate-900 dark:text-white cursor-pointer"
-                >
-                  <option value="auto">
-                    Auto ({COMPATIBILITY_FORMAT_LABELS[autoDetectedFormat]})
-                  </option>
-                  {(
-                    Object.keys(COMPATIBILITY_FORMAT_LABELS) as Array<
-                      Exclude<ModelCompatibilityFormat, 'auto'>
-                    >
-                  ).map((fmtKey) => (
-                    <option key={fmtKey} value={fmtKey}>
-                      {COMPATIBILITY_FORMAT_LABELS[fmtKey]}
-                    </option>
-                  ))}
-                </select>
               </div>
             </div>
-            <div className="text-[11px] text-slate-500 dark:text-slate-400">
-              Active Parser:{' '}
-              <strong>{COMPATIBILITY_FORMAT_LABELS[effectiveFormat]}</strong> ·
-              Automatically strips <code className="font-mono">&lt;think&gt;</code>
-              , <code className="font-mono">&lt;thought&gt;</code>,{' '}
-              <code className="font-mono">&lt;reasoning&gt;</code>, and{' '}
-              <code className="font-mono">reasoning_content</code> into a
-              collapsible Reasoning drawer.
-            </div>
-
-            {/* Multimodal Vision Input Detection & Force Enable Toggle for Custom Local GGUFs */}
-            <div className="flex flex-wrap items-center justify-between gap-3 pt-2.5 border-t border-slate-200/80 dark:border-slate-800/80">
-              <div className="flex flex-wrap items-center gap-2 text-xs">
-                <span className="font-medium text-slate-700 dark:text-slate-300">
-                  Multimodal Vision Context (~260 tok JPEG):
-                </span>
-                {doesBackendSupportVision(aiConfig) ? (
-                  <span className="inline-flex items-center gap-1 rounded bg-emerald-500/15 px-2 py-0.5 font-mono text-[10px] font-bold text-emerald-700 dark:text-emerald-300">
-                    👁️ Vision Supported
-                  </span>
-                ) : (
-                  <span className="font-mono text-[10px] text-slate-500 dark:text-slate-400">
-                    Not detected from model name
-                  </span>
-                )}
-                <Tooltip
-                  title="Zero-Bloat Multimodal Vision (~260 Tokens Max)"
-                  content="Vision-capable models (Gemini, Gemma 3/4, Qwen-VL/Qwen3, Pixtral, LLaVA, Llama 4, Llama 3.2 Vision, MiniCPM-V, Grok, GPT-4o/4.1, Claude 3/4) can inspect the Character Portrait or a temporary reference image during AI Assist. Images are compressed to 512px JPEG (~260 tokens) and NEVER sent during background Ghost-Text autocomplete."
-                />
-              </div>
-
-              <label
-                htmlFor="force-enable-vision-checkbox"
-                className="flex items-center gap-2 text-xs font-medium text-slate-700 dark:text-slate-300 cursor-pointer select-none"
-              >
-                <input
-                  id="force-enable-vision-checkbox"
-                  type="checkbox"
-                  checked={Boolean(aiConfig.forceEnableVision)}
-                  onChange={(e) =>
-                    setAiConfig((prev) => ({
-                      ...prev,
-                      forceEnableVision: e.target.checked,
-                    }))
-                  }
-                  className="h-4 w-4 rounded cursor-pointer"
-                  style={{ accentColor: 'var(--theme-accent)' }}
-                />
-                <span>Force Enable Vision Input</span>
-                <Tooltip content="Enable this for custom-named local GGUF vision models in LM Studio or Ollama that have a Vision (mmproj) projector loaded." />
-              </label>
-            </div>
-          </div>
+          )}
 
           {/* Sampling Temperature & Inline Ghost Text Controls */}
-          <div
-            style={{
-              gridTemplateColumns:
-                'repeat(auto-fit, minmax(min(100%, 220px), 1fr))',
-            }}
-            className="grid gap-6 pt-2 border-t border-slate-200 dark:border-slate-800"
-          >
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-2 border-t border-slate-200 dark:border-slate-800">
             <div className="space-y-1.5">
               <div className="flex items-center justify-between text-xs">
                 <label className="flex items-center gap-1.5 font-medium text-slate-700 dark:text-slate-300">
-                  <span>Sampling Temperature</span>
-                  <Tooltip content="Controls creativity vs determinism (0.2 = analytical/strict, 0.8 = expressive roleplay prose)." />
+                  <span>Temperature</span>
+                  <Tooltip content="0.2 = strict/analytical, 0.8 = expressive roleplay." />
                 </label>
                 <span className="font-mono font-semibold text-slate-900 dark:text-white tabular-nums">
                   {aiConfig.temperature.toFixed(2)}
@@ -1933,14 +1815,14 @@ export const OptionsView: React.FC = () => {
               />
             </div>
 
-            <div className="space-y-3">
+            <div className="space-y-2">
               <div className="flex items-center justify-between">
                 <label
                   htmlFor="ghost-text-toggle"
                   className="flex items-center gap-1.5 text-xs font-medium text-slate-700 dark:text-slate-300 cursor-pointer"
                 >
-                  <span>Inline AI Ghost Text Autocomplete</span>
-                  <Tooltip content="Displays non-intrusive inline completion suggestions inside SmartEditor after you pause typing." />
+                  <span>Ghost Text Autocomplete</span>
+                  <Tooltip content="Inline suggestions after you pause typing." />
                 </label>
                 <input
                   id="ghost-text-toggle"
@@ -1958,9 +1840,9 @@ export const OptionsView: React.FC = () => {
               </div>
 
               <div className="space-y-1">
-                <div className="flex items-center justify-between text-xs">
+                <div className="flex items-center justify-between text-[11px]">
                   <span className="text-slate-500 dark:text-slate-400">
-                    Ghost Text Debounce Delay
+                    Delay
                   </span>
                   <span className="font-mono text-slate-900 dark:text-white tabular-nums">
                     {aiConfig.debounceMs} ms
