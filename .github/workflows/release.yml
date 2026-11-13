@@ -243,29 +243,40 @@ jobs:
               if (req.method === 'POST' && pathname === '/api/disk/save') {
                 const rawBody = await readRequestBody(req);
                 const body = rawBody ? JSON.parse(rawBody) : {};
-                const dirs = resolveSavesDirectories(body.savesDir);
+                const customDir = body.customSavePath || body.savesDir;
+                const dirs = resolveSavesDirectories(customDir);
 
                 if (Array.isArray(body.characters)) {
-                  const usedCharFiles = new Set();
+                  const writtenCharFiles = new Set();
                   for (const item of body.characters) {
-                    if (!item || typeof item.content !== 'string') continue;
-                    const targetFile = sanitizeFileName(item.fileName || item.name || 'Character', 'Character');
-                    usedCharFiles.add(targetFile.toLowerCase());
-                    if (item.oldFileName) {
-                      const oldSafe = sanitizeFileName(item.oldFileName, '');
-                      if (oldSafe && oldSafe !== targetFile) {
-                        const oldFull = path.join(dirs.charactersDir, oldSafe);
-                        if (fs.existsSync(oldFull)) {
-                          try { fs.unlinkSync(oldFull); } catch {}
-                        }
-                      }
+                    if (!item || typeof item !== 'object') continue;
+                    const payload = item.payload || item;
+                    const rawName =
+                      item.fileName ||
+                      (payload && payload.data && typeof payload.data.name === 'string'
+                        ? payload.data.name
+                        : payload && typeof payload.name === 'string'
+                          ? payload.name
+                          : item.name) ||
+                      'Character';
+                    let targetFile = sanitizeFileName(rawName, 'Character');
+                    let stem = targetFile.replace(/\.json$/i, '');
+                    let idx = 2;
+                    while (writtenCharFiles.has(targetFile.toLowerCase())) {
+                      targetFile = `${stem}_${idx}.json`;
+                      idx += 1;
                     }
-                    fs.writeFileSync(path.join(dirs.charactersDir, targetFile), item.content, 'utf-8');
+                    const outContent =
+                      typeof item.content === 'string'
+                        ? item.content
+                        : JSON.stringify({ ...payload, _tavernsmithType: 'character' }, null, 2);
+                    fs.writeFileSync(path.join(dirs.charactersDir, targetFile), outContent, 'utf-8');
+                    writtenCharFiles.add(targetFile.toLowerCase());
                   }
                   try {
                     for (const existingFile of fs.readdirSync(dirs.charactersDir)) {
                       if (!existingFile.toLowerCase().endsWith('.json')) continue;
-                      if (!usedCharFiles.has(existingFile.toLowerCase())) {
+                      if (!writtenCharFiles.has(existingFile.toLowerCase())) {
                         fs.unlinkSync(path.join(dirs.charactersDir, existingFile));
                       }
                     }
@@ -273,26 +284,32 @@ jobs:
                 }
 
                 if (Array.isArray(body.lorebooks)) {
-                  const usedLoreFiles = new Set();
+                  const writtenBookFiles = new Set();
                   for (const item of body.lorebooks) {
-                    if (!item || typeof item.content !== 'string') continue;
-                    const targetFile = sanitizeFileName(item.fileName || item.name || 'Lorebook', 'Lorebook');
-                    usedLoreFiles.add(targetFile.toLowerCase());
-                    if (item.oldFileName) {
-                      const oldSafe = sanitizeFileName(item.oldFileName, '');
-                      if (oldSafe && oldSafe !== targetFile) {
-                        const oldFull = path.join(dirs.lorebooksDir, oldSafe);
-                        if (fs.existsSync(oldFull)) {
-                          try { fs.unlinkSync(oldFull); } catch {}
-                        }
-                      }
+                    if (!item || typeof item !== 'object') continue;
+                    const payload = item.payload || item;
+                    const rawName =
+                      item.fileName ||
+                      (payload && typeof payload.name === 'string' ? payload.name : item.name) ||
+                      'Lorebook';
+                    let targetFile = sanitizeFileName(rawName, 'Lorebook');
+                    let stem = targetFile.replace(/\.json$/i, '');
+                    let idx = 2;
+                    while (writtenBookFiles.has(targetFile.toLowerCase())) {
+                      targetFile = `${stem}_${idx}.json`;
+                      idx += 1;
                     }
-                    fs.writeFileSync(path.join(dirs.lorebooksDir, targetFile), item.content, 'utf-8');
+                    const outContent =
+                      typeof item.content === 'string'
+                        ? item.content
+                        : JSON.stringify({ ...payload, _tavernsmithType: 'lorebook' }, null, 2);
+                    fs.writeFileSync(path.join(dirs.lorebooksDir, targetFile), outContent, 'utf-8');
+                    writtenBookFiles.add(targetFile.toLowerCase());
                   }
                   try {
                     for (const existingFile of fs.readdirSync(dirs.lorebooksDir)) {
                       if (!existingFile.toLowerCase().endsWith('.json')) continue;
-                      if (!usedLoreFiles.has(existingFile.toLowerCase())) {
+                      if (!writtenBookFiles.has(existingFile.toLowerCase())) {
                         fs.unlinkSync(path.join(dirs.lorebooksDir, existingFile));
                       }
                     }
@@ -304,7 +321,9 @@ jobs:
                   fs.writeFileSync(dirs.metaFilePath, metaContent, 'utf-8');
                 }
 
-                if (typeof body.vaultEnc === 'string') {
+                if (body.vault && typeof body.vault === 'object') {
+                  fs.writeFileSync(dirs.vaultFilePath, JSON.stringify(body.vault, null, 2), 'utf-8');
+                } else if (typeof body.vaultEnc === 'string') {
                   if (body.vaultEnc.trim()) {
                     fs.writeFileSync(dirs.vaultFilePath, body.vaultEnc.trim(), 'utf-8');
                   } else if (fs.existsSync(dirs.vaultFilePath)) {
@@ -312,7 +331,7 @@ jobs:
                   }
                 }
 
-                sendJson(res, 200, scanDiskState(body.savesDir));
+                sendJson(res, 200, scanDiskState(customDir));
                 return;
               }
 
@@ -521,31 +540,36 @@ jobs:
                   body = json.loads(raw_body or "{}")
 
                   if parsed_url.path == "/api/disk/save":
-                      dirs = resolve_saves_directories(body.get("savesDir"))
+                      custom_dir = body.get("customSavePath") or body.get("savesDir")
+                      dirs = resolve_saves_directories(custom_dir)
                       if isinstance(body.get("characters"), list):
-                          used_char_files = set()
+                          written_char_files = set()
                           for item in body.get("characters"):
-                              if not isinstance(item, dict) or not isinstance(item.get("content"), str):
+                              if not isinstance(item, dict):
                                   continue
-                              target_file = sanitize_file_name(item.get("fileName") or item.get("name") or "Character", "Character")
-                              used_char_files.add(target_file.lower())
-                              old_name = item.get("oldFileName")
-                              if old_name:
-                                  old_safe = sanitize_file_name(old_name, "")
-                                  if old_safe and old_safe != target_file:
-                                      old_full = os.path.join(dirs["charactersDir"], old_safe)
-                                      if os.path.isfile(old_full):
-                                          try:
-                                              os.unlink(old_full)
-                                          except Exception:
-                                              pass
+                              payload = item.get("payload") if isinstance(item.get("payload"), dict) else item
+                              data_node = payload.get("data") if isinstance(payload.get("data"), dict) else {}
+                              raw_name = item.get("fileName") or data_node.get("name") or payload.get("name") or item.get("name") or "Character"
+                              target_file = sanitize_file_name(raw_name, "Character")
+                              stem = re.sub(r"\.json$", "", target_file, flags=re.IGNORECASE)
+                              idx = 2
+                              while target_file.lower() in written_char_files:
+                                  target_file = f"{stem}_{idx}.json"
+                                  idx += 1
+                              if isinstance(item.get("content"), str):
+                                  out_content = item["content"]
+                              else:
+                                  out_obj = dict(payload)
+                                  out_obj["_tavernsmithType"] = "character"
+                                  out_content = json.dumps(out_obj, indent=2)
                               with open(os.path.join(dirs["charactersDir"], target_file), "w", encoding="utf-8") as f:
-                                  f.write(item["content"])
+                                  f.write(out_content)
+                              written_char_files.add(target_file.lower())
                           try:
                               for existing_file in os.listdir(dirs["charactersDir"]):
                                   if not existing_file.lower().endswith(".json"):
                                       continue
-                                  if existing_file.lower() not in used_char_files:
+                                  if existing_file.lower() not in written_char_files:
                                       orphan_path = os.path.join(dirs["charactersDir"], existing_file)
                                       if os.path.isfile(orphan_path):
                                           os.unlink(orphan_path)
@@ -553,29 +577,32 @@ jobs:
                               pass
 
                       if isinstance(body.get("lorebooks"), list):
-                          used_lore_files = set()
+                          written_book_files = set()
                           for item in body.get("lorebooks"):
-                              if not isinstance(item, dict) or not isinstance(item.get("content"), str):
+                              if not isinstance(item, dict):
                                   continue
-                              target_file = sanitize_file_name(item.get("fileName") or item.get("name") or "Lorebook", "Lorebook")
-                              used_lore_files.add(target_file.lower())
-                              old_name = item.get("oldFileName")
-                              if old_name:
-                                  old_safe = sanitize_file_name(old_name, "")
-                                  if old_safe and old_safe != target_file:
-                                      old_full = os.path.join(dirs["lorebooksDir"], old_safe)
-                                      if os.path.isfile(old_full):
-                                          try:
-                                              os.unlink(old_full)
-                                          except Exception:
-                                              pass
+                              payload = item.get("payload") if isinstance(item.get("payload"), dict) else item
+                              raw_name = item.get("fileName") or payload.get("name") or item.get("name") or "Lorebook"
+                              target_file = sanitize_file_name(raw_name, "Lorebook")
+                              stem = re.sub(r"\.json$", "", target_file, flags=re.IGNORECASE)
+                              idx = 2
+                              while target_file.lower() in written_book_files:
+                                  target_file = f"{stem}_{idx}.json"
+                                  idx += 1
+                              if isinstance(item.get("content"), str):
+                                  out_content = item["content"]
+                              else:
+                                  out_obj = dict(payload)
+                                  out_obj["_tavernsmithType"] = "lorebook"
+                                  out_content = json.dumps(out_obj, indent=2)
                               with open(os.path.join(dirs["lorebooksDir"], target_file), "w", encoding="utf-8") as f:
-                                  f.write(item["content"])
+                                  f.write(out_content)
+                              written_book_files.add(target_file.lower())
                           try:
                               for existing_file in os.listdir(dirs["lorebooksDir"]):
                                   if not existing_file.lower().endswith(".json"):
                                       continue
-                                  if existing_file.lower() not in used_lore_files:
+                                  if existing_file.lower() not in written_book_files:
                                       orphan_path = os.path.join(dirs["lorebooksDir"], existing_file)
                                       if os.path.isfile(orphan_path):
                                           os.unlink(orphan_path)
@@ -588,18 +615,22 @@ jobs:
                           with open(dirs["metaFilePath"], "w", encoding="utf-8") as f:
                               f.write(meta_content)
 
-                      vault_enc = body.get("vaultEnc")
-                      if isinstance(vault_enc, str):
-                          if vault_enc.strip():
-                              with open(dirs["vaultFilePath"], "w", encoding="utf-8") as f:
-                                  f.write(vault_enc.strip())
-                          elif os.path.isfile(dirs["vaultFilePath"]):
-                              try:
-                                  os.unlink(dirs["vaultFilePath"])
-                              except Exception:
-                                  pass
+                      if isinstance(body.get("vault"), dict):
+                          with open(dirs["vaultFilePath"], "w", encoding="utf-8") as f:
+                              f.write(json.dumps(body["vault"], indent=2))
+                      else:
+                          vault_enc = body.get("vaultEnc")
+                          if isinstance(vault_enc, str):
+                              if vault_enc.strip():
+                                  with open(dirs["vaultFilePath"], "w", encoding="utf-8") as f:
+                                      f.write(vault_enc.strip())
+                              elif os.path.isfile(dirs["vaultFilePath"]):
+                                  try:
+                                      os.unlink(dirs["vaultFilePath"])
+                                  except Exception:
+                                      pass
 
-                      self.send_json(200, scan_disk_state(body.get("savesDir")))
+                      self.send_json(200, scan_disk_state(custom_dir))
                       return
 
                   if parsed_url.path == "/api/disk/delete":

@@ -245,17 +245,13 @@ export function saveToSavesDirectoryOnDisk(body: Record<string, unknown>) {
   // 1. Write characters strictly into ./Saves/Characters/[UniqueSanitizedName].json
   if (Array.isArray(body.characters)) {
     const usedCharTargets = new Set<string>();
-    const preparedChars: Array<{
-      targetFileName: string;
-      oldFileName?: string;
-      outPayload: Record<string, unknown>;
-    }> = [];
+    const writtenCharFiles = new Set<string>();
 
     for (const item of body.characters) {
       if (!item || typeof item !== 'object') continue;
       const entry = item as {
         fileName?: string;
-        oldFileName?: string;
+        content?: string;
         payload?: Record<string, unknown>;
       };
       const payload = entry.payload || (item as Record<string, unknown>);
@@ -272,52 +268,32 @@ export function saveToSavesDirectoryOnDisk(body: Record<string, unknown>) {
             ? payload.name
             : 'untitled');
       const targetFileName = reserveUniqueDiskFileName(rawName, usedCharTargets);
-      const cleanOld = entry.oldFileName
-        ? sanitizeDiskFileName(entry.oldFileName)
-        : undefined;
+      const outContent =
+        typeof entry.content === 'string'
+          ? entry.content
+          : JSON.stringify(
+              {
+                ...payload,
+                _tavernsmithType: 'character',
+              },
+              null,
+              2
+            );
 
-      preparedChars.push({
-        targetFileName,
-        oldFileName: cleanOld,
-        outPayload: {
-          ...payload,
-          _tavernsmithType: 'character',
-        },
-      });
-    }
-
-    // Remove renamed old files ONLY when they do not collide with any active target filename
-    for (const prepared of preparedChars) {
-      if (
-        prepared.oldFileName &&
-        prepared.oldFileName !== prepared.targetFileName &&
-        !usedCharTargets.has(prepared.oldFileName.toLowerCase())
-      ) {
-        const oldPath = path.join(charsDir, prepared.oldFileName);
-        if (fs.existsSync(oldPath)) {
-          try {
-            fs.unlinkSync(oldPath);
-          } catch {
-            // Ignore unlink error
-          }
-        }
-      }
-    }
-
-    for (const prepared of preparedChars) {
       fs.writeFileSync(
-        path.join(charsDir, prepared.targetFileName),
-        JSON.stringify(prepared.outPayload, null, 2),
+        path.join(charsDir, targetFileName),
+        outContent,
         'utf8'
       );
+      writtenCharFiles.add(targetFileName.toLowerCase());
     }
 
-    // Mirror exact React state: prune any orphaned character .json files on disk not in body.characters
+    // Only after all incoming characters are written, prune .json files NOT in writtenCharFiles
     try {
       const existingCharFiles = fs.readdirSync(charsDir);
       for (const fileName of existingCharFiles) {
         if (!fileName.toLowerCase().endsWith('.json')) continue;
-        if (!usedCharTargets.has(fileName.toLowerCase())) {
+        if (!writtenCharFiles.has(fileName.toLowerCase())) {
           const orphanPath = path.join(charsDir, fileName);
           if (fs.existsSync(orphanPath)) {
             fs.unlinkSync(orphanPath);
@@ -332,17 +308,13 @@ export function saveToSavesDirectoryOnDisk(body: Record<string, unknown>) {
   // 2. Write lorebooks strictly into ./Saves/Lorebooks/[UniqueSanitizedName].json
   if (Array.isArray(body.lorebooks)) {
     const usedLoreTargets = new Set<string>();
-    const preparedLore: Array<{
-      targetFileName: string;
-      oldFileName?: string;
-      outPayload: Record<string, unknown>;
-    }> = [];
+    const writtenBookFiles = new Set<string>();
 
     for (const item of body.lorebooks) {
       if (!item || typeof item !== 'object') continue;
       const entry = item as {
         fileName?: string;
-        oldFileName?: string;
+        content?: string;
         payload?: Record<string, unknown>;
       };
       const payload = entry.payload || (item as Record<string, unknown>);
@@ -353,51 +325,32 @@ export function saveToSavesDirectoryOnDisk(body: Record<string, unknown>) {
         entry.fileName ||
         (typeof payload.name === 'string' ? payload.name : 'untitled_lorebook');
       const targetFileName = reserveUniqueDiskFileName(rawName, usedLoreTargets);
-      const cleanOld = entry.oldFileName
-        ? sanitizeDiskFileName(entry.oldFileName)
-        : undefined;
+      const outContent =
+        typeof entry.content === 'string'
+          ? entry.content
+          : JSON.stringify(
+              {
+                ...payload,
+                _tavernsmithType: 'lorebook',
+              },
+              null,
+              2
+            );
 
-      preparedLore.push({
-        targetFileName,
-        oldFileName: cleanOld,
-        outPayload: {
-          ...payload,
-          _tavernsmithType: 'lorebook',
-        },
-      });
-    }
-
-    for (const prepared of preparedLore) {
-      if (
-        prepared.oldFileName &&
-        prepared.oldFileName !== prepared.targetFileName &&
-        !usedLoreTargets.has(prepared.oldFileName.toLowerCase())
-      ) {
-        const oldPath = path.join(loreDir, prepared.oldFileName);
-        if (fs.existsSync(oldPath)) {
-          try {
-            fs.unlinkSync(oldPath);
-          } catch {
-            // Ignore unlink error
-          }
-        }
-      }
-    }
-
-    for (const prepared of preparedLore) {
       fs.writeFileSync(
-        path.join(loreDir, prepared.targetFileName),
-        JSON.stringify(prepared.outPayload, null, 2),
+        path.join(loreDir, targetFileName),
+        outContent,
         'utf8'
       );
+      writtenBookFiles.add(targetFileName.toLowerCase());
     }
 
-    // Mirror exact React state: prune any orphaned lorebook .json files on disk not in body.lorebooks
+    // Only after all incoming lorebooks are written, prune .json files NOT in writtenBookFiles
     try {
       const existingLoreFiles = fs.readdirSync(loreDir);
       for (const fileName of existingLoreFiles) {
         if (!fileName.toLowerCase().endsWith('.json')) continue;
-        if (!usedLoreTargets.has(fileName.toLowerCase())) {
+        if (!writtenBookFiles.has(fileName.toLowerCase())) {
           const orphanPath = path.join(loreDir, fileName);
           if (fs.existsSync(orphanPath)) {
             fs.unlinkSync(orphanPath);
@@ -409,7 +362,7 @@ export function saveToSavesDirectoryOnDisk(body: Record<string, unknown>) {
     }
   }
 
-  // 3. Write custom tags, themes, and app settings into ./Saves/_tavernsmith_meta.json
+  // 3. Write custom tags, themes, and app settings directly into ./Saves/_tavernsmith_meta.json
   if (body.meta && typeof body.meta === 'object') {
     fs.writeFileSync(
       path.join(resolvedPath, META_FILENAME),

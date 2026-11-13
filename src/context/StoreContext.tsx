@@ -2418,12 +2418,12 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
   children,
 }) => {
   const [activeTab, setActiveTab] = useState<WorkspaceTab>('character');
-  const [characters, setCharacters] = useState<CharacterCardData[]>([]);
-  const [activeCharacterId, setActiveCharacterId] = useState<string>('');
-  const [lorebooks, setLorebooks] = useState<Lorebook[]>([]);
-  const [activeLorebookId, setActiveLorebookId] = useState<string>('');
-  const [themes, setThemes] = useState<ContextTheme[]>(DEFAULT_CONTEXT_THEMES);
-  const [tags, setTags] = useState<TagDefinition[]>(() =>
+  const [characters, setCharactersState] = useState<CharacterCardData[]>([]);
+  const [activeCharacterId, setActiveCharacterIdState] = useState<string>('');
+  const [lorebooks, setLorebooksState] = useState<Lorebook[]>([]);
+  const [activeLorebookId, setActiveLorebookIdState] = useState<string>('');
+  const [themes, setThemesState] = useState<ContextTheme[]>(DEFAULT_CONTEXT_THEMES);
+  const [tags, setTagsState] = useState<TagDefinition[]>(() =>
     mergeWithDefaultTags([])
   );
   const [aiConfigState, setAiConfigState] =
@@ -2434,7 +2434,7 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
   const [aiConnectionResult, setAiConnectionResult] =
     useState<ConnectionTestResult | null>(null);
   const aiTestAbortRef = useRef<AbortController | null>(null);
-  const [settings, setSettings] = useState<AppSettings>(DEFAULT_SETTINGS);
+  const [settings, setSettingsState] = useState<AppSettings>(DEFAULT_SETTINGS);
   const [lastSavedAt, setLastSavedAt] = useState<string | null>(null);
   const [isDirty, setIsDirty] = useState<boolean>(false);
   const [diskFiles, setDiskFiles] = useState<SavedFileEntry[]>([]);
@@ -2448,10 +2448,15 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
   const charDiskFileNamesRef = useRef<Map<string, string>>(new Map());
   const loreDiskFileNamesRef = useRef<Map<string, string>>(new Map());
   const initialDiskHydrationDoneRef = useRef<boolean>(false);
+  const initialMountFetchedRef = useRef<boolean>(false);
 
   // Synchronous state mirrors & serialized disk operation queue to prevent delete/save races
   const charactersRef = useRef<CharacterCardData[]>(characters);
   const lorebooksRef = useRef<Lorebook[]>(lorebooks);
+  const themesRef = useRef<ContextTheme[]>(themes);
+  const tagsRef = useRef<TagDefinition[]>(tags);
+  const settingsRef = useRef<AppSettings>(settings);
+  const aiConfigRef = useRef<AIBackendConfig>(aiConfigState);
   const activeCharacterIdRef = useRef<string>(activeCharacterId);
   const activeLorebookIdRef = useRef<string>(activeLorebookId);
   const diskMutationVersionRef = useRef<number>(0);
@@ -2463,6 +2468,73 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
     return next;
   }, []);
 
+  const setCharacters: React.Dispatch<React.SetStateAction<CharacterCardData[]>> =
+    useCallback((updater) => {
+      diskMutationVersionRef.current += 1;
+      setCharactersState((prev) => {
+        const next = typeof updater === 'function' ? updater(prev) : updater;
+        charactersRef.current = next;
+        latestWorkspaceRef.current.characters = next;
+        return next;
+      });
+    }, []);
+
+  const setActiveCharacterId = useCallback((id: string) => {
+    activeCharacterIdRef.current = id;
+    latestWorkspaceRef.current.activeCharacterId = id;
+    setActiveCharacterIdState(id);
+  }, []);
+
+  const setLorebooks: React.Dispatch<React.SetStateAction<Lorebook[]>> =
+    useCallback((updater) => {
+      diskMutationVersionRef.current += 1;
+      setLorebooksState((prev) => {
+        const next = typeof updater === 'function' ? updater(prev) : updater;
+        lorebooksRef.current = next;
+        latestWorkspaceRef.current.lorebooks = next;
+        return next;
+      });
+    }, []);
+
+  const setActiveLorebookId = useCallback((id: string) => {
+    activeLorebookIdRef.current = id;
+    latestWorkspaceRef.current.activeLorebookId = id;
+    setActiveLorebookIdState(id);
+  }, []);
+
+  const setThemes: React.Dispatch<React.SetStateAction<ContextTheme[]>> =
+    useCallback((updater) => {
+      diskMutationVersionRef.current += 1;
+      setThemesState((prev) => {
+        const next = typeof updater === 'function' ? updater(prev) : updater;
+        themesRef.current = next;
+        latestWorkspaceRef.current.themes = next;
+        return next;
+      });
+    }, []);
+
+  const setTags: React.Dispatch<React.SetStateAction<TagDefinition[]>> =
+    useCallback((updater) => {
+      diskMutationVersionRef.current += 1;
+      setTagsState((prev) => {
+        const next = typeof updater === 'function' ? updater(prev) : updater;
+        tagsRef.current = next;
+        latestWorkspaceRef.current.tags = next;
+        return next;
+      });
+    }, []);
+
+  const setSettings: React.Dispatch<React.SetStateAction<AppSettings>> =
+    useCallback((updater) => {
+      diskMutationVersionRef.current += 1;
+      setSettingsState((prev) => {
+        const next = typeof updater === 'function' ? updater(prev) : updater;
+        settingsRef.current = next;
+        latestWorkspaceRef.current.settings = next;
+        return next;
+      });
+    }, []);
+
   useEffect(() => {
     return () => {
       if (aiTestAbortRef.current) {
@@ -2473,10 +2545,14 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
 
   const setAiConfig: React.Dispatch<React.SetStateAction<AIBackendConfig>> =
     useCallback((updater) => {
+      diskMutationVersionRef.current += 1;
       setAiConfigState((prev) => {
         const rawNext =
           typeof updater === 'function' ? updater(prev) : updater;
-        return syncAIConfigProviderCredentials(prev, rawNext);
+        const synced = syncAIConfigProviderCredentials(prev, rawNext);
+        aiConfigRef.current = synced;
+        latestWorkspaceRef.current.aiConfig = synced;
+        return synced;
       });
     }, []);
 
@@ -2502,16 +2578,20 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
     }
     setIsAiConnected(false);
     setAiConnectionResult(null);
-    setAiConfigState((prev) =>
-      syncAIConfigProviderCredentials(prev, {
+    diskMutationVersionRef.current += 1;
+    setAiConfigState((prev) => {
+      const synced = syncAIConfigProviderCredentials(prev, {
         ...prev,
         preset: presetId,
         url: found.defaultUrl,
         modelName: found.defaultModel,
         compatibilityFormat: 'auto',
         availableModels: found.suggestedModels,
-      })
-    );
+      });
+      aiConfigRef.current = synced;
+      latestWorkspaceRef.current.aiConfig = synced;
+      return synced;
+    });
   }, []);
 
   const aiConfig = aiConfigState;
@@ -2539,6 +2619,7 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
         setIsAiConnected(result.ok);
 
         if (result.models.length > 0) {
+          diskMutationVersionRef.current += 1;
           setAiConfigState((prev) => {
             const cleanModels = sanitizeAvailableModelsList(
               result.models,
@@ -2549,11 +2630,14 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
             const preferredDefault = cleanModels.includes('gemini-3.8-flash')
               ? 'gemini-3.8-flash'
               : cleanModels[0];
-            return syncAIConfigProviderCredentials(prev, {
+            const synced = syncAIConfigProviderCredentials(prev, {
               ...prev,
               availableModels: cleanModels,
               modelName: currentModelValid ? prev.modelName : preferredDefault,
             });
+            aiConfigRef.current = synced;
+            latestWorkspaceRef.current.aiConfig = synced;
+            return synced;
           });
         }
         return result;
@@ -2660,7 +2744,7 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
       }
     }
 
-    setTags((prevTags) => {
+    setTagsState((prevTags) => {
       const existingLower = new Set(
         prevTags.map((t) => t.name.trim().toLowerCase())
       );
@@ -2685,9 +2769,13 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
         }
       });
 
-      return newlyDiscovered.length > 0
-        ? [...prevTags, ...newlyDiscovered]
-        : prevTags;
+      if (newlyDiscovered.length === 0) {
+        return prevTags;
+      }
+      const nextTags = [...prevTags, ...newlyDiscovered];
+      tagsRef.current = nextTags;
+      latestWorkspaceRef.current.tags = nextTags;
+      return nextTags;
     });
   }, [characters, lorebooks, themes]);
 
@@ -2699,13 +2787,13 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
       const clean = rawTagName.trim();
       if (!clean) return null;
 
-      const found = tags.find(
+      const found = tagsRef.current.find(
         (t) => t.name.trim().toLowerCase() === clean.toLowerCase()
       );
       if (found) return found;
 
       const color =
-        AUTO_TAG_PALETTE[tags.length % AUTO_TAG_PALETTE.length] || '#a855f7';
+        AUTO_TAG_PALETTE[tagsRef.current.length % AUTO_TAG_PALETTE.length] || '#a855f7';
       const isNsfw =
         category === 'NSFW & Kinks' ||
         category === 'Extreme & Hentai Physics' ||
@@ -2730,12 +2818,12 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
       });
       return newTag;
     },
-    [tags]
+    [setTags]
   );
 
   /**
-   * Hydrates React state from the server's `/api/disk/*` response (`DiskStateResponse`),
-   * strictly mapping `./Saves/Characters/*.json` -> `characters[]` and `./Saves/Lorebooks/*.json` -> `lorebooks[]`.
+   * Hydrates React state from `/api/disk/state` (ONLY on initial app mount or explicit folder switch).
+   * Strictly maps `./Saves/Characters/*.json` -> `characters[]` and `./Saves/Lorebooks/*.json` -> `lorebooks[]`.
    */
   const applyDiskStateToWorkspace = useCallback(
     async (
@@ -2756,13 +2844,17 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
         setDiskFiles(diskState.files);
       }
 
-      if (isStaleVersion && !options?.isInitialMount) {
+      // Never clobber user edits made before initial mount scan resolved or while mutations occurred
+      if (
+        isStaleVersion ||
+        (options?.isInitialMount && diskMutationVersionRef.current > 0)
+      ) {
         return;
       }
 
       // 1. Reconstruct Tags & Themes from `./Saves/_tavernsmith_meta.json`
       let mergedTags = mergeWithDefaultTags(
-        extractCustomUserTags(latestWorkspaceRef.current.tags)
+        extractCustomUserTags(tagsRef.current)
       );
 
       if (diskState.meta && typeof diskState.meta === 'object') {
@@ -2770,7 +2862,9 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
 
         if (Array.isArray(meta.tags)) {
           mergedTags = mergeWithDefaultTags(extractCustomUserTags(meta.tags));
-          setTags(mergedTags);
+          tagsRef.current = mergedTags;
+          latestWorkspaceRef.current.tags = mergedTags;
+          setTagsState(mergedTags);
         }
 
         if (
@@ -2792,25 +2886,38 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
               });
             }
           }
-          setThemes(Array.from(mapByName.values()));
+          const hydratedThemes = Array.from(mapByName.values());
+          themesRef.current = hydratedThemes;
+          latestWorkspaceRef.current.themes = hydratedThemes;
+          setThemesState(hydratedThemes);
         }
 
         if (options?.isInitialMount && meta.settings) {
-          setSettings((prev) => ({
-            ...prev,
-            ...meta.settings,
-            activeThemeId:
-              meta.activeThemeId ||
-              meta.settings?.activeThemeId ||
-              prev.activeThemeId,
-            activeSaveFolder:
-              meta.settings?.activeSaveFolder || UNIFIED_INTERNAL_ROOT,
-          }));
+          setSettingsState((prev) => {
+            const nextSettings = {
+              ...prev,
+              ...meta.settings,
+              activeThemeId:
+                meta.activeThemeId ||
+                meta.settings?.activeThemeId ||
+                prev.activeThemeId,
+              activeSaveFolder:
+                meta.settings?.activeSaveFolder || UNIFIED_INTERNAL_ROOT,
+            };
+            settingsRef.current = nextSettings;
+            latestWorkspaceRef.current.settings = nextSettings;
+            return nextSettings;
+          });
         } else if (meta.activeThemeId && options?.isInitialMount) {
-          setSettings((prev) => ({
-            ...prev,
-            activeThemeId: meta.activeThemeId,
-          }));
+          setSettingsState((prev) => {
+            const nextSettings = {
+              ...prev,
+              activeThemeId: meta.activeThemeId!,
+            };
+            settingsRef.current = nextSettings;
+            latestWorkspaceRef.current.settings = nextSettings;
+            return nextSettings;
+          });
         }
 
         if (options?.isInitialMount && meta.aiConfig) {
@@ -2844,19 +2951,24 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
             }
             saveProviderModelsMap(sanitizedModelsMap);
           }
-          setAiConfigState((prev) => ({
-            ...prev,
-            ...incomingAi,
-            modelName: migrateLegacyDefault(incomingAi.modelName, cleanPreset),
-            availableModels: hydratedAvailable,
-            savedProviderModels:
-              Object.keys(sanitizedModelsMap).length > 0
-                ? sanitizedModelsMap
-                : prev.savedProviderModels,
-            maxTokens: Math.max(8192, incomingAi.maxTokens || 16384),
-            apiKey: prev.apiKey,
-            savedProviderKeys: prev.savedProviderKeys,
-          }));
+          setAiConfigState((prev) => {
+            const nextAi: AIBackendConfig = {
+              ...prev,
+              ...incomingAi,
+              modelName: migrateLegacyDefault(incomingAi.modelName, cleanPreset),
+              availableModels: hydratedAvailable,
+              savedProviderModels:
+                Object.keys(sanitizedModelsMap).length > 0
+                  ? sanitizedModelsMap
+                  : prev.savedProviderModels,
+              maxTokens: Math.max(8192, incomingAi.maxTokens || 16384),
+              apiKey: prev.apiKey,
+              savedProviderKeys: prev.savedProviderKeys,
+            };
+            aiConfigRef.current = nextAi;
+            latestWorkspaceRef.current.aiConfig = nextAi;
+            return nextAi;
+          });
         }
       }
 
@@ -2897,8 +3009,8 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
       charDiskFileNamesRef.current = nextCharFileNames;
       charactersRef.current = parsedCharacters;
       latestWorkspaceRef.current.characters = parsedCharacters;
-      setCharacters(parsedCharacters);
-      setActiveCharacterId((prevId) => {
+      setCharactersState(parsedCharacters);
+      setActiveCharacterIdState((prevId) => {
         let nextId = parsedCharacters[0]?.id || '';
         if (prevId && parsedCharacters.some((c) => c.id === prevId)) {
           nextId = prevId;
@@ -2947,8 +3059,8 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
       loreDiskFileNamesRef.current = nextLoreFileNames;
       lorebooksRef.current = parsedLorebooks;
       latestWorkspaceRef.current.lorebooks = parsedLorebooks;
-      setLorebooks(parsedLorebooks);
-      setActiveLorebookId((prevId) => {
+      setLorebooksState(parsedLorebooks);
+      setActiveLorebookIdState((prevId) => {
         let nextId = parsedLorebooks[0]?.id || '';
         if (prevId && parsedLorebooks.some((l) => l.id === prevId)) {
           nextId = prevId;
@@ -2989,11 +3101,14 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
                 mergedKeys[activeProviderId] = restoredActiveKey;
                 mergedKeys[prev.preset] = restoredActiveKey;
               }
-              return {
+              const nextAi = {
                 ...prev,
                 apiKey: restoredActiveKey,
                 savedProviderKeys: mergedKeys,
               };
+              aiConfigRef.current = nextAi;
+              latestWorkspaceRef.current.aiConfig = nextAi;
+              return nextAi;
             });
           }
         } catch {
@@ -3008,8 +3123,10 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
     []
   );
 
-  // Auto-Scan `./Saves/` on App Startup
+  // Auto-Scan `./Saves/` ONCE on initial app mount
   useEffect(() => {
+    if (initialMountFetchedRef.current) return;
+    initialMountFetchedRef.current = true;
     let cancelled = false;
     purgeBrowserRuntimeCaches();
 
@@ -3029,7 +3146,7 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
       } finally {
         if (!cancelled) {
           initialDiskHydrationDoneRef.current = true;
-          setIsDirty(false);
+          setIsDirty(diskMutationVersionRef.current > 0);
         }
       }
     })();
@@ -3165,28 +3282,37 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
     useCallback(
       (updater) => {
         diskMutationVersionRef.current += 1;
-        setCharacters((prev) => {
+        setCharactersState((prev) => {
+          const currentTags = tagsRef.current;
           let nextList: CharacterCardData[];
           if (prev.length === 0) {
             const freshBase = createBlankCharacter();
             const next =
               typeof updater === 'function' ? updater(freshBase) : updater;
-            const autoNsfw = isCharacterNsfw(next, tags);
+            const autoNsfw = isCharacterNsfw(next, currentTags);
+            const assignedFile =
+              next.savedFileName ||
+              ensureUniqueSavedFileName(next.name, new Set(), 'character');
             const created: CharacterCardData = {
               ...next,
               id: freshBase.id,
+              savedFileName: assignedFile,
               isNsfw: autoNsfw,
               modification_date: Math.floor(Date.now() / 1000),
             };
+            if (created.id) {
+              charDiskFileNamesRef.current.set(created.id, assignedFile);
+            }
             activeCharacterIdRef.current = created.id!;
             latestWorkspaceRef.current.activeCharacterId = created.id!;
-            setActiveCharacterId(created.id!);
+            setActiveCharacterIdState(created.id!);
             nextList = [created];
           } else {
+            const targetId = activeCharacterIdRef.current || prev[0]?.id || '';
             nextList = prev.map((c) => {
-              if (c.id !== character.id) return c;
+              if (c.id !== targetId) return c;
               const next = typeof updater === 'function' ? updater(c) : updater;
-              const autoNsfw = isCharacterNsfw(next, tags);
+              const autoNsfw = isCharacterNsfw(next, currentTags);
               return {
                 ...next,
                 id: c.id,
@@ -3200,7 +3326,7 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
           return nextList;
         });
       },
-      [character.id, tags]
+      []
     );
 
   const updateCharacterField = useCallback(
@@ -3214,11 +3340,11 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
           [field]: value,
           modification_date: Math.floor(Date.now() / 1000),
         };
-        updated.isNsfw = isCharacterNsfw(updated, tags);
+        updated.isNsfw = isCharacterNsfw(updated, tagsRef.current);
         return updated;
       });
     },
-    [setCharacter, tags]
+    [setCharacter]
   );
 
   const setStatBlock: React.Dispatch<React.SetStateAction<StatBlockConfig>> =
@@ -3245,28 +3371,37 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
     useCallback(
       (updater) => {
         diskMutationVersionRef.current += 1;
-        setLorebooks((prev) => {
+        setLorebooksState((prev) => {
+          const currentTags = tagsRef.current;
           let nextList: Lorebook[];
           if (prev.length === 0) {
             const freshBase = createBlankLorebook();
             const next =
               typeof updater === 'function' ? updater(freshBase) : updater;
-            const autoNsfw = isLorebookNsfw(next, tags);
+            const autoNsfw = isLorebookNsfw(next, currentTags);
+            const assignedFile =
+              next.savedFileName ||
+              ensureUniqueSavedFileName(next.name, new Set(), 'lorebook');
             const created: Lorebook = {
               ...next,
               id: freshBase.id,
+              savedFileName: assignedFile,
               isNsfw: autoNsfw,
               modification_date: Math.floor(Date.now() / 1000),
             };
+            if (created.id) {
+              loreDiskFileNamesRef.current.set(created.id, assignedFile);
+            }
             activeLorebookIdRef.current = created.id!;
             latestWorkspaceRef.current.activeLorebookId = created.id!;
-            setActiveLorebookId(created.id!);
+            setActiveLorebookIdState(created.id!);
             nextList = [created];
           } else {
+            const targetId = activeLorebookIdRef.current || prev[0]?.id || '';
             nextList = prev.map((l) => {
-              if (l.id !== lorebook.id) return l;
+              if (l.id !== targetId) return l;
               const next = typeof updater === 'function' ? updater(l) : updater;
-              const autoNsfw = isLorebookNsfw(next, tags);
+              const autoNsfw = isLorebookNsfw(next, currentTags);
               return {
                 ...next,
                 id: l.id,
@@ -3280,86 +3415,8 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
           return nextList;
         });
       },
-      [lorebook.id, tags]
+      []
     );
-
-  const createNewCharacter = useCallback(
-    (partial?: Partial<CharacterCardData>) => {
-      diskMutationVersionRef.current += 1;
-      const currentChars = charactersRef.current;
-      const fresh = createBlankCharacter(partial);
-      const uniqueName = ensureUniqueEntityName(
-        fresh.name,
-        currentChars.map((c) => c.name || 'New Character'),
-        'New Character'
-      );
-      const usedFilesLower = new Set(
-        currentChars
-          .map((c) => (c.savedFileName || charDiskFileNamesRef.current.get(c.id || '') || '').toLowerCase())
-          .filter(Boolean)
-      );
-      const uniqueFileName = ensureUniqueSavedFileName(
-        uniqueName,
-        usedFilesLower,
-        'character'
-      );
-      fresh.name = uniqueName;
-      fresh.savedFileName = uniqueFileName;
-      fresh.isNsfw = isCharacterNsfw(fresh, tags);
-
-      if (fresh.id) {
-        charDiskFileNamesRef.current.set(fresh.id, uniqueFileName);
-      }
-      const nextChars = [fresh, ...currentChars];
-      charactersRef.current = nextChars;
-      latestWorkspaceRef.current.characters = nextChars;
-      activeCharacterIdRef.current = fresh.id!;
-      latestWorkspaceRef.current.activeCharacterId = fresh.id!;
-      setCharacters(nextChars);
-      setActiveCharacterId(fresh.id!);
-      return fresh.id!;
-    },
-    [tags]
-  );
-
-  const createNewLorebook = useCallback(
-    (partial?: Partial<Lorebook>) => {
-      diskMutationVersionRef.current += 1;
-      const currentBooks = lorebooksRef.current;
-      const fresh = createBlankLorebook(partial);
-      const uniqueName = ensureUniqueEntityName(
-        fresh.name,
-        currentBooks.map((l) => l.name || 'New World Lorebook'),
-        'New World Lorebook'
-      );
-      const usedFilesLower = new Set(
-        currentBooks
-          .map((l) => (l.savedFileName || loreDiskFileNamesRef.current.get(l.id || '') || '').toLowerCase())
-          .filter(Boolean)
-      );
-      const uniqueFileName = ensureUniqueSavedFileName(
-        uniqueName,
-        usedFilesLower,
-        'lorebook'
-      );
-      fresh.name = uniqueName;
-      fresh.savedFileName = uniqueFileName;
-      fresh.isNsfw = isLorebookNsfw(fresh, tags);
-
-      if (fresh.id) {
-        loreDiskFileNamesRef.current.set(fresh.id, uniqueFileName);
-      }
-      const nextBooks = [fresh, ...currentBooks];
-      lorebooksRef.current = nextBooks;
-      latestWorkspaceRef.current.lorebooks = nextBooks;
-      activeLorebookIdRef.current = fresh.id!;
-      latestWorkspaceRef.current.activeLorebookId = fresh.id!;
-      setLorebooks(nextBooks);
-      setActiveLorebookId(fresh.id!);
-      return fresh.id!;
-    },
-    [tags]
-  );
 
   // Keep a live ref of all workspace state for atomic saves
   const latestWorkspaceRef = useRef({
@@ -3379,6 +3436,10 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
   useEffect(() => {
     charactersRef.current = characters;
     lorebooksRef.current = lorebooks;
+    themesRef.current = themes;
+    tagsRef.current = tags;
+    settingsRef.current = settings;
+    aiConfigRef.current = aiConfig;
     activeCharacterIdRef.current = activeCharacterId;
     activeLorebookIdRef.current = activeLorebookId;
     latestWorkspaceRef.current = {
@@ -3409,8 +3470,9 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
   ]);
 
   /**
-   * Core serialized disk save helper (`POST /api/disk/save`) using the latest synchronous refs
-   * so deletions and renames mirror exact state to `./Saves/` and prune any orphaned `.json` files.
+   * Core serialized disk save helper (`POST /api/disk/save`) using the latest synchronous refs.
+   * React state is the single source of truth after initial mount; `saveToDisk` writes state to disk
+   * and ONLY updates the read-only Options file list & saved timestamp (never overwriting characters/lorebooks/tags/themes).
    */
   const runDiskSaveRequest = useCallback(
     async (
@@ -3421,9 +3483,14 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
       },
       expectedVersion?: number
     ): Promise<{ ok: boolean; message: string }> => {
-      const snap = latestWorkspaceRef.current;
       const charsToSave = overrideState?.characters ?? charactersRef.current;
       const booksToSave = overrideState?.lorebooks ?? lorebooksRef.current;
+      const themesToSave = themesRef.current;
+      const tagsToSave = tagsRef.current;
+      const settingsToSave = settingsRef.current;
+      const aiConfigToSave = aiConfigRef.current;
+      const activeCharId = activeCharacterIdRef.current;
+      const activeBookId = activeLorebookIdRef.current;
       const versionAtStart = expectedVersion ?? diskMutationVersionRef.current;
 
       if (mode === 'manual') {
@@ -3482,8 +3549,8 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
 
       const characterPayloads = charsToSave.map((c) => {
         const oldFileName =
-          c.savedFileName ||
-          (c.id ? charDiskFileNamesRef.current.get(c.id) : undefined);
+          (c.id ? charDiskFileNamesRef.current.get(c.id) : undefined) ||
+          c.savedFileName;
         const fileName = ensureUniqueSavedFileName(
           c.name,
           usedCharFiles,
@@ -3494,7 +3561,7 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
         }
         const payload = serializeCharacterCard(
           c,
-          snap.settings.cardSpecVersion,
+          settingsToSave.cardSpecVersion,
           c.character_book
         );
         return {
@@ -3506,8 +3573,8 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
 
       const lorebookPayloads = booksToSave.map((lb) => {
         const oldFileName =
-          lb.savedFileName ||
-          (lb.id ? loreDiskFileNamesRef.current.get(lb.id) : undefined);
+          (lb.id ? loreDiskFileNamesRef.current.get(lb.id) : undefined) ||
+          lb.savedFileName;
         const fileName = ensureUniqueSavedFileName(
           lb.name,
           usedLoreFiles,
@@ -3527,13 +3594,13 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
       const metaPayload: TavernSmithMetaPayload = {
         schema: 'tavernsmith_meta_v1',
         updatedAt: nowIso,
-        activeThemeId: snap.settings.activeThemeId,
-        contextThemes: snap.themes,
-        tags: extractCustomUserTags(snap.tags),
-        settings: snap.settings,
-        aiConfig: stripApiKeysForStorage(snap.aiConfig),
-        activeCharacterId: activeCharacterIdRef.current,
-        activeLorebookId: activeLorebookIdRef.current,
+        activeThemeId: settingsToSave.activeThemeId,
+        contextThemes: themesToSave,
+        tags: extractCustomUserTags(tagsToSave),
+        settings: settingsToSave,
+        aiConfig: stripApiKeysForStorage(aiConfigToSave),
+        activeCharacterId: activeCharId,
+        activeLorebookId: activeBookId,
       };
 
       let vaultEnvelope = readEncryptedVaultEnvelope();
@@ -3555,7 +3622,7 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
             lorebooks: lorebookPayloads,
             meta: metaPayload,
             vault: vaultEnvelope || undefined,
-            customSavePath: snap.settings.activeSaveFolder,
+            customSavePath: settingsToSave.activeSaveFolder,
           }),
         });
 
@@ -3564,9 +3631,17 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
         }
 
         const diskState = (await res.json()) as DiskStateResponse;
-        await applyDiskStateToWorkspace(diskState, {
-          expectedVersion: versionAtStart,
-        });
+        if (diskState && diskState.ok) {
+          if (diskState.resolvedPath || diskState.diskRoot) {
+            setDiskResolvedPath(diskState.resolvedPath || diskState.diskRoot);
+          }
+          if (Array.isArray(diskState.files)) {
+            setDiskFiles(diskState.files);
+          }
+          if (diskState.updatedAt) {
+            setLastSavedAt(formatSafeTimestamp(diskState.updatedAt));
+          }
+        }
         if (diskMutationVersionRef.current === versionAtStart) {
           setIsDirty(false);
         }
@@ -3582,7 +3657,7 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
         };
       }
     },
-    [applyDiskStateToWorkspace]
+    []
   );
 
   const executeDiskSaveAndRescan = useCallback(
@@ -3593,10 +3668,115 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
         lorebooks?: Lorebook[];
       }
     ): Promise<{ ok: boolean; message: string }> => {
-      const versionAtEnqueue = diskMutationVersionRef.current;
       return enqueueDiskOperation(() =>
-        runDiskSaveRequest(mode, overrideState, versionAtEnqueue)
+        runDiskSaveRequest(mode, overrideState, diskMutationVersionRef.current)
       );
+    },
+    [enqueueDiskOperation, runDiskSaveRequest]
+  );
+
+  const createNewCharacter = useCallback(
+    (partial?: Partial<CharacterCardData>) => {
+      diskMutationVersionRef.current += 1;
+      const opVersion = diskMutationVersionRef.current;
+      const currentChars = charactersRef.current;
+      const fresh = createBlankCharacter(partial);
+      const uniqueName = ensureUniqueEntityName(
+        fresh.name,
+        currentChars.map((c) => c.name || 'New Character'),
+        'New Character'
+      );
+      const usedFilesLower = new Set(
+        currentChars
+          .map((c) => (c.savedFileName || charDiskFileNamesRef.current.get(c.id || '') || '').toLowerCase())
+          .filter(Boolean)
+      );
+      const uniqueFileName = ensureUniqueSavedFileName(
+        uniqueName,
+        usedFilesLower,
+        'character'
+      );
+      fresh.name = uniqueName;
+      fresh.savedFileName = uniqueFileName;
+      fresh.isNsfw = isCharacterNsfw(fresh, tagsRef.current);
+
+      if (fresh.id) {
+        charDiskFileNamesRef.current.set(fresh.id, uniqueFileName);
+      }
+      const nextChars = [fresh, ...currentChars];
+      charactersRef.current = nextChars;
+      latestWorkspaceRef.current.characters = nextChars;
+      activeCharacterIdRef.current = fresh.id!;
+      latestWorkspaceRef.current.activeCharacterId = fresh.id!;
+      setCharactersState(nextChars);
+      setActiveCharacterIdState(fresh.id!);
+
+      // Immediately persist newly created character to disk without overwriting React state
+      void enqueueDiskOperation(() =>
+        runDiskSaveRequest(
+          'autosave',
+          {
+            characters: charactersRef.current,
+            lorebooks: lorebooksRef.current,
+          },
+          opVersion
+        )
+      );
+
+      return fresh.id!;
+    },
+    [enqueueDiskOperation, runDiskSaveRequest]
+  );
+
+  const createNewLorebook = useCallback(
+    (partial?: Partial<Lorebook>) => {
+      diskMutationVersionRef.current += 1;
+      const opVersion = diskMutationVersionRef.current;
+      const currentBooks = lorebooksRef.current;
+      const fresh = createBlankLorebook(partial);
+      const uniqueName = ensureUniqueEntityName(
+        fresh.name,
+        currentBooks.map((l) => l.name || 'New World Lorebook'),
+        'New World Lorebook'
+      );
+      const usedFilesLower = new Set(
+        currentBooks
+          .map((l) => (l.savedFileName || loreDiskFileNamesRef.current.get(l.id || '') || '').toLowerCase())
+          .filter(Boolean)
+      );
+      const uniqueFileName = ensureUniqueSavedFileName(
+        uniqueName,
+        usedFilesLower,
+        'lorebook'
+      );
+      fresh.name = uniqueName;
+      fresh.savedFileName = uniqueFileName;
+      fresh.isNsfw = isLorebookNsfw(fresh, tagsRef.current);
+
+      if (fresh.id) {
+        loreDiskFileNamesRef.current.set(fresh.id, uniqueFileName);
+      }
+      const nextBooks = [fresh, ...currentBooks];
+      lorebooksRef.current = nextBooks;
+      latestWorkspaceRef.current.lorebooks = nextBooks;
+      activeLorebookIdRef.current = fresh.id!;
+      latestWorkspaceRef.current.activeLorebookId = fresh.id!;
+      setLorebooksState(nextBooks);
+      setActiveLorebookIdState(fresh.id!);
+
+      // Immediately persist newly created lorebook to disk without overwriting React state
+      void enqueueDiskOperation(() =>
+        runDiskSaveRequest(
+          'autosave',
+          {
+            characters: charactersRef.current,
+            lorebooks: lorebooksRef.current,
+          },
+          opVersion
+        )
+      );
+
+      return fresh.id!;
     },
     [enqueueDiskOperation, runDiskSaveRequest]
   );
@@ -3631,8 +3811,8 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
       activeCharacterIdRef.current = nextActiveCharId;
       latestWorkspaceRef.current.activeCharacterId = nextActiveCharId;
 
-      setCharacters(remaining);
-      setActiveCharacterId(nextActiveCharId);
+      setCharactersState(remaining);
+      setActiveCharacterIdState(nextActiveCharId);
 
       if (diskFileName) {
         setDiskFiles((prev) =>
@@ -3653,7 +3833,7 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
               savedFileName: target?.savedFileName || undefined,
               name: target?.name || undefined,
               id,
-              customSavePath: latestWorkspaceRef.current.settings.activeSaveFolder,
+              customSavePath: settingsRef.current.activeSaveFolder,
             }),
           });
         } catch {
@@ -3702,8 +3882,8 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
       activeLorebookIdRef.current = nextActiveBookId;
       latestWorkspaceRef.current.activeLorebookId = nextActiveBookId;
 
-      setLorebooks(remaining);
-      setActiveLorebookId(nextActiveBookId);
+      setLorebooksState(remaining);
+      setActiveLorebookIdState(nextActiveBookId);
 
       if (diskFileName) {
         setDiskFiles((prev) =>
@@ -3724,7 +3904,7 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
               savedFileName: target?.savedFileName || undefined,
               name: target?.name || undefined,
               id,
-              customSavePath: latestWorkspaceRef.current.settings.activeSaveFolder,
+              customSavePath: settingsRef.current.activeSaveFolder,
             }),
           });
         } catch {
@@ -3757,7 +3937,7 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
     return executeDiskSaveAndRescan('manual');
   }, [executeDiskSaveAndRescan]);
 
-  // Auto-Save Timer -> Saves and auto-rescans `./Saves/` on disk
+  // Auto-Save Timer -> Saves current React state to `./Saves/` without overwriting in-memory state
   useEffect(() => {
     if (!settings.autoSaveEnabled) return;
     const intervalMs = Math.max(5, settings.autoSaveIntervalSec) * 1000;
@@ -3858,9 +4038,10 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
           forcedKind
         );
         if (parsed.kind === 'character') {
-          parsed.character.isNsfw = isCharacterNsfw(parsed.character, tags);
+          const currentChars = charactersRef.current;
+          parsed.character.isNsfw = isCharacterNsfw(parsed.character, tagsRef.current);
           parsed.character.savedFileName = file.fileName;
-          const match = characters.find(
+          const match = currentChars.find(
             (c) =>
               (c.savedFileName && c.savedFileName === file.fileName) ||
               (parsed.character.id && c.id === parsed.character.id) ||
@@ -3873,7 +4054,7 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
           } else {
             const uniqueName = ensureUniqueEntityName(
               parsed.character.name,
-              characters.map((c) => c.name || 'Character'),
+              currentChars.map((c) => c.name || 'Character'),
               'Character'
             );
             const loadedChar = { ...parsed.character, name: uniqueName };
@@ -3889,9 +4070,10 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
             message: `Opened character "${parsed.character.name}" from ./Saves/Characters/${file.fileName}.`,
           };
         } else if (parsed.kind === 'lorebook') {
-          parsed.lorebook.isNsfw = isLorebookNsfw(parsed.lorebook, tags);
+          const currentBooks = lorebooksRef.current;
+          parsed.lorebook.isNsfw = isLorebookNsfw(parsed.lorebook, tagsRef.current);
           parsed.lorebook.savedFileName = file.fileName;
-          const match = lorebooks.find(
+          const match = currentBooks.find(
             (l) =>
               (l.savedFileName && l.savedFileName === file.fileName) ||
               (parsed.lorebook.id && l.id === parsed.lorebook.id) ||
@@ -3904,7 +4086,7 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
           } else {
             const uniqueName = ensureUniqueEntityName(
               parsed.lorebook.name,
-              lorebooks.map((l) => l.name || 'Lorebook'),
+              currentBooks.map((l) => l.name || 'Lorebook'),
               'Lorebook'
             );
             const loadedBook = { ...parsed.lorebook, name: uniqueName };
@@ -3925,7 +4107,7 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
         return { ok: false, message: `Could not parse ${file.fileName}.` };
       }
     },
-    [characters, lorebooks, tags]
+    [setActiveCharacterId, setActiveLorebookId, setCharacters, setLorebooks, setTags, setThemes]
   );
 
   // Unified Disk Delete from Options File List — routes directly through deleteCharacter / deleteLorebook
@@ -4182,8 +4364,8 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
       let lastCharId: string | null = null;
       let lastBookId: string | null = null;
 
-      const nextCharacters = [...latestWorkspaceRef.current.characters];
-      const nextLorebooks = [...latestWorkspaceRef.current.lorebooks];
+      const nextCharacters = [...charactersRef.current];
+      const nextLorebooks = [...lorebooksRef.current];
       const usedCharFiles = new Set(
         nextCharacters
           .map((c) => (c.savedFileName || charDiskFileNamesRef.current.get(c.id || '') || '').toLowerCase())
@@ -4240,7 +4422,7 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
         const result = await importCardFromFile(file);
         if (result.kind === 'character') {
           const importedChar = { ...result.character };
-          importedChar.isNsfw = isCharacterNsfw(importedChar, tags);
+          importedChar.isNsfw = isCharacterNsfw(importedChar, tagsRef.current);
           importedChar.name = ensureUniqueEntityName(
             importedChar.name || 'Imported Character',
             nextCharacters.map((c) => c.name || 'Untitled'),
@@ -4265,7 +4447,7 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
 
           if (result.embeddedLorebook) {
             const book = { ...result.embeddedLorebook };
-            book.isNsfw = isLorebookNsfw(book, tags);
+            book.isNsfw = isLorebookNsfw(book, tagsRef.current);
             book.name = ensureUniqueEntityName(
               book.name || `${importedChar.name} Lorebook`,
               nextLorebooks.map((l) => l.name || 'Untitled Lorebook'),
@@ -4287,7 +4469,7 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
           }
         } else if (result.kind === 'lorebook') {
           const importedBook = { ...result.lorebook };
-          importedBook.isNsfw = isLorebookNsfw(importedBook, tags);
+          importedBook.isNsfw = isLorebookNsfw(importedBook, tagsRef.current);
           importedBook.name = ensureUniqueEntityName(
             importedBook.name || 'Imported Lorebook',
             nextLorebooks.map((l) => l.name || 'Untitled Lorebook'),
