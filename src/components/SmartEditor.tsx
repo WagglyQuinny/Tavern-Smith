@@ -32,6 +32,7 @@ import {
   generateCompletion,
   generateCompletionDetailed,
   resolveEffectiveFormat,
+  resolveEffectiveMaxTokens,
 } from '../services/aiService';
 import { readImageFileAsDataUrl } from '../utils/cardIO';
 import { estimateTokens } from '../utils/tokenCounter';
@@ -222,6 +223,7 @@ export const SmartEditor: React.FC<SmartEditorProps> = ({
 
   // Timers and AbortControllers for strict memory & race-condition hygiene
   const ghostDebounceTimerRef = useRef<number | null>(null);
+  const blurMacroTimerRef = useRef<number | null>(null);
   const ghostAbortControllerRef = useRef<AbortController | null>(null);
   const generateAbortControllerRef = useRef<AbortController | null>(null);
 
@@ -276,6 +278,9 @@ export const SmartEditor: React.FC<SmartEditorProps> = ({
     return () => {
       if (ghostDebounceTimerRef.current !== null) {
         window.clearTimeout(ghostDebounceTimerRef.current);
+      }
+      if (blurMacroTimerRef.current !== null) {
+        window.clearTimeout(blurMacroTimerRef.current);
       }
       if (ghostAbortControllerRef.current) {
         ghostAbortControllerRef.current.abort();
@@ -381,19 +386,46 @@ export const SmartEditor: React.FC<SmartEditorProps> = ({
     });
   }, [ghostText, value, onChange]);
 
-  // Build snapshot of existing card fields for system context
+  // Build complete snapshot of existing Character & Lorebook fields for system context
   const cardContextSnapshot = useMemo(() => {
+    if (fieldKey.startsWith('lorebook_') && extraContextSummary) {
+      return [
+        extraContextSummary,
+        character.name && character.name !== 'New Character'
+          ? `Active Character Reference: ${character.name}`
+          : '',
+      ]
+        .filter(Boolean)
+        .join('\n');
+    }
+
     return [
       `Character Name: ${character.name || '{{char}}'}`,
       character.nickname ? `Nickname: ${character.nickname}` : '',
       character.description && fieldKey !== 'description'
-        ? `Description: ${character.description.slice(0, 500)}`
+        ? `Description: ${character.description.slice(0, 600)}`
         : '',
       character.personality && fieldKey !== 'personality'
-        ? `Personality: ${character.personality.slice(0, 400)}`
+        ? `Personality: ${character.personality.slice(0, 500)}`
         : '',
       character.scenario && fieldKey !== 'scenario'
-        ? `Scenario: ${character.scenario.slice(0, 400)}`
+        ? `Scenario: ${character.scenario.slice(0, 500)}`
+        : '',
+      character.first_mes && fieldKey !== 'first_mes'
+        ? `First Message / Greeting: ${character.first_mes.slice(0, 400)}`
+        : '',
+      character.mes_example && fieldKey !== 'mes_example'
+        ? `Example Dialogue: ${character.mes_example.slice(0, 350)}`
+        : '',
+      character.system_prompt && fieldKey !== 'system_prompt'
+        ? `System Prompt: ${character.system_prompt.slice(0, 300)}`
+        : '',
+      character.post_history_instructions &&
+      fieldKey !== 'post_history_instructions'
+        ? `Post-History Instructions: ${character.post_history_instructions.slice(0, 300)}`
+        : '',
+      character.creator_notes && fieldKey !== 'creator_notes'
+        ? `Creator Notes: ${character.creator_notes.slice(0, 250)}`
         : '',
       extraContextSummary || '',
     ]
@@ -405,6 +437,11 @@ export const SmartEditor: React.FC<SmartEditorProps> = ({
     character.description,
     character.personality,
     character.scenario,
+    character.first_mes,
+    character.mes_example,
+    character.system_prompt,
+    character.post_history_instructions,
+    character.creator_notes,
     fieldKey,
     extraContextSummary,
   ]);
@@ -530,7 +567,7 @@ export const SmartEditor: React.FC<SmartEditorProps> = ({
         aiConfig,
         controller.signal,
         {
-          maxTokens: aiConfig.maxTokens || 512,
+          maxTokens: resolveEffectiveMaxTokens(aiConfig, aiConfig.maxTokens),
           temperature: aiConfig.temperature,
           activeTheme,
           allTags: tags,
@@ -540,18 +577,25 @@ export const SmartEditor: React.FC<SmartEditorProps> = ({
         }
       );
 
-      if (!controller.signal.aborted && detailed.content.trim()) {
-        if (detailed.visionFallbackWarning) {
-          setVisionFallbackToast(detailed.visionFallbackWarning);
-        }
-        if (detailed.reasoning) {
-          setLastReasoning(detailed.reasoning);
-        }
-        if (value.trim()) {
-          const separator = value.endsWith('\n') ? '\n' : '\n\n';
-          onChange(`${value}${separator}${detailed.content.trim()}`);
+      if (!controller.signal.aborted) {
+        if (detailed.content.trim()) {
+          if (detailed.visionFallbackWarning) {
+            setVisionFallbackToast(detailed.visionFallbackWarning);
+          }
+          if (detailed.reasoning) {
+            setLastReasoning(detailed.reasoning);
+          }
+          if (value.trim()) {
+            const separator = value.endsWith('\n') ? '\n' : '\n\n';
+            onChange(`${value}${separator}${detailed.content.trim()}`);
+          } else {
+            onChange(detailed.content.trim());
+          }
         } else {
-          onChange(detailed.content.trim());
+          setAiError({
+            message:
+              'Model returned an empty appearance description. Verify your model and max tokens.',
+          });
         }
       }
     } catch (err: unknown) {
@@ -578,7 +622,7 @@ export const SmartEditor: React.FC<SmartEditorProps> = ({
     }
   };
 
-  // Handle per-field "AI Assist" generation (Rewrite/Generate or Append)
+  // Handle per-field "AI Assist" generation (Rewrite Field or Append to Field)
   const handleGenerateField = async (
     modeOverride?: 'replace' | 'append',
     e?: React.FormEvent
@@ -616,10 +660,14 @@ export const SmartEditor: React.FC<SmartEditorProps> = ({
       ? `Custom Instruction from Creator: "${customInstruction.trim()}"`
       : 'Write vivid, high-craft SillyTavern roleplay content tailored to the active Context Theme and semantic tags.';
 
+    const targetLabel = fieldKey.startsWith('lorebook_')
+      ? label
+      : `"${label}" (${fieldKey}) field for "${character.name || '{{char}}'}"`;
+
     const promptText =
       targetMode === 'append' && value.trim()
         ? [
-            `Continue and append a new paragraph or section to the "${label}" (${fieldKey}) field for "${character.name || '{{char}}'}".`,
+            `Continue and append a new paragraph or section to ${targetLabel}.`,
             userDirective,
             visionContextDirective,
             `\nExisting "${label}" Content (do NOT repeat this; write only the new continuation to append):\n${value}`,
@@ -627,7 +675,7 @@ export const SmartEditor: React.FC<SmartEditorProps> = ({
             .filter(Boolean)
             .join('\n')
         : [
-            `Write or refine the "${label}" (${fieldKey}) field for the SillyTavern character card "${character.name || '{{char}}'}".`,
+            `Write or refine ${targetLabel}.`,
             userDirective,
             visionContextDirective,
             value.trim()
@@ -645,7 +693,7 @@ export const SmartEditor: React.FC<SmartEditorProps> = ({
         aiConfig,
         controller.signal,
         {
-          maxTokens: aiConfig.maxTokens || 512,
+          maxTokens: resolveEffectiveMaxTokens(aiConfig, aiConfig.maxTokens),
           temperature: aiConfig.temperature,
           activeTheme,
           allTags: tags,
@@ -655,20 +703,26 @@ export const SmartEditor: React.FC<SmartEditorProps> = ({
         }
       );
 
-      if (!controller.signal.aborted && detailed.content.trim()) {
-        if (detailed.visionFallbackWarning) {
-          setVisionFallbackToast(detailed.visionFallbackWarning);
-        }
-        if (detailed.reasoning) {
-          setLastReasoning(detailed.reasoning);
-        }
-        if (targetMode === 'append' && value.trim()) {
-          const separator = value.endsWith('\n') ? '\n' : '\n\n';
-          onChange(`${value}${separator}${detailed.content.trim()}`);
+      if (!controller.signal.aborted) {
+        if (detailed.content.trim()) {
+          if (detailed.visionFallbackWarning) {
+            setVisionFallbackToast(detailed.visionFallbackWarning);
+          }
+          if (detailed.reasoning) {
+            setLastReasoning(detailed.reasoning);
+          }
+          if (targetMode === 'append' && value.trim()) {
+            const separator = value.endsWith('\n') ? '\n' : '\n\n';
+            onChange(`${value}${separator}${detailed.content.trim()}`);
+          } else {
+            onChange(detailed.content.trim());
+          }
+          setCustomInstruction('');
         } else {
-          onChange(detailed.content.trim());
+          setAiError({
+            message: 'Model returned an empty response for this field.',
+          });
         }
-        setCustomInstruction('');
       }
     } catch (err: unknown) {
       if (err instanceof DOMException && err.name === 'AbortError') {
@@ -744,12 +798,6 @@ export const SmartEditor: React.FC<SmartEditorProps> = ({
     onChange(nextValue);
     evaluateMacroTrigger(nextValue, e.target.selectionStart ?? nextValue.length);
   };
-
-  const needsSpaceBeforeGhost =
-    value.length > 0 &&
-    !/\s$/.test(value) &&
-    Boolean(ghostText) &&
-    !/^[\s.,!?;:'")]/.test(ghostText);
 
   return (
     <div
@@ -885,7 +933,7 @@ export const SmartEditor: React.FC<SmartEditorProps> = ({
                 ) : (
                   <Sparkles className="h-3.5 w-3.5" />
                 )}
-                <span>{value.trim() ? 'Rewrite / Generate' : 'Generate Field'}</span>
+                <span>{value.trim() ? 'Rewrite Field' : 'Generate Field'}</span>
               </button>
 
               {value.trim() && (
@@ -906,7 +954,7 @@ export const SmartEditor: React.FC<SmartEditorProps> = ({
                       style={{ color: 'var(--theme-accent)' }}
                     />
                   )}
-                  <span>Append</span>
+                  <span>Append to Field</span>
                 </button>
               )}
 
@@ -1255,18 +1303,13 @@ export const SmartEditor: React.FC<SmartEditorProps> = ({
           </div>
         )}
 
-        {/* Backdrop Layer: Renders visible text + zero-padding {{macro}} highlights + inline Ghost Text */}
+        {/* Backdrop Layer: Renders visible text + zero-padding {{macro}} highlights */}
         <div
           ref={backdropRef}
           aria-hidden="true"
           className="pointer-events-none absolute inset-0 overflow-hidden whitespace-pre-wrap break-words p-3.5 font-mono text-xs leading-relaxed text-slate-900 dark:text-slate-100 select-none"
         >
           {renderHighlightedBackdrop(value)}
-          {ghostText && (
-            <span className="opacity-45 italic text-slate-500 dark:text-slate-400">
-              {needsSpaceBeforeGhost ? ` ${ghostText}` : ghostText}
-            </span>
-          )}
           {value.endsWith('\n') ? '\n' : ''}
         </div>
 
@@ -1281,7 +1324,13 @@ export const SmartEditor: React.FC<SmartEditorProps> = ({
           onFocus={() => setIsFocused(true)}
           onBlur={() => {
             setIsFocused(false);
-            window.setTimeout(() => setMacroMenuOpen(false), 150);
+            if (blurMacroTimerRef.current !== null) {
+              window.clearTimeout(blurMacroTimerRef.current);
+            }
+            blurMacroTimerRef.current = window.setTimeout(
+              () => setMacroMenuOpen(false),
+              150
+            );
           }}
           placeholder={placeholder}
           spellCheck={true}
@@ -1294,26 +1343,37 @@ export const SmartEditor: React.FC<SmartEditorProps> = ({
         />
       </div>
 
-      {/* Zero-Jank Inline Ghost Text Acceptance Bar */}
+      {/* Bottom AI Suggestion Pill / Bar (Replaces Broken Backdrop Ghost Overlay) */}
       {ghostText && (
         <div
           style={{
-            borderColor: 'color-mix(in srgb, var(--theme-accent) 30%, transparent)',
+            borderColor: 'color-mix(in srgb, var(--theme-accent) 42%, transparent)',
             backgroundColor:
-              'color-mix(in srgb, var(--theme-accent) 7%, transparent)',
+              'color-mix(in srgb, var(--theme-accent) 9%, transparent)',
           }}
-          className="flex items-center justify-between gap-3 border-t px-3.5 py-1.5 text-xs"
+          className="flex flex-wrap items-center justify-between gap-2.5 border-t px-3.5 py-2 text-xs"
         >
-          <div className="flex items-center gap-2 min-w-0">
+          <button
+            type="button"
+            onMouseDown={(e) => {
+              e.preventDefault();
+              acceptGhostText();
+            }}
+            className="flex flex-1 min-w-0 items-center gap-2 text-left cursor-pointer group"
+            title="Click or press Tab to insert this AI suggestion"
+          >
             <Sparkles
               className="h-3.5 w-3.5 shrink-0"
               style={{ color: 'var(--theme-accent)' }}
             />
-            <span className="truncate italic text-slate-600 dark:text-slate-300">
-              {ghostText}
+            <span className="font-semibold text-slate-900 dark:text-white shrink-0">
+              AI Suggestion:
             </span>
-          </div>
-          <div className="flex items-center gap-2 shrink-0">
+            <span className="truncate italic text-slate-700 dark:text-slate-200 group-hover:underline">
+              &ldquo;{ghostText}&rdquo;
+            </span>
+          </button>
+          <div className="flex items-center gap-1.5 shrink-0">
             <button
               type="button"
               onMouseDown={(e) => {
@@ -1321,10 +1381,10 @@ export const SmartEditor: React.FC<SmartEditorProps> = ({
                 acceptGhostText();
               }}
               style={{ borderColor: 'var(--theme-accent)' }}
-              className="flex items-center gap-1 rounded border bg-white dark:bg-slate-900 px-2 py-0.5 font-mono text-[11px] font-medium text-slate-900 dark:text-white cursor-pointer"
+              className="theme-hover-outline flex items-center gap-1 rounded-md border bg-white dark:bg-slate-900 px-2.5 py-1 font-mono text-[11px] font-semibold text-slate-900 dark:text-white cursor-pointer whitespace-nowrap"
             >
               <Check className="h-3 w-3" style={{ color: 'var(--theme-accent)' }} />
-              <span>Tab · Accept</span>
+              <span>Press Tab or Click to Insert</span>
             </button>
             <button
               type="button"
@@ -1332,9 +1392,11 @@ export const SmartEditor: React.FC<SmartEditorProps> = ({
                 e.preventDefault();
                 setGhostText('');
               }}
-              className="text-[11px] text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 cursor-pointer"
+              title="Dismiss AI suggestion (Esc)"
+              aria-label="Dismiss AI suggestion"
+              className="rounded-md border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-1 text-slate-500 hover:text-slate-800 dark:hover:text-white cursor-pointer"
             >
-              Esc
+              <X className="h-3.5 w-3.5" />
             </button>
           </div>
         </div>

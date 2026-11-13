@@ -33,7 +33,11 @@ import {
   FolderOpen,
   ShieldAlert,
 } from 'lucide-react';
-import { useStore, isCharacterNsfw } from '../context/StoreContext';
+import {
+  ensureUniqueEntityName,
+  isCharacterNsfw,
+  useStore,
+} from '../context/StoreContext';
 import {
   CharacterCardData,
   RosterSortOption,
@@ -62,6 +66,7 @@ import {
   AIServiceError,
   doesBackendSupportVision,
   generateCompletionDetailed,
+  parseAiJsonResponse,
 } from '../services/aiService';
 
 const WIZARD_STEPS = [
@@ -98,7 +103,7 @@ export const CharacterEditor: React.FC = () => {
     activeCharacterId,
     setActiveCharacterId,
     createNewCharacter,
-    deleteCharacter,
+    requestDeleteCharacter,
     character,
     setCharacter,
     updateCharacterField,
@@ -123,8 +128,6 @@ export const CharacterEditor: React.FC = () => {
   const [rosterSearch, setRosterSearch] = useState('');
   const [rosterTagFilter, setRosterTagFilter] = useState<string>('all');
   const [rosterSort, setRosterSort] = useState<RosterSortOption>('modified_desc');
-  const [deleteTargetCharacter, setDeleteTargetCharacter] =
-    useState<CharacterCardData | null>(null);
   const [isDraggingFile, setIsDraggingFile] = useState(false);
   const [importStatusBanner, setImportStatusBanner] = useState<string | null>(
     null
@@ -192,6 +195,15 @@ export const CharacterEditor: React.FC = () => {
 
   const abortRef = useRef<AbortController | null>(null);
   const importFileInputRef = useRef<HTMLInputElement | null>(null);
+  const timersRef = useRef<Set<number>>(new Set());
+
+  const scheduleTimer = (fn: () => void, ms: number) => {
+    const id = window.setTimeout(() => {
+      timersRef.current.delete(id);
+      fn();
+    }, ms);
+    timersRef.current.add(id);
+  };
 
   // Portrait Upload & 2:3 Aspect-Ratio Check Handler
   const handlePortraitImageSelected = async (file: File) => {
@@ -210,7 +222,7 @@ export const CharacterEditor: React.FC = () => {
         setImportStatusBanner(
           `Applied 2:3 portrait (${info.width}×${info.height} px) to ${character.name}.`
         );
-        window.setTimeout(() => setImportStatusBanner(null), 3500);
+        scheduleTimer(() => setImportStatusBanner(null), 3500);
       }
     } catch (err: unknown) {
       setConceptError({
@@ -284,7 +296,7 @@ export const CharacterEditor: React.FC = () => {
     try {
       const res = await importFromFiles(list);
       setImportStatusBanner(res.summary);
-      window.setTimeout(() => setImportStatusBanner(null), 4000);
+      scheduleTimer(() => setImportStatusBanner(null), 4000);
     } catch (err: unknown) {
       setConceptError({
         message:
@@ -300,6 +312,8 @@ export const CharacterEditor: React.FC = () => {
       if (abortRef.current) {
         abortRef.current.abort();
       }
+      timersRef.current.forEach((id) => window.clearTimeout(id));
+      timersRef.current.clear();
     };
   }, []);
 
@@ -462,11 +476,21 @@ export const CharacterEditor: React.FC = () => {
     setConceptError(null);
 
     const cardContext = [
+      `Active Context Theme: ${activeTheme.name}`,
       `Character Name: ${character.name || '{{char}}'}`,
-      `Description: ${character.description}`,
-      `Personality: ${character.personality}`,
-      `Scenario: ${character.scenario}`,
-    ].join('\n');
+      character.nickname ? `Nickname: ${character.nickname}` : '',
+      character.description ? `Description:\n${character.description}` : '',
+      character.personality ? `Personality:\n${character.personality}` : '',
+      character.scenario ? `Scenario:\n${character.scenario}` : '',
+      character.system_prompt
+        ? `System Prompt:\n${character.system_prompt}`
+        : '',
+      character.post_history_instructions
+        ? `Post-History Instructions:\n${character.post_history_instructions}`
+        : '',
+    ]
+      .filter(Boolean)
+      .join('\n\n');
 
     const twistDirective = altGreetingTwist.trim()
       ? `Scene / Mood Twist: "${altGreetingTwist.trim()}"`
@@ -484,11 +508,11 @@ export const CharacterEditor: React.FC = () => {
 
       const detailed = await generateCompletionDetailed(
         prompt,
-        `Active Context Theme: ${activeTheme.name}`,
+        cardContext,
         aiConfig,
         controller.signal,
         {
-          maxTokens: 450,
+          maxTokens: Math.max(4096, aiConfig.maxTokens || 4096),
           temperature: aiConfig.temperature,
           activeTheme,
           allTags: tags,
@@ -579,7 +603,7 @@ export const CharacterEditor: React.FC = () => {
         setImportStatusBanner(
           `✨ Generated physical appearance description from ${character.name || 'Character'}'s portrait!`
         );
-        window.setTimeout(() => setImportStatusBanner(null), 4000);
+        scheduleTimer(() => setImportStatusBanner(null), 4000);
       }
     } catch (err: unknown) {
       if (err instanceof DOMException && err.name === 'AbortError') return;
@@ -643,14 +667,35 @@ export const CharacterEditor: React.FC = () => {
       .filter(Boolean)
       .join('\n');
 
+    const existingCardContext = [
+      `Active Context Theme: ${activeTheme.name}`,
+      character.name ? `Current Name: ${character.name}` : '',
+      character.nickname ? `Current Nickname: ${character.nickname}` : '',
+      character.description
+        ? `Existing Description Draft:\n${character.description}`
+        : '',
+      character.personality
+        ? `Existing Personality Draft:\n${character.personality}`
+        : '',
+      character.scenario ? `Existing Scenario Draft:\n${character.scenario}` : '',
+      character.first_mes
+        ? `Existing Greeting Draft:\n${character.first_mes}`
+        : '',
+      character.system_prompt
+        ? `Existing System Prompt:\n${character.system_prompt}`
+        : '',
+    ]
+      .filter(Boolean)
+      .join('\n\n');
+
     try {
       const detailed = await generateCompletionDetailed(
         prompt,
-        `Active Context Theme: ${activeTheme.name}`,
+        existingCardContext,
         aiConfig,
         controller.signal,
         {
-          maxTokens: 1200,
+          maxTokens: Math.max(4096, aiConfig.maxTokens || 4096),
           temperature: aiConfig.temperature,
           activeTheme,
           allTags: tags,
@@ -664,21 +709,34 @@ export const CharacterEditor: React.FC = () => {
         if (detailed.visionFallbackWarning) {
           setVisionFallbackBanner(detailed.visionFallbackWarning);
         }
-        const jsonMatch = detailed.content.match(/\{[\s\S]*\}/);
-        const rawJson = jsonMatch ? jsonMatch[0] : detailed.content;
-        const parsed = JSON.parse(rawJson) as Partial<CharacterCardData>;
+        const parsed = parseAiJsonResponse<Partial<CharacterCardData>>(
+          detailed.content
+        );
 
-        setCharacter((prev) => ({
-          ...prev,
-          name: parsed.name || prev.name,
-          nickname: parsed.nickname || prev.nickname,
-          description: parsed.description || prev.description,
-          personality: parsed.personality || prev.personality,
-          scenario: parsed.scenario || prev.scenario,
-          first_mes: parsed.first_mes || prev.first_mes,
-          mes_example: parsed.mes_example || prev.mes_example,
-          system_prompt: parsed.system_prompt || prev.system_prompt,
-        }));
+        setCharacter((prev) => {
+          const otherNames = characters
+            .filter((c) => c.id !== prev.id)
+            .map((c) => c.name || 'Untitled');
+          const safeName = parsed.name?.trim()
+            ? ensureUniqueEntityName(
+                parsed.name.trim(),
+                otherNames,
+                prev.name || 'New Character'
+              )
+            : prev.name;
+
+          return {
+            ...prev,
+            name: safeName,
+            nickname: parsed.nickname ?? prev.nickname,
+            description: parsed.description ?? prev.description,
+            personality: parsed.personality ?? prev.personality,
+            scenario: parsed.scenario ?? prev.scenario,
+            first_mes: parsed.first_mes ?? prev.first_mes,
+            mes_example: parsed.mes_example ?? prev.mes_example,
+            system_prompt: parsed.system_prompt ?? prev.system_prompt,
+          };
+        });
       }
     } catch (err: unknown) {
       if (err instanceof DOMException && err.name === 'AbortError') return;
@@ -878,7 +936,7 @@ export const CharacterEditor: React.FC = () => {
     setCompiledBanner(
       'Compiled DM Stat Tracker rules into post_history_instructions and injected starting Status Block into first_mes.'
     );
-    window.setTimeout(() => setCompiledBanner(null), 4000);
+    scheduleTimer(() => setCompiledBanner(null), 4000);
   };
 
   const liveRenderedStatPreview = useMemo(
@@ -1769,7 +1827,7 @@ export const CharacterEditor: React.FC = () => {
             setImportStatusBanner(
               `Cropped and applied 2:3 SillyTavern portrait (${outW}×${outH} px) to ${character.name}.`
             );
-            window.setTimeout(() => setImportStatusBanner(null), 3500);
+            scheduleTimer(() => setImportStatusBanner(null), 3500);
           }}
         />
       )}
@@ -2008,7 +2066,7 @@ export const CharacterEditor: React.FC = () => {
 
                     <button
                       type="button"
-                      onClick={() => setDeleteTargetCharacter(char)}
+                      onClick={() => char.id && requestDeleteCharacter(char.id)}
                       title="Permanently Delete Character"
                       className="p-1 text-slate-400 hover:text-rose-600 dark:hover:text-rose-400 cursor-pointer shrink-0"
                     >
@@ -2944,61 +3002,6 @@ export const CharacterEditor: React.FC = () => {
           </div>
         )}
       </div>
-
-      {/* Permanent Delete Confirmation Modal */}
-      {deleteTargetCharacter && (
-        <div
-          role="dialog"
-          aria-modal="true"
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-xs"
-        >
-          <div
-            style={{ borderColor: 'var(--theme-accent)' }}
-            className="w-full max-w-md rounded-xl border bg-white dark:bg-slate-900 p-5 shadow-2xl space-y-4"
-          >
-            <div className="flex items-center justify-between border-b border-slate-200 dark:border-slate-800 pb-2.5">
-              <h3 className="text-sm font-bold text-slate-900 dark:text-white">
-                Permanently Delete Character?
-              </h3>
-              <button
-                type="button"
-                onClick={() => setDeleteTargetCharacter(null)}
-                className="text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 cursor-pointer"
-              >
-                <X className="h-4 w-4" />
-              </button>
-            </div>
-            <p className="text-xs leading-relaxed text-slate-600 dark:text-slate-300">
-              Are you sure you want to permanently delete{' '}
-              <strong className="text-slate-900 dark:text-white">
-                {deleteTargetCharacter.name || 'Untitled Character'}
-              </strong>{' '}
-              from your roster and local storage? This action cannot be undone.
-            </p>
-            <div className="flex items-center justify-end gap-2 pt-2">
-              <button
-                type="button"
-                onClick={() => setDeleteTargetCharacter(null)}
-                className="rounded-lg border border-slate-200 dark:border-slate-800 px-3.5 py-1.5 text-xs font-medium text-slate-700 dark:text-slate-300 cursor-pointer"
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  if (deleteTargetCharacter.id) {
-                    deleteCharacter(deleteTargetCharacter.id);
-                  }
-                  setDeleteTargetCharacter(null);
-                }}
-                className="rounded-lg bg-rose-600 hover:bg-rose-700 px-3.5 py-1.5 text-xs font-semibold text-white cursor-pointer"
-              >
-                Permanently Delete
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 };

@@ -7,6 +7,7 @@ import {
   X,
   FileWarning,
   Sparkles,
+  Trash2,
 } from 'lucide-react';
 import {
   purgeBrowserRuntimeCaches,
@@ -279,6 +280,87 @@ const NameConflictResolutionModal: React.FC = () => {
   );
 };
 
+const DeleteConfirmationModal: React.FC = () => {
+  const { pendingDeleteTarget, confirmPendingDelete, cancelPendingDelete } =
+    useStore();
+
+  if (!pendingDeleteTarget) return null;
+
+  const isChar =
+    pendingDeleteTarget.kind === 'character' ||
+    (pendingDeleteTarget.kind === 'savedFile' &&
+      pendingDeleteTarget.fileKind === 'character');
+  const label = isChar ? 'Character' : 'Lorebook';
+  const folderHint = isChar ? './Saves/Characters/' : './Saves/Lorebooks/';
+
+  return (
+    <div
+      role="dialog"
+      aria-modal="true"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 backdrop-blur-xs"
+    >
+      <div
+        style={{ borderColor: 'var(--theme-accent)' }}
+        className="w-full max-w-md rounded-2xl border bg-white dark:bg-slate-900 p-6 shadow-2xl space-y-4"
+      >
+        <div className="flex items-start justify-between gap-3 border-b border-slate-200 dark:border-slate-800 pb-3">
+          <div className="flex items-center gap-3">
+            <div className="flex h-10 w-10 items-center justify-center rounded-xl border border-rose-500/40 bg-rose-500/15 text-rose-500 shrink-0">
+              <Trash2 className="h-5 w-5" />
+            </div>
+            <div>
+              <h3 className="text-sm font-bold text-slate-900 dark:text-white">
+                Delete {label}?
+              </h3>
+              <p className="font-mono text-[11px] text-slate-500 dark:text-slate-400">
+                {pendingDeleteTarget.fileName
+                  ? `${folderHint}${pendingDeleteTarget.fileName}`
+                  : folderHint}
+              </p>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={cancelPendingDelete}
+            className="rounded-lg p-1 text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800 hover:text-slate-600 cursor-pointer"
+          >
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+
+        <p className="text-xs leading-relaxed text-slate-600 dark:text-slate-300">
+          Are you sure you want to permanently delete{' '}
+          <strong className="text-slate-900 dark:text-white">
+            &ldquo;{pendingDeleteTarget.displayName}&rdquo;
+          </strong>
+          {typeof pendingDeleteTarget.entryCount === 'number'
+            ? ` (${pendingDeleteTarget.entryCount} entries)`
+            : ''}{' '}
+          from your workspace and disk storage? This action cannot be undone.
+        </p>
+
+        <div className="flex items-center justify-end gap-2 pt-2">
+          <button
+            type="button"
+            onClick={cancelPendingDelete}
+            className="rounded-lg border border-slate-200 dark:border-slate-800 px-3.5 py-2 text-xs font-medium text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 cursor-pointer"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={confirmPendingDelete}
+            className="flex items-center gap-1.5 rounded-lg bg-rose-600 hover:bg-rose-700 px-4 py-2 text-xs font-semibold text-white cursor-pointer"
+          >
+            <Trash2 className="h-3.5 w-3.5" />
+            <span>Yes, Delete</span>
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+};
+
 const WorkspaceShell: React.FC = () => {
   const { activeTab, settings } = useStore();
 
@@ -310,6 +392,7 @@ const WorkspaceShell: React.FC = () => {
       </div>
 
       <NameConflictResolutionModal />
+      <DeleteConfirmationModal />
     </div>
   );
 };

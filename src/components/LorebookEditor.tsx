@@ -27,7 +27,11 @@ import {
   ShieldAlert,
   Image as ImageIcon,
 } from 'lucide-react';
-import { useStore, isLorebookNsfw } from '../context/StoreContext';
+import {
+  ensureUniqueEntityName,
+  isLorebookNsfw,
+  useStore,
+} from '../context/StoreContext';
 import {
   Lorebook,
   LorebookEntry,
@@ -50,6 +54,7 @@ import {
   AIServiceError,
   doesBackendSupportVision,
   generateCompletionDetailed,
+  parseAiJsonResponse,
 } from '../services/aiService';
 
 const LOREBOOK_POSITIONS: { value: LorebookPosition; label: string }[] = [
@@ -94,7 +99,7 @@ export const LorebookEditor: React.FC = () => {
     activeLorebookId,
     setActiveLorebookId,
     createNewLorebook,
-    deleteLorebook,
+    requestDeleteLorebook,
     lorebook,
     setLorebook,
     characters,
@@ -116,8 +121,6 @@ export const LorebookEditor: React.FC = () => {
   const [rosterSearch, setRosterSearch] = useState('');
   const [rosterTagFilter, setRosterTagFilter] = useState<string>('all');
   const [rosterSort, setRosterSort] = useState<RosterSortOption>('modified_desc');
-  const [deleteTargetLorebook, setDeleteTargetLorebook] =
-    useState<Lorebook | null>(null);
   const [isDraggingFile, setIsDraggingFile] = useState(false);
   const [importStatusBanner, setImportStatusBanner] = useState<string | null>(
     null
@@ -204,6 +207,32 @@ export const LorebookEditor: React.FC = () => {
   const [syncSuccessBanner, setSyncSuccessBanner] = useState(false);
 
   const abortRef = useRef<AbortController | null>(null);
+  const timersRef = useRef<Set<number>>(new Set());
+
+  const scheduleTimer = (fn: () => void, ms: number) => {
+    const id = window.setTimeout(() => {
+      timersRef.current.delete(id);
+      fn();
+    }, ms);
+    timersRef.current.add(id);
+  };
+
+  const lorebookContextSummary = useMemo(() => {
+    const entriesList = lorebook.entries
+      .slice(0, 12)
+      .map(
+        (e) =>
+          `- ${e.comment || 'Entry'} (keys: ${e.keys.join(', ') || 'none'})`
+      )
+      .join('\n');
+    return [
+      `Lorebook Title: ${lorebook.name}`,
+      lorebook.description ? `Synopsis: ${lorebook.description}` : '',
+      entriesList ? `Existing Entries:\n${entriesList}` : '',
+    ]
+      .filter(Boolean)
+      .join('\n\n');
+  }, [lorebook.name, lorebook.description, lorebook.entries]);
 
   const handleLorebookFilesDropped = async (
     files: FileList | File[] | null
@@ -212,7 +241,7 @@ export const LorebookEditor: React.FC = () => {
     try {
       const res = await importFromFiles(files);
       setImportStatusBanner(res.summary);
-      window.setTimeout(() => setImportStatusBanner(null), 4000);
+      scheduleTimer(() => setImportStatusBanner(null), 4000);
     } catch (err: unknown) {
       setAiKeyError({
         message:
@@ -228,6 +257,8 @@ export const LorebookEditor: React.FC = () => {
       if (abortRef.current) {
         abortRef.current.abort();
       }
+      timersRef.current.forEach((id) => window.clearTimeout(id));
+      timersRef.current.clear();
     };
   }, []);
 
@@ -382,13 +413,13 @@ export const LorebookEditor: React.FC = () => {
   const handleBindToActiveCharacter = () => {
     updateCharacterField('character_book', lorebook);
     setSyncSuccessBanner(true);
-    window.setTimeout(() => setSyncSuccessBanner(false), 3000);
+    scheduleTimer(() => setSyncSuccessBanner(false), 3000);
   };
 
   const handleBindToAnyCharacter = (charId: string, charName: string) => {
     bindLorebookToCharacter(charId, lorebook);
     setBoundCharacterNotice(`Bound "${lorebook.name}" to ${charName}.`);
-    window.setTimeout(() => setBoundCharacterNotice(null), 3500);
+    scheduleTimer(() => setBoundCharacterNotice(null), 3500);
   };
 
   // Entry CRUD Handlers
@@ -561,11 +592,11 @@ export const LorebookEditor: React.FC = () => {
     try {
       const detailed = await generateCompletionDetailed(
         prompt,
-        `Active Context Theme: ${activeTheme.name}\nLorebook Description: ${lorebook.description}`,
+        `Active Context Theme: ${activeTheme.name}\n${lorebookContextSummary}`,
         aiConfig,
         controller.signal,
         {
-          maxTokens: 1400,
+          maxTokens: Math.max(4096, aiConfig.maxTokens || 4096),
           temperature: aiConfig.temperature,
           activeTheme,
           allTags: tags,
@@ -579,9 +610,7 @@ export const LorebookEditor: React.FC = () => {
         if (detailed.visionFallbackWarning) {
           setVisionFallbackBanner(detailed.visionFallbackWarning);
         }
-        const jsonMatch = detailed.content.match(/\{[\s\S]*\}/);
-        const rawJson = jsonMatch ? jsonMatch[0] : detailed.content;
-        const parsed = JSON.parse(rawJson) as {
+        const parsed = parseAiJsonResponse<{
           name?: string;
           description?: string;
           entries?: Array<{
@@ -592,7 +621,7 @@ export const LorebookEditor: React.FC = () => {
             constant?: boolean;
             insertion_order?: number;
           }>;
-        };
+        }>(detailed.content);
 
         const builtEntries: LorebookEntry[] = (parsed.entries || []).map(
           (item, idx) => ({
@@ -622,15 +651,28 @@ export const LorebookEditor: React.FC = () => {
           })
         );
 
-        updateLorebookAndSync((prev) => ({
-          ...prev,
-          name: parsed.name || prev.name,
-          description: parsed.description || prev.description,
-          entries:
-            builtEntries.length > 0
-              ? [...builtEntries, ...prev.entries]
-              : prev.entries,
-        }));
+        updateLorebookAndSync((prev) => {
+          const otherNames = lorebooks
+            .filter((l) => l.id !== prev.id)
+            .map((l) => l.name || 'Untitled Lorebook');
+          const safeName = parsed.name?.trim()
+            ? ensureUniqueEntityName(
+                parsed.name.trim(),
+                otherNames,
+                prev.name || 'New World Lorebook'
+              )
+            : prev.name;
+
+          return {
+            ...prev,
+            name: safeName,
+            description: parsed.description ?? prev.description,
+            entries:
+              builtEntries.length > 0
+                ? [...builtEntries, ...prev.entries]
+                : prev.entries,
+          };
+        });
 
         if (builtEntries[0]) {
           setSelectedEntryId(builtEntries[0].id);
@@ -691,11 +733,11 @@ export const LorebookEditor: React.FC = () => {
     try {
       const detailed = await generateCompletionDetailed(
         prompt,
-        `Lorebook: ${lorebook.name} (${lorebook.description})`,
+        lorebookContextSummary,
         aiConfig,
         controller.signal,
         {
-          maxTokens: 450,
+          maxTokens: Math.max(4096, aiConfig.maxTokens || 4096),
           temperature: aiConfig.temperature,
           activeTheme,
           allTags: tags,
@@ -753,11 +795,11 @@ export const LorebookEditor: React.FC = () => {
     try {
       const detailed = await generateCompletionDetailed(
         prompt,
-        `Lorebook: ${lorebook.name} (${lorebook.description})`,
+        lorebookContextSummary,
         aiConfig,
         controller.signal,
         {
-          maxTokens: 120,
+          maxTokens: Math.max(4096, aiConfig.maxTokens || 4096),
           temperature: 0.4,
           activeTheme,
           allTags: tags,
@@ -1012,7 +1054,7 @@ export const LorebookEditor: React.FC = () => {
 
                     <button
                       type="button"
-                      onClick={() => setDeleteTargetLorebook(lb)}
+                      onClick={() => lb.id && requestDeleteLorebook(lb.id)}
                       title="Permanently Delete Lorebook"
                       className="p-1 text-slate-400 hover:text-rose-600 dark:hover:text-rose-400 cursor-pointer shrink-0"
                     >
@@ -1835,7 +1877,7 @@ export const LorebookEditor: React.FC = () => {
                           tooltip="Worldbuilding facts, faction lore, or environmental rules injected into the prompt when triggered."
                           rows={7}
                           isPermanentTokenField={selectedEntry.constant}
-                          extraContextSummary={`Lorebook: ${lorebook.name}\nEntry Title: ${selectedEntry.comment || ''}\nTrigger Keys: ${selectedEntry.keys.join(', ')}`}
+                          extraContextSummary={`${lorebookContextSummary}\nActive Entry Title: ${selectedEntry.comment || ''}\nTrigger Keys: ${selectedEntry.keys.join(', ')}`}
                           additionalTags={selectedEntry.tags}
                           enablePortraitVision={false}
                         />
@@ -2751,7 +2793,7 @@ export const LorebookEditor: React.FC = () => {
                     tooltip="Worldbuilding facts, faction lore, or environmental rules injected into the prompt when triggered."
                     rows={6}
                     isPermanentTokenField={selectedEntry.constant}
-                    extraContextSummary={`Lorebook: ${lorebook.name}\nEntry Title: ${selectedEntry.comment || ''}\nTrigger Keys: ${selectedEntry.keys.join(', ')}`}
+                    extraContextSummary={`${lorebookContextSummary}\nActive Entry Title: ${selectedEntry.comment || ''}\nTrigger Keys: ${selectedEntry.keys.join(', ')}`}
                     additionalTags={selectedEntry.tags}
                     enablePortraitVision={false}
                   />
@@ -2916,61 +2958,6 @@ export const LorebookEditor: React.FC = () => {
           </div>
         )}
       </div>
-
-      {/* Permanent Delete Lorebook Confirmation Modal */}
-      {deleteTargetLorebook && (
-        <div
-          role="dialog"
-          aria-modal="true"
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-xs"
-        >
-          <div
-            style={{ borderColor: 'var(--theme-accent)' }}
-            className="w-full max-w-md rounded-xl border bg-white dark:bg-slate-900 p-5 shadow-2xl space-y-4"
-          >
-            <div className="flex items-center justify-between border-b border-slate-200 dark:border-slate-800 pb-2.5">
-              <h3 className="text-sm font-bold text-slate-900 dark:text-white">
-                Permanently Delete Lorebook?
-              </h3>
-              <button
-                type="button"
-                onClick={() => setDeleteTargetLorebook(null)}
-                className="text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 cursor-pointer"
-              >
-                <X className="h-4 w-4" />
-              </button>
-            </div>
-            <p className="text-xs leading-relaxed text-slate-600 dark:text-slate-300">
-              Are you sure you want to permanently delete{' '}
-              <strong className="text-slate-900 dark:text-white">
-                {deleteTargetLorebook.name || 'Untitled Lorebook'}
-              </strong>{' '}
-              ({deleteTargetLorebook.entries.length} entries) from your library and local storage? This cannot be undone.
-            </p>
-            <div className="flex items-center justify-end gap-2 pt-2">
-              <button
-                type="button"
-                onClick={() => setDeleteTargetLorebook(null)}
-                className="rounded-lg border border-slate-200 dark:border-slate-800 px-3.5 py-1.5 text-xs font-medium text-slate-700 dark:text-slate-300 cursor-pointer"
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  if (deleteTargetLorebook.id) {
-                    deleteLorebook(deleteTargetLorebook.id);
-                  }
-                  setDeleteTargetLorebook(null);
-                }}
-                className="rounded-lg bg-rose-600 hover:bg-rose-700 px-3.5 py-1.5 text-xs font-semibold text-white cursor-pointer"
-              >
-                Permanently Delete
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 };

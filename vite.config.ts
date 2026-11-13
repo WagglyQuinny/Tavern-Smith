@@ -190,13 +190,67 @@ export function scanSavesDirectoryOnDisk(customSavePath?: string) {
   };
 }
 
+function extractEntityIdFromJson(parsed: Record<string, unknown>): string {
+  if (typeof parsed.id === 'string' && parsed.id.trim()) {
+    return parsed.id.trim();
+  }
+  if (parsed.data && typeof parsed.data === 'object') {
+    const dataObj = parsed.data as Record<string, unknown>;
+    if (typeof dataObj.id === 'string' && dataObj.id.trim()) {
+      return dataObj.id.trim();
+    }
+    if (dataObj.extensions && typeof dataObj.extensions === 'object') {
+      const extObj = dataObj.extensions as Record<string, unknown>;
+      if (extObj.tavernsmith && typeof extObj.tavernsmith === 'object') {
+        const tsObj = extObj.tavernsmith as Record<string, unknown>;
+        if (typeof tsObj.id === 'string' && tsObj.id.trim()) {
+          return tsObj.id.trim();
+        }
+      }
+    }
+  }
+  if (parsed.extensions && typeof parsed.extensions === 'object') {
+    const extObj = parsed.extensions as Record<string, unknown>;
+    if (extObj.tavernsmith && typeof extObj.tavernsmith === 'object') {
+      const tsObj = extObj.tavernsmith as Record<string, unknown>;
+      if (typeof tsObj.id === 'string' && tsObj.id.trim()) {
+        return tsObj.id.trim();
+      }
+    }
+  }
+  return '';
+}
+
+function reserveUniqueDiskFileName(
+  preferredName: string,
+  usedNamesLower: Set<string>
+): string {
+  const initial = sanitizeDiskFileName(preferredName);
+  const stem = initial.replace(/\.json$/i, '');
+  let candidate = initial;
+  let suffix = 2;
+  while (usedNamesLower.has(candidate.toLowerCase())) {
+    candidate = `${stem}_${suffix}.json`;
+    suffix++;
+  }
+  usedNamesLower.add(candidate.toLowerCase());
+  return candidate;
+}
+
 export function saveToSavesDirectoryOnDisk(body: Record<string, unknown>) {
   const customSavePath =
     typeof body.customSavePath === 'string' ? body.customSavePath : undefined;
   const { resolvedPath, charsDir, loreDir } = resolveSavesRoot(customSavePath);
 
-  // 1. Write characters strictly into ./Saves/Characters/[SanitizedName].json
+  // 1. Write characters strictly into ./Saves/Characters/[UniqueSanitizedName].json
   if (Array.isArray(body.characters)) {
+    const usedCharTargets = new Set<string>();
+    const preparedChars: Array<{
+      targetFileName: string;
+      oldFileName?: string;
+      outPayload: Record<string, unknown>;
+    }> = [];
+
     for (const item of body.characters) {
       if (!item || typeof item !== 'object') continue;
       const entry = item as {
@@ -217,36 +271,57 @@ export function saveToSavesDirectoryOnDisk(body: Record<string, unknown>) {
           : typeof payload.name === 'string'
             ? payload.name
             : 'untitled');
-      const targetFileName = sanitizeDiskFileName(rawName);
+      const targetFileName = reserveUniqueDiskFileName(rawName, usedCharTargets);
+      const cleanOld = entry.oldFileName
+        ? sanitizeDiskFileName(entry.oldFileName)
+        : undefined;
 
-      if (entry.oldFileName) {
-        const cleanOld = sanitizeDiskFileName(entry.oldFileName);
-        if (cleanOld !== targetFileName) {
-          const oldPath = path.join(charsDir, cleanOld);
-          if (fs.existsSync(oldPath)) {
-            try {
-              fs.unlinkSync(oldPath);
-            } catch {
-              // Ignore unlink error
-            }
+      preparedChars.push({
+        targetFileName,
+        oldFileName: cleanOld,
+        outPayload: {
+          ...payload,
+          _tavernsmithType: 'character',
+        },
+      });
+    }
+
+    // Remove renamed old files ONLY when they do not collide with any active target filename
+    for (const prepared of preparedChars) {
+      if (
+        prepared.oldFileName &&
+        prepared.oldFileName !== prepared.targetFileName &&
+        !usedCharTargets.has(prepared.oldFileName.toLowerCase())
+      ) {
+        const oldPath = path.join(charsDir, prepared.oldFileName);
+        if (fs.existsSync(oldPath)) {
+          try {
+            fs.unlinkSync(oldPath);
+          } catch {
+            // Ignore unlink error
           }
         }
       }
+    }
 
-      const outPayload = {
-        ...payload,
-        _tavernsmithType: 'character',
-      };
+    for (const prepared of preparedChars) {
       fs.writeFileSync(
-        path.join(charsDir, targetFileName),
-        JSON.stringify(outPayload, null, 2),
+        path.join(charsDir, prepared.targetFileName),
+        JSON.stringify(prepared.outPayload, null, 2),
         'utf8'
       );
     }
   }
 
-  // 2. Write lorebooks strictly into ./Saves/Lorebooks/[SanitizedName].json
+  // 2. Write lorebooks strictly into ./Saves/Lorebooks/[UniqueSanitizedName].json
   if (Array.isArray(body.lorebooks)) {
+    const usedLoreTargets = new Set<string>();
+    const preparedLore: Array<{
+      targetFileName: string;
+      oldFileName?: string;
+      outPayload: Record<string, unknown>;
+    }> = [];
+
     for (const item of body.lorebooks) {
       if (!item || typeof item !== 'object') continue;
       const entry = item as {
@@ -261,29 +336,42 @@ export function saveToSavesDirectoryOnDisk(body: Record<string, unknown>) {
       const rawName =
         entry.fileName ||
         (typeof payload.name === 'string' ? payload.name : 'untitled_lorebook');
-      const targetFileName = sanitizeDiskFileName(rawName);
+      const targetFileName = reserveUniqueDiskFileName(rawName, usedLoreTargets);
+      const cleanOld = entry.oldFileName
+        ? sanitizeDiskFileName(entry.oldFileName)
+        : undefined;
 
-      if (entry.oldFileName) {
-        const cleanOld = sanitizeDiskFileName(entry.oldFileName);
-        if (cleanOld !== targetFileName) {
-          const oldPath = path.join(loreDir, cleanOld);
-          if (fs.existsSync(oldPath)) {
-            try {
-              fs.unlinkSync(oldPath);
-            } catch {
-              // Ignore unlink error
-            }
+      preparedLore.push({
+        targetFileName,
+        oldFileName: cleanOld,
+        outPayload: {
+          ...payload,
+          _tavernsmithType: 'lorebook',
+        },
+      });
+    }
+
+    for (const prepared of preparedLore) {
+      if (
+        prepared.oldFileName &&
+        prepared.oldFileName !== prepared.targetFileName &&
+        !usedLoreTargets.has(prepared.oldFileName.toLowerCase())
+      ) {
+        const oldPath = path.join(loreDir, prepared.oldFileName);
+        if (fs.existsSync(oldPath)) {
+          try {
+            fs.unlinkSync(oldPath);
+          } catch {
+            // Ignore unlink error
           }
         }
       }
+    }
 
-      const outPayload = {
-        ...payload,
-        _tavernsmithType: 'lorebook',
-      };
+    for (const prepared of preparedLore) {
       fs.writeFileSync(
-        path.join(loreDir, targetFileName),
-        JSON.stringify(outPayload, null, 2),
+        path.join(loreDir, prepared.targetFileName),
+        JSON.stringify(prepared.outPayload, null, 2),
         'utf8'
       );
     }
@@ -317,17 +405,64 @@ export function deleteFromSavesDirectoryOnDisk(body: Record<string, unknown>) {
   const { charsDir, loreDir } = resolveSavesRoot(customSavePath);
 
   const rawFolder = String(body.folder || body.kind || '').toLowerCase();
-  const rawFileName = String(body.fileName || '');
+  const targetDir =
+    rawFolder === 'lorebooks' || rawFolder === 'lorebook' ? loreDir : charsDir;
+
+  const candidateNames = new Set<string>();
+  const rawFileName =
+    typeof body.fileName === 'string' ? body.fileName.trim() : '';
+  const rawSavedFileName =
+    typeof body.savedFileName === 'string' ? body.savedFileName.trim() : '';
+  const rawName = typeof body.name === 'string' ? body.name.trim() : '';
+  const rawId = typeof body.id === 'string' ? body.id.trim() : '';
+
   if (rawFileName) {
-    const safeName = path.basename(rawFileName);
-    const targetDir =
-      rawFolder === 'lorebooks' || rawFolder === 'lorebook'
-        ? loreDir
-        : charsDir;
-    const targetPath = path.join(targetDir, safeName);
+    candidateNames.add(path.basename(rawFileName));
+  }
+  if (rawSavedFileName) {
+    candidateNames.add(path.basename(rawSavedFileName));
+  }
+
+  let deletedAny = false;
+  for (const name of candidateNames) {
+    const targetPath = path.join(targetDir, name);
     if (fs.existsSync(targetPath)) {
       try {
         fs.unlinkSync(targetPath);
+        deletedAny = true;
+      } catch {
+        // Ignore if already removed
+      }
+    }
+  }
+
+  // Match by internal JSON `id` across target directory in case filename changed
+  if (rawId && fs.existsSync(targetDir)) {
+    const entries = fs
+      .readdirSync(targetDir, { withFileTypes: true })
+      .filter((d) => d.isFile() && d.name.toLowerCase().endsWith('.json'));
+    for (const entry of entries) {
+      const fullPath = path.join(targetDir, entry.name);
+      try {
+        const parsed = JSON.parse(
+          fs.readFileSync(fullPath, 'utf8')
+        ) as Record<string, unknown>;
+        if (extractEntityIdFromJson(parsed) === rawId) {
+          fs.unlinkSync(fullPath);
+          deletedAny = true;
+        }
+      } catch {
+        // Ignore unreadable file
+      }
+    }
+  }
+
+  // Fallback to sanitized name ONLY if no file was matched by savedFileName/fileName/id
+  if (!deletedAny && rawName) {
+    const sanitizedTarget = path.join(targetDir, sanitizeDiskFileName(rawName));
+    if (fs.existsSync(sanitizedTarget)) {
+      try {
+        fs.unlinkSync(sanitizedTarget);
       } catch {
         // Ignore if already removed
       }

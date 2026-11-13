@@ -45,11 +45,9 @@ import {
 import {
   AI_BACKEND_PRESETS,
   COMPATIBILITY_FORMAT_LABELS,
-  ConnectionTestResult,
   detectModelCompatibilityFormat,
   doesBackendSupportVision,
   getProviderKeyId,
-  testBackendConnection,
 } from '../services/aiService';
 import {
   decryptProviderKeysFromVault,
@@ -76,20 +74,22 @@ export const OptionsView: React.FC = () => {
     aiConfig,
     setAiConfig,
     switchAIPreset,
+    isAiConnected,
+    isTestingAiConnection,
+    aiConnectionResult,
+    connectAiBackend,
+    disconnectAiBackend,
+    clearAiConnectionFeedback,
     saveAndSyncNow,
     resetWorkspaceToDefaults,
     lastSavedAt,
     savedFiles,
     diskResolvedPath,
     loadSavedFileIntoWorkspace,
-    deleteSavedFile,
+    requestDeleteSavedFile,
     exportSaveFolderBundle,
   } = useStore();
 
-  const [testingConnection, setTestingConnection] = useState(false);
-  const [testResult, setTestResult] = useState<ConnectionTestResult | null>(
-    null
-  );
   const [modelSearchQuery, setModelSearchQuery] = useState('');
   const [showAboutModal, setShowAboutModal] = useState(false);
   const [confirmReset, setConfirmReset] = useState(false);
@@ -110,13 +110,20 @@ export const OptionsView: React.FC = () => {
   const [vaultMessage, setVaultMessage] = useState<string | null>(null);
   const [showVaultPassphraseBar, setShowVaultPassphraseBar] = useState(false);
 
-  const abortControllerRef = useRef<AbortController | null>(null);
+  const timersRef = useRef<Set<number>>(new Set());
+
+  const scheduleTimer = (fn: () => void, ms: number) => {
+    const id = window.setTimeout(() => {
+      timersRef.current.delete(id);
+      fn();
+    }, ms);
+    timersRef.current.add(id);
+  };
 
   useEffect(() => {
     return () => {
-      if (abortControllerRef.current) {
-        abortControllerRef.current.abort();
-      }
+      timersRef.current.forEach((id) => window.clearTimeout(id));
+      timersRef.current.clear();
     };
   }, []);
 
@@ -174,7 +181,6 @@ export const OptionsView: React.FC = () => {
 
   const handleSelectPreset = (presetId: AIPresetId) => {
     switchAIPreset(presetId);
-    setTestResult(null);
     setShowApiKey(false);
     setVaultStatus(getVaultStatusInfo());
   };
@@ -223,7 +229,7 @@ export const OptionsView: React.FC = () => {
         ? `AES-256-GCM Encrypted & Saved Key for ${currentPresetMeta.label}`
         : `Cleared Key for ${currentPresetMeta.label}`
     );
-    window.setTimeout(() => setKeyActionMessage(null), 4000);
+    scheduleTimer(() => setKeyActionMessage(null), 4000);
   };
 
   const handleClearApiKey = async () => {
@@ -245,7 +251,7 @@ export const OptionsView: React.FC = () => {
         ? 'Cleared Custom Gemini Key (Reverted to /api/gemini Server Fallback)'
         : `Cleared API Key for ${currentPresetMeta.label}`
     );
-    window.setTimeout(() => setKeyActionMessage(null), 4000);
+    scheduleTimer(() => setKeyActionMessage(null), 4000);
   };
 
   const handleApplyVaultPassphrase = async () => {
@@ -272,13 +278,13 @@ export const OptionsView: React.FC = () => {
         setVaultMessage(
           'Vault unlocked in memory using your Passphrase / PIN.'
         );
-        window.setTimeout(() => setVaultMessage(null), 5000);
+        scheduleTimer(() => setVaultMessage(null), 5000);
         return;
       } else {
         setVaultMessage(
           unlocked.error || 'Incorrect Vault Passphrase / PIN.'
         );
-        window.setTimeout(() => setVaultMessage(null), 5000);
+        scheduleTimer(() => setVaultMessage(null), 5000);
         return;
       }
     }
@@ -292,7 +298,7 @@ export const OptionsView: React.FC = () => {
     setVaultStatus(getVaultStatusInfo());
     setVaultPassphraseInput('');
     setVaultMessage(res.message);
-    window.setTimeout(() => setVaultMessage(null), 5000);
+    scheduleTimer(() => setVaultMessage(null), 5000);
   };
 
   const handleRemoveVaultPassphrase = async () => {
@@ -300,7 +306,7 @@ export const OptionsView: React.FC = () => {
     setVaultStatus(getVaultStatusInfo());
     setVaultPassphraseInput('');
     setVaultMessage(res.message);
-    window.setTimeout(() => setVaultMessage(null), 5000);
+    scheduleTimer(() => setVaultMessage(null), 5000);
   };
 
   const handleLockVaultInMemory = () => {
@@ -315,48 +321,23 @@ export const OptionsView: React.FC = () => {
     setVaultMessage(
       'Vault locked in memory. Keys remain AES-256-GCM encrypted in _tavernsmith_vault_enc.'
     );
-    window.setTimeout(() => setVaultMessage(null), 5000);
+    scheduleTimer(() => setVaultMessage(null), 5000);
   };
 
   const handleScanModels = async () => {
-    if (abortControllerRef.current) {
-      abortControllerRef.current.abort();
-    }
-    const controller = new AbortController();
-    abortControllerRef.current = controller;
-
-    setTestingConnection(true);
-    setTestResult(null);
-
-    try {
-      const result = await testBackendConnection(aiConfig, controller.signal);
-      setTestResult(result);
-      if (result.models.length > 0) {
-        setAiConfig((prev) => ({
-          ...prev,
-          availableModels: result.models,
-          modelName: result.models.includes(prev.modelName)
-            ? prev.modelName
-            : result.models[0],
-        }));
-      }
-    } catch {
-      // Aborted request ignored cleanly
-    } finally {
-      setTestingConnection(false);
-    }
+    await connectAiBackend(aiConfig);
   };
 
   const handleSaveAllToFolderNow = async () => {
     const res = await saveAndSyncNow();
     setFolderStatusMessage(res.message);
-    window.setTimeout(() => setFolderStatusMessage(null), 5000);
+    scheduleTimer(() => setFolderStatusMessage(null), 5000);
   };
 
   const handleLoadFile = (file: SavedFileEntry) => {
     const res = loadSavedFileIntoWorkspace(file);
     setFolderStatusMessage(res.message);
-    window.setTimeout(() => setFolderStatusMessage(null), 4000);
+    scheduleTimer(() => setFolderStatusMessage(null), 4000);
   };
 
   const handleDownloadSavedFile = (file: SavedFileEntry) => {
@@ -599,7 +580,7 @@ export const OptionsView: React.FC = () => {
                         </button>
                         <button
                           type="button"
-                          onClick={() => deleteSavedFile(file.id)}
+                          onClick={() => requestDeleteSavedFile(file)}
                           title="Delete Character file from ./Saves/Characters/"
                           className="rounded-md border border-rose-200 dark:border-rose-900/40 p-1.5 text-rose-600 dark:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/40 cursor-pointer"
                         >
@@ -678,7 +659,7 @@ export const OptionsView: React.FC = () => {
                         </button>
                         <button
                           type="button"
-                          onClick={() => deleteSavedFile(file.id)}
+                          onClick={() => requestDeleteSavedFile(file)}
                           title="Delete Lorebook file from ./Saves/Lorebooks/"
                           className="rounded-md border border-rose-200 dark:border-rose-900/40 p-1.5 text-rose-600 dark:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/40 cursor-pointer"
                         >
@@ -1118,10 +1099,10 @@ export const OptionsView: React.FC = () => {
               />
             </div>
 
-            {testResult?.ok && (
+            {isAiConnected && (
               <span className="inline-flex items-center gap-1 rounded-md border border-emerald-500/40 bg-emerald-500/10 px-2 py-0.5 font-mono text-[10px] font-semibold text-emerald-700 dark:text-emerald-300">
                 <CheckCircle2 className="h-3 w-3 shrink-0" />
-                <span>Connected</span>
+                <span>Connected · {aiConfig.modelName}</span>
               </span>
             )}
           </div>
@@ -1177,7 +1158,8 @@ export const OptionsView: React.FC = () => {
                 value={aiConfig.url}
                 onChange={(e) => {
                   setAiConfig((prev) => ({ ...prev, url: e.target.value }));
-                  setTestResult(null);
+                  disconnectAiBackend();
+                  clearAiConnectionFeedback();
                 }}
                 placeholder="http://localhost:1234/v1"
                 className="theme-focus-ring font-mono w-full rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 px-3 py-2 text-xs text-slate-900 dark:text-white"
@@ -1272,11 +1254,11 @@ export const OptionsView: React.FC = () => {
               <button
                 type="button"
                 onClick={handleScanModels}
-                disabled={testingConnection}
+                disabled={isTestingAiConnection}
                 style={{ borderColor: 'var(--theme-accent)' }}
                 className="theme-hover-outline shrink-0 flex items-center justify-center gap-1.5 rounded-lg border bg-slate-900 dark:bg-white px-4 py-2 text-xs font-semibold text-white dark:text-slate-900 disabled:opacity-50 cursor-pointer whitespace-nowrap"
               >
-                {testingConnection ? (
+                {isTestingAiConnection ? (
                   <RefreshCw
                     className="h-3.5 w-3.5 animate-spin"
                     style={{ color: 'var(--theme-accent)' }}
@@ -1287,7 +1269,7 @@ export const OptionsView: React.FC = () => {
                     style={{ color: 'var(--theme-accent)' }}
                   />
                 )}
-                <span>{testingConnection ? 'Connecting...' : 'Connect'}</span>
+                <span>{isTestingAiConnection ? 'Connecting...' : 'Connect'}</span>
               </button>
             </div>
 
@@ -1386,24 +1368,24 @@ export const OptionsView: React.FC = () => {
           </div>
 
           {/* Connection Status Banner */}
-          {testResult && (
+          {aiConnectionResult && (
             <div
               className={`flex items-start gap-2 rounded-lg border px-3 py-2 text-xs ${
-                testResult.ok
+                aiConnectionResult.ok
                   ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-800 dark:text-emerald-200'
                   : 'border-rose-500/40 bg-rose-500/10 text-rose-800 dark:text-rose-200'
               }`}
             >
-              {testResult.ok ? (
+              {aiConnectionResult.ok ? (
                 <CheckCircle2 className="h-4 w-4 text-emerald-500 shrink-0 mt-0.5" />
               ) : (
                 <AlertCircle className="h-4 w-4 text-rose-500 shrink-0 mt-0.5" />
               )}
               <div className="space-y-0.5">
-                <div className="font-semibold">{testResult.message}</div>
-                {!testResult.ok && (
+                <div className="font-semibold">{aiConnectionResult.message}</div>
+                {!aiConnectionResult.ok && (
                   <div className="text-[11px] opacity-90">
-                    {testResult.corsHint ||
+                    {aiConnectionResult.corsHint ||
                       'Check your API key, endpoint URL, or local server CORS settings.'}
                   </div>
                 )}
@@ -1411,8 +1393,10 @@ export const OptionsView: React.FC = () => {
             </div>
           )}
 
-          {/* Model Selection, Live Scanner & Parser — Revealed ONLY after API connects */}
-          {testResult?.ok && (
+          {/* Model Selection, Live Scanner & Parser — Persists across tab switches */}
+          {(isAiConnected ||
+            aiConnectionResult?.ok ||
+            (aiConfig.availableModels && aiConfig.availableModels.length > 0)) && (
             <div
               style={{
                 borderColor:
@@ -1456,13 +1440,13 @@ export const OptionsView: React.FC = () => {
                   <button
                     type="button"
                     onClick={handleScanModels}
-                    disabled={testingConnection}
+                    disabled={isTestingAiConnection}
                     title="Rescan available models"
                     className="rounded-md border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-1.5 text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white cursor-pointer"
                   >
                     <RefreshCw
                       className={`h-3.5 w-3.5 ${
-                        testingConnection ? 'animate-spin' : ''
+                        isTestingAiConnection ? 'animate-spin' : ''
                       }`}
                     />
                   </button>

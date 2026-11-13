@@ -113,6 +113,7 @@ export interface LorebookEntry {
 
 export interface Lorebook {
   id?: string;
+  savedFileName?: string;
   name: string;
   description: string;
   scan_depth: number;
@@ -126,6 +127,7 @@ export interface Lorebook {
 
 export interface CharacterCardData {
   id?: string;
+  savedFileName?: string;
   name: string;
   nickname?: string;
   description: string;
@@ -304,3 +306,14 @@ export interface NameConflictRequest {
   sourceAction: 'create' | 'rename' | 'save' | 'import';
 }
 
+export interface PendingDeleteTarget {
+  kind: 'character' | 'lorebook' | 'savedFile';
+  id: string;
+  displayName: string;
+  fileName?: string;
+  savedFileName?: string;
+  folder?: 'Characters' | 'Lorebooks';
+  fileKind?: 'character' | 'lorebook';
+  entryCount?: number;
+  subtitle?: string;
+}

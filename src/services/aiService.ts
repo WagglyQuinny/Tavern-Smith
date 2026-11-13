@@ -131,14 +131,15 @@ export const AI_BACKEND_PRESETS: AIPresetMeta[] = [
     label: 'Google Gemini',
     group: 'Cloud API',
     defaultUrl: 'https://generativelanguage.googleapis.com/v1beta/openai',
-    defaultModel: 'gemini-3.8-flash',
+    defaultModel: 'gemini-2.5-flash',
     description:
-      'Google Gemini API. Prioritizes your custom Gemini API key directly, or falls back to /api/gemini when left empty.',
+      'Google Gemini API. Calls Google Generative Language REST API directly when a Gemini API key is provided, or /api/gemini when left empty.',
     requiresKey: true,
     suggestedModels: [
+      'gemini-2.5-flash',
+      'gemini-2.5-pro',
+      'gemini-2.0-flash',
       'gemini-3.8-flash',
-      'gemini-3.1-flash-lite',
-      'gemini-flash-latest',
       'gemma-3-27b-it',
     ],
   },
@@ -437,10 +438,69 @@ export function extractThinkingAndCleanContent(
     }
   }
 
+  // 5. Handle trailing UNCLOSED <think>, <thought>, <reasoning>, or <|thought|> if truncated mid-thought
+  const unclosedStartMatch = cleaned.match(
+    /(<\|thought\|>|<(?:think|thought|reasoning)\b[^>]*>)/i
+  );
+  if (unclosedStartMatch && typeof unclosedStartMatch.index === 'number') {
+    const trailingThought = cleaned
+      .slice(unclosedStartMatch.index + unclosedStartMatch[0].length)
+      .trim();
+    if (trailingThought) {
+      extractedBlocks.push(trailingThought);
+    }
+    cleaned = cleaned.slice(0, unclosedStartMatch.index);
+  }
+
   return {
     content: cleaned.trim(),
     reasoning: extractedBlocks.join('\n\n'),
   };
+}
+
+/**
+ * Safely strips thinking/reasoning blocks and markdown code fences (```json ... ```)
+ * before parsing an AI JSON response cleanly.
+ */
+export function parseAiJsonResponse<T = unknown>(rawText: string): T {
+  const { content } = extractThinkingAndCleanContent(rawText);
+  let cleaned = content.trim();
+
+  // Strip surrounding markdown code fences (e.g. ```json ... ``` or ``` ... ```)
+  const fenceMatch = cleaned.match(/^```(?:json|JSON)?\s*\n?([\s\S]*?)\n?```$/);
+  if (fenceMatch && fenceMatch[1]) {
+    cleaned = fenceMatch[1].trim();
+  } else {
+    cleaned = cleaned
+      .replace(/^```(?:json|JSON)?\s*\n?/i, '')
+      .replace(/\n?```\s*$/i, '')
+      .trim();
+  }
+
+  const firstBrace = cleaned.indexOf('{');
+  const firstBracket = cleaned.indexOf('[');
+  let jsonCandidate = cleaned;
+
+  if (
+    firstBrace !== -1 &&
+    (firstBracket === -1 || firstBrace < firstBracket)
+  ) {
+    const lastBrace = cleaned.lastIndexOf('}');
+    if (lastBrace > firstBrace) {
+      jsonCandidate = cleaned.slice(firstBrace, lastBrace + 1);
+    }
+  } else if (firstBracket !== -1) {
+    const lastBracket = cleaned.lastIndexOf(']');
+    if (lastBracket > firstBracket) {
+      jsonCandidate = cleaned.slice(firstBracket, lastBracket + 1);
+    }
+  }
+
+  if (!jsonCandidate) {
+    throw new Error('AI returned an empty JSON response.');
+  }
+
+  return JSON.parse(jsonCandidate) as T;
 }
 
 export class AIServiceError extends Error {
@@ -600,18 +660,76 @@ export async function resolveEffectiveApiKey(
 }
 
 /**
- * Normalizes legacy Gemini model IDs to current supported models.
+ * Determines whether the active backend is Local (LM Studio, Ollama, KoboldCPP, Custom)
+ * or uses a Thinking/Reasoning model family (Gemma 4, DeepSeek, Qwen, Gemini, Grok).
  */
-function normalizeGeminiModelId(rawModel?: string): string {
-  const m = (rawModel || 'gemini-3.8-flash').trim().replace(/^models\//, '');
-  if (
-    !m ||
-    m === 'gemini-3-flash-preview' ||
-    m === 'gemini-2.5-flash' ||
-    m.startsWith('gemini-2.') ||
-    m.startsWith('gemini-1.') ||
-    m === 'gemini-pro'
-  ) {
+export function isLocalOrThinkingBackend(
+  config: AIBackendConfig,
+  effectiveFormat?: Exclude<ModelCompatibilityFormat, 'auto'>
+): boolean {
+  const fmt = effectiveFormat || resolveEffectiveFormat(config);
+  const urlLower = (config.url || '').toLowerCase();
+  const modelLower = (config.modelName || config.model || '').toLowerCase();
+  const isLocal =
+    config.preset === 'lmstudio' ||
+    config.preset === 'ollama' ||
+    config.preset === 'koboldcpp' ||
+    config.preset === 'custom' ||
+    urlLower.includes('localhost') ||
+    urlLower.includes('127.0.0.1');
+  const isThinking =
+    fmt === 'gemma' ||
+    fmt === 'deepseek_qwen_think' ||
+    fmt === 'gemini_thinking' ||
+    fmt === 'xai_grok_reasoning' ||
+    modelLower.includes('gemma') ||
+    modelLower.includes('think') ||
+    modelLower.includes('r1') ||
+    modelLower.includes('qwq') ||
+    modelLower.includes('qwen3') ||
+    modelLower.includes('deepseek') ||
+    modelLower.includes('gemini') ||
+    modelLower.includes('grok');
+  return isLocal || isThinking;
+}
+
+/**
+ * Enforces a minimum of 4096 tokens for Local AIs and Thinking models so internal reasoning
+ * never exhausts `max_tokens` / `maxOutputTokens` and returns an empty 200 OK payload.
+ */
+export function resolveEffectiveMaxTokens(
+  config: AIBackendConfig,
+  requestedMaxTokens?: number,
+  effectiveFormat?: Exclude<ModelCompatibilityFormat, 'auto'>
+): number {
+  const base = requestedMaxTokens ?? config.maxTokens ?? 4096;
+  if (isLocalOrThinkingBackend(config, effectiveFormat)) {
+    return Math.max(4096, base);
+  }
+  return Math.max(256, base);
+}
+
+/**
+ * Preserves the exact user-selected Gemini / Gemma model ID when using a direct Gemini key,
+ * only mapping empty values or obsolete Gemini 1.0 aliases to a valid modern default.
+ */
+function normalizeGeminiModelId(
+  rawModel?: string,
+  hasCustomKey = false
+): string {
+  const m = (rawModel || '').trim().replace(/^models\//i, '');
+  if (!m) {
+    return hasCustomKey ? 'gemini-2.5-flash' : 'gemini-3.8-flash';
+  }
+  if (hasCustomKey) {
+    // Only rewrite legacy Gemini 1.0 / unversioned `gemini-pro` that Google v1beta generateContent removed;
+    // keep all 2.0, 2.5, 3.x, gemma-* IDs intact!
+    if (m === 'gemini-pro' || m === 'gemini-1.0-pro' || m === 'gemini-3.8-flash') {
+      return m === 'gemini-3.8-flash' ? 'gemini-2.5-flash' : 'gemini-2.5-flash';
+    }
+    return m;
+  }
+  if (m === 'gemini-pro' || m.startsWith('gemini-1.')) {
     return 'gemini-3.8-flash';
   }
   if (m === 'gemini-3.1-flash-lite-preview') {
@@ -622,10 +740,10 @@ function normalizeGeminiModelId(rawModel?: string): string {
 
 /**
  * Live Model Scanner:
- * - For Google Gemini: If the user provided a custom API key, prioritizes querying Google's
- *   `generativelanguage.googleapis.com/v1beta/models` directly with their key (and `/api/gemini/models` with Bearer key).
- *   Only falls back to the default server `/api/gemini/models` when the user's Gemini key field is empty.
- * - For other providers: Queries `/v1/models`, Ollama `/api/tags`, and KoboldCPP `/api/v1/model`.
+ * - For Google Gemini with a user API key: calls Google's direct REST API
+ *   (`https://generativelanguage.googleapis.com/v1beta/models?key=...`) and NEVER falls back to `/api/gemini`.
+ * - For Google Gemini without an API key: queries `/api/gemini/models`.
+ * - For other providers: queries `/v1/models`, Ollama `/api/tags`, and KoboldCPP `/api/v1/model`.
  */
 export async function fetchModels(
   config: AIBackendConfig,
@@ -633,12 +751,12 @@ export async function fetchModels(
 ): Promise<string[]> {
   const effectiveKey = await resolveEffectiveApiKey(config);
 
-  // 1. Google Gemini backend (Prioritize user's custom Gemini API key; fallback to `/api/gemini/models` when empty)
+  // 1. Google Gemini backend
   if (isGeminiBackend(config)) {
     if (effectiveKey) {
-      // Try direct Google Generative Language API first using the user's custom key
+      let directRes: Response;
       try {
-        const directRes = await fetch(
+        directRes = await fetch(
           `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(effectiveKey)}`,
           {
             method: 'GET',
@@ -646,46 +764,61 @@ export async function fetchModels(
             signal: abortSignal,
           }
         );
-        if (directRes.ok) {
-          const directData = await directRes.json().catch(() => ({}));
-          if (Array.isArray(directData?.models)) {
-            const list = directData.models
-              .map((m: { name?: string }) => (m.name || '').replace(/^models\//, ''))
-              .filter(
-                (id: string) =>
-                  id &&
-                  (id.startsWith('gemini-') || id.startsWith('gemma-')) &&
-                  !id.includes('embedding') &&
-                  !id.includes('vision') &&
-                  !id.startsWith('gemini-1.')
-              );
-            if (list.length > 0) {
-              return Array.from(new Set(['gemini-3.8-flash', ...list]));
-            }
-          }
-        } else if (directRes.status === 400 || directRes.status === 401 || directRes.status === 403) {
-          const errPayload = await directRes.json().catch(() => ({}));
-          throw new AIServiceError(
-            errPayload?.error?.message ||
-              `Invalid Custom Gemini API Key (HTTP ${directRes.status})`,
-            { statusCode: directRes.status }
-          );
-        }
       } catch (err: unknown) {
         if (err instanceof DOMException && err.name === 'AbortError') throw err;
-        if (err instanceof AIServiceError) throw err;
-        // If direct call encountered network/CORS restriction, pass the user's key to `/api/gemini/models`
+        throw new AIServiceError(
+          `Could not reach Google Gemini REST API (generativelanguage.googleapis.com): ${err instanceof Error ? err.message : 'Network error'}`,
+          { isCorsOrNetworkError: true }
+        );
       }
+
+      const directData = await directRes.json().catch(() => ({}));
+      if (!directRes.ok) {
+        throw new AIServiceError(
+          directData?.error?.message ||
+            `Gemini API returned HTTP ${directRes.status} (${directRes.statusText || 'Authentication or key error'})`,
+          { statusCode: directRes.status }
+        );
+      }
+
+      if (Array.isArray(directData?.models)) {
+        const list = directData.models
+          .filter((m: { name?: string; supportedGenerationMethods?: string[] }) => {
+            const id = (m.name || '').replace(/^models\//, '');
+            const supportsGen =
+              !Array.isArray(m.supportedGenerationMethods) ||
+              m.supportedGenerationMethods.includes('generateContent');
+            return (
+              supportsGen &&
+              id &&
+              (id.startsWith('gemini-') || id.startsWith('gemma-')) &&
+              !id.includes('embedding')
+            );
+          })
+          .map((m: { name?: string }) => (m.name || '').replace(/^models\//, ''));
+
+        if (list.length > 0) {
+          // Order preferred flash/pro models cleanly while keeping all real Google models
+          const preferredOrder = [
+            'gemini-2.5-flash',
+            'gemini-2.5-pro',
+            'gemini-2.0-flash',
+          ];
+          const sorted = [
+            ...preferredOrder.filter((p) => list.includes(p)),
+            ...list.filter((id: string) => !preferredOrder.includes(id)),
+          ];
+          return Array.from(new Set(sorted));
+        }
+      }
+
+      return ['gemini-2.5-flash', 'gemini-2.5-pro', 'gemini-2.0-flash'];
     }
 
-    const geminiHeaders: Record<string, string> = { Accept: 'application/json' };
-    if (effectiveKey) {
-      geminiHeaders['Authorization'] = `Bearer ${effectiveKey}`;
-    }
-
+    // Only call /api/gemini/models when the user did NOT enter a Gemini API key
     const geminiRes = await fetch('/api/gemini/models', {
       method: 'GET',
-      headers: geminiHeaders,
+      headers: { Accept: 'application/json' },
       signal: abortSignal,
     });
     const geminiData = await geminiRes.json().catch(() => ({}));
@@ -700,9 +833,9 @@ export async function fetchModels(
       return geminiData.models;
     }
     return [
+      'gemini-2.5-flash',
+      'gemini-2.5-pro',
       'gemini-3.8-flash',
-      'gemini-3.1-flash-lite',
-      'gemini-flash-latest',
       'gemma-3-27b-it',
     ];
   }
@@ -844,7 +977,7 @@ export async function testBackendConnection(
     const detectedFormatLabel = COMPATIBILITY_FORMAT_LABELS[detectedFmtKey];
     const keyModeNote = isGeminiBackend(config)
       ? effectiveKey
-        ? ' • Using Custom Gemini Key'
+        ? ' • Direct Gemini REST API'
         : ' • Using /api/gemini Server Fallback'
       : '';
 
@@ -940,6 +1073,41 @@ export function buildFullSystemPromptForRequest(
     .join('\n\n');
 }
 
+function extractRawTextFromOpenAiContent(rawContent: unknown): {
+  text: string;
+  inlineThinking: string;
+} {
+  if (typeof rawContent === 'string') {
+    return { text: rawContent, inlineThinking: '' };
+  }
+  if (Array.isArray(rawContent)) {
+    const textParts: string[] = [];
+    const thinkParts: string[] = [];
+    for (const part of rawContent) {
+      if (!part || typeof part !== 'object') continue;
+      const p = part as {
+        type?: string;
+        text?: string;
+        thinking?: string;
+        content?: string;
+      };
+      if (p.type === 'thinking' || p.type === 'reasoning') {
+        const t = p.thinking || p.text || p.content || '';
+        if (t.trim()) thinkParts.push(t.trim());
+      } else if (typeof p.text === 'string') {
+        textParts.push(p.text);
+      } else if (typeof p.content === 'string') {
+        textParts.push(p.content);
+      }
+    }
+    return {
+      text: textParts.join(''),
+      inlineThinking: thinkParts.join('\n\n'),
+    };
+  }
+  return { text: '', inlineThinking: '' };
+}
+
 /**
  * Helper to parse a successful OpenAI-compatible chat completion JSON payload.
  */
@@ -947,44 +1115,56 @@ function parseChatCompletionData(
   data: any,
   detectedFormat: Exclude<ModelCompatibilityFormat, 'auto'>,
   sentSystemPrompt: string
-): DetailedCompletionResult | null {
+): { result: DetailedCompletionResult | null; hadReasoningOnly: boolean } {
   const messageObj = data?.choices?.[0]?.message;
-  const rawContent =
+  const extractedContent = extractRawTextFromOpenAiContent(
     messageObj?.content ??
-    data?.choices?.[0]?.text ??
-    data?.response ??
-    '';
+      data?.choices?.[0]?.text ??
+      data?.response ??
+      ''
+  );
   const reasoningField =
     messageObj?.reasoning_content ??
     messageObj?.reasoning ??
     data?.choices?.[0]?.reasoning_content ??
     '';
 
+  const combinedApiReasoning = [
+    typeof reasoningField === 'string' ? reasoningField : '',
+    extractedContent.inlineThinking,
+  ]
+    .filter(Boolean)
+    .join('\n\n');
+
   const parsed = extractThinkingAndCleanContent(
-    typeof rawContent === 'string' ? rawContent : '',
-    typeof reasoningField === 'string' ? reasoningField : undefined
+    extractedContent.text,
+    combinedApiReasoning || undefined
   );
 
   if (parsed.content) {
     return {
-      content: parsed.content,
-      reasoning: parsed.reasoning,
-      detectedFormat,
-      sentSystemPrompt,
+      result: {
+        content: parsed.content,
+        reasoning: parsed.reasoning,
+        detectedFormat,
+        sentSystemPrompt,
+      },
+      hadReasoningOnly: false,
     };
   }
-  return null;
+  return {
+    result: null,
+    hadReasoningOnly: Boolean(parsed.reasoning),
+  };
 }
 
 /**
  * Generates completion and returns both the stripped clean content AND any extracted
  * `<think>...</think>`, `<|thought|>...<|/thought|>`, or `reasoning_content` thoughts.
  *
- * Includes critical Gemma 4 / LM Studio compatibility:
- * - When `effectiveFormat === 'gemma'`, merges the system prompt into the `user` message
- *   (`"[SYSTEM INSTRUCTIONS]\n" + systemPrompt + "\n\n[USER REQUEST]\n" + userPrompt`)
- *   and sends strictly `{ model, messages, temperature, max_tokens }`.
- * - Also automatically falls back to this system-merged user payload if any server returns HTTP 400!
+ * - Calls Google Generative Language REST API directly when a Gemini key is provided (never hits `/api/gemini`).
+ * - Guarantees `max_tokens` / `maxOutputTokens` >= 4096 for local AIs & thinking models.
+ * - Never throws `HTTP 200: OK` as an error when a 200 OK JSON body is returned.
  */
 export async function generateCompletionDetailed(
   prompt: string,
@@ -996,7 +1176,11 @@ export async function generateCompletionDetailed(
   const effectiveFormat = resolveEffectiveFormat(config);
   const fullSystemPrompt = buildFullSystemPromptForRequest(systemContext, options);
   const effectiveKey = await resolveEffectiveApiKey(config);
-  const maxTokens = options?.maxTokens ?? config.maxTokens ?? 512;
+  const maxTokens = resolveEffectiveMaxTokens(
+    config,
+    options?.maxTokens,
+    effectiveFormat
+  );
   const temperature = options?.temperature ?? config.temperature ?? 0.75;
 
   // Compress image for Vision Context if provided (~260 tokens max, 512px longest edge, JPEG 0.8)
@@ -1019,68 +1203,70 @@ export async function generateCompletionDetailed(
     }
   }
 
-  // Google Gemini route:
-  // 1) If the user entered a custom Gemini API key, prioritize and use their provided key directly!
-  // 2) Only fall back to the `/api/gemini/generate` server default key when the user's Gemini key field is empty.
+  // 1. Google Gemini Route
+  // Whenever the user provides a Gemini API key, call Google's direct REST API (`generateContent`) directly!
+  // NEVER fall through to `/api/gemini/generate` (which throws HTTP 501/403 when no server key exists).
   if (isGeminiBackend(config)) {
-    const geminiModel = normalizeGeminiModelId(config.modelName);
+    const hasCustomKey = Boolean(effectiveKey);
+    const geminiModel = normalizeGeminiModelId(config.modelName, hasCustomKey);
 
     if (effectiveKey) {
-      try {
-        const isGemmaModel = geminiModel.toLowerCase().includes('gemma');
-        const userParts: Array<Record<string, unknown>> = isGemmaModel
-          ? [
-              {
-                text: `[SYSTEM INSTRUCTIONS]\n${fullSystemPrompt}\n\n[USER REQUEST]\n${prompt}`,
-              },
-            ]
-          : [{ text: prompt }];
-
-        if (compressedBase64Data) {
-          userParts.push({
-            inlineData: {
-              mimeType: 'image/jpeg',
-              data: compressedBase64Data,
+      const isGemmaModel = geminiModel.toLowerCase().includes('gemma');
+      const userParts: Array<Record<string, unknown>> = isGemmaModel
+        ? [
+            {
+              text: `[SYSTEM INSTRUCTIONS]\n${fullSystemPrompt}\n\n[USER REQUEST]\n${prompt}`,
             },
-          });
-        }
+          ]
+        : [{ text: prompt }];
 
-        const directBody = isGemmaModel
-          ? {
-              contents: [
-                {
-                  role: 'user',
-                  parts: userParts,
-                },
-              ],
-              generationConfig: {
-                temperature,
-                maxOutputTokens: maxTokens,
-                ...(options?.stop && options.stop.length > 0
-                  ? { stopSequences: options.stop }
-                  : {}),
-              },
-            }
-          : {
-              systemInstruction: {
-                parts: [{ text: fullSystemPrompt }],
-              },
-              contents: [
-                {
-                  role: 'user',
-                  parts: userParts,
-                },
-              ],
-              generationConfig: {
-                temperature,
-                maxOutputTokens: maxTokens,
-                ...(options?.stop && options.stop.length > 0
-                  ? { stopSequences: options.stop }
-                  : {}),
-              },
-            };
+      if (compressedBase64Data) {
+        userParts.push({
+          inlineData: {
+            mimeType: 'image/jpeg',
+            data: compressedBase64Data,
+          },
+        });
+      }
 
-        const directRes = await fetch(
+      const directBody = isGemmaModel
+        ? {
+            contents: [
+              {
+                role: 'user',
+                parts: userParts,
+              },
+            ],
+            generationConfig: {
+              temperature,
+              maxOutputTokens: maxTokens,
+              ...(options?.stop && options.stop.length > 0
+                ? { stopSequences: options.stop }
+                : {}),
+            },
+          }
+        : {
+            systemInstruction: {
+              parts: [{ text: fullSystemPrompt }],
+            },
+            contents: [
+              {
+                role: 'user',
+                parts: userParts,
+              },
+            ],
+            generationConfig: {
+              temperature,
+              maxOutputTokens: maxTokens,
+              ...(options?.stop && options.stop.length > 0
+                ? { stopSequences: options.stop }
+                : {}),
+            },
+          };
+
+      let directRes: Response;
+      try {
+        directRes = await fetch(
           `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(geminiModel)}:generateContent?key=${encodeURIComponent(effectiveKey)}`,
           {
             method: 'POST',
@@ -1092,64 +1278,72 @@ export async function generateCompletionDetailed(
             body: JSON.stringify(directBody),
           }
         );
-
-        if (directRes.ok) {
-          const directData = await directRes.json().catch(() => ({}));
-          const parts = directData?.candidates?.[0]?.content?.parts;
-          let rawText = '';
-          let reasoningText = '';
-          if (Array.isArray(parts)) {
-            for (const p of parts) {
-              if (p?.thought && typeof p?.text === 'string') {
-                reasoningText += (reasoningText ? '\n\n' : '') + p.text;
-              } else if (typeof p?.text === 'string') {
-                rawText += p.text;
-              }
-            }
-          }
-          const parsedDirect = extractThinkingAndCleanContent(
-            rawText,
-            reasoningText || undefined
-          );
-          if (parsedDirect.content) {
-            return {
-              content: parsedDirect.content,
-              reasoning: parsedDirect.reasoning,
-              detectedFormat: 'gemini_thinking',
-              sentSystemPrompt: fullSystemPrompt,
-              usedVisionContext: Boolean(compressedBase64Data),
-            };
-          }
-        } else if (directRes.status === 401 || directRes.status === 403) {
-          const errJson = await directRes.json().catch(() => ({}));
-          throw new AIServiceError(
-            errJson?.error?.message ||
-              `Invalid Custom Gemini API Key (HTTP ${directRes.status})`,
-            { statusCode: directRes.status }
-          );
+      } catch (networkErr: unknown) {
+        if (networkErr instanceof DOMException && networkErr.name === 'AbortError') {
+          throw networkErr;
         }
-      } catch (directErr: unknown) {
-        if (directErr instanceof DOMException && directErr.name === 'AbortError') {
-          throw directErr;
-        }
-        if (directErr instanceof AIServiceError) {
-          throw directErr;
-        }
-        // If direct browser fetch failed due to network/proxy, forward the user's custom key to `/api/gemini/generate`
+        throw new AIServiceError(
+          `Network error reaching Google Gemini REST API: ${networkErr instanceof Error ? networkErr.message : 'Request blocked'}`,
+          { isCorsOrNetworkError: true }
+        );
       }
+
+      const directData = await directRes.json().catch(() => ({}));
+      if (!directRes.ok) {
+        throw new AIServiceError(
+          directData?.error?.message ||
+            `Gemini API returned HTTP ${directRes.status}: ${directRes.statusText || 'Generation failed'}`,
+          { statusCode: directRes.status }
+        );
+      }
+
+      const candidate = directData?.candidates?.[0];
+      const parts = candidate?.content?.parts;
+      let rawText = '';
+      let reasoningText = '';
+      if (Array.isArray(parts)) {
+        for (const p of parts) {
+          if (p?.thought && typeof p?.text === 'string') {
+            reasoningText += (reasoningText ? '\n\n' : '') + p.text;
+          } else if (typeof p?.text === 'string') {
+            rawText += p.text;
+          }
+        }
+      }
+
+      const parsedDirect = extractThinkingAndCleanContent(
+        rawText,
+        reasoningText || undefined
+      );
+      if (parsedDirect.content) {
+        return {
+          content: parsedDirect.content,
+          reasoning: parsedDirect.reasoning,
+          detectedFormat: 'gemini_thinking',
+          sentSystemPrompt: fullSystemPrompt,
+          usedVisionContext: Boolean(compressedBase64Data),
+        };
+      }
+
+      const blockReason = directData?.promptFeedback?.blockReason;
+      const finishReason = candidate?.finishReason;
+      throw new AIServiceError(
+        blockReason
+          ? `Gemini blocked the request (${blockReason}).`
+          : parsedDirect.reasoning
+            ? `Gemini consumed output tokens inside thinking blocks without emitting a final answer (${finishReason || 'EMPTY'}).`
+            : `Gemini returned an empty response (${finishReason || 'NO_TEXT'}).`,
+        { statusCode: 200 }
+      );
     }
 
-    const proxyHeaders: Record<string, string> = {
-      'Content-Type': 'application/json',
-      Accept: 'application/json',
-    };
-    if (effectiveKey) {
-      proxyHeaders['Authorization'] = `Bearer ${effectiveKey}`;
-    }
-
+    // Only hit `/api/gemini/generate` when NO custom Gemini API key was supplied
     const response = await fetch('/api/gemini/generate', {
       method: 'POST',
-      headers: proxyHeaders,
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: 'application/json',
+      },
       signal: abortSignal,
       body: JSON.stringify({
         model: geminiModel,
@@ -1166,7 +1360,6 @@ export async function generateCompletionDetailed(
               },
             }
           : {}),
-        ...(effectiveKey ? { apiKey: effectiveKey } : {}),
       }),
     });
 
@@ -1183,6 +1376,15 @@ export async function generateCompletionDetailed(
       typeof data?.text === 'string' ? data.text : '',
       typeof data?.reasoning === 'string' ? data.reasoning : undefined
     );
+
+    if (!parsed.content) {
+      throw new AIServiceError(
+        parsed.reasoning
+          ? 'Gemini returned internal thinking only with empty final output.'
+          : 'Gemini returned an empty response.',
+        { statusCode: 200 }
+      );
+    }
 
     return {
       content: parsed.content,
@@ -1210,7 +1412,7 @@ export async function generateCompletionDetailed(
     { role: 'user', content: prompt },
   ];
 
-  // Multimodal OpenAI/LM Studio/Gemini/OpenRouter content array structures when compressedJpegDataUrl is present
+  // Multimodal OpenAI/LM Studio/OpenRouter content array structures when compressedJpegDataUrl is present
   const systemMergedUserMessages = compressedJpegDataUrl
     ? [
         {
@@ -1275,7 +1477,7 @@ export async function generateCompletionDetailed(
         }),
       });
       if (koboldRes.ok) {
-        const koboldData = await koboldRes.json();
+        const koboldData = await koboldRes.json().catch(() => ({}));
         const rawText =
           koboldData?.results?.[0]?.text ?? koboldData?.text ?? '';
         const parsed = extractThinkingAndCleanContent(rawText);
@@ -1294,184 +1496,20 @@ export async function generateCompletionDetailed(
   }
 
   // Primary attempt: Standard `/v1/chat/completions`
+  let chatResponse: Response;
   try {
-    const chatResponse = await fetch(`${v1Url}/chat/completions`, {
+    chatResponse = await fetch(`${v1Url}/chat/completions`, {
       method: 'POST',
       headers,
       signal: abortSignal,
       body: JSON.stringify(primaryPayload),
     });
-
-    if (chatResponse.ok) {
-      const data = await chatResponse.json();
-      const parsedResult = parseChatCompletionData(
-        data,
-        effectiveFormat,
-        fullSystemPrompt
-      );
-      if (parsedResult) {
-        return {
-          ...parsedResult,
-          usedVisionContext: Boolean(compressedJpegDataUrl),
-        };
-      }
+  } catch (networkErr: unknown) {
+    if (networkErr instanceof DOMException && networkErr.name === 'AbortError') {
+      throw networkErr;
     }
 
-    // Automatic Gemma / Local Server HTTP 400 Fallback:
-    // 1. If not already system-merged, try system-merged user message (keeping image if present).
-    // 2. If `compressedJpegDataUrl` was sent and the local server STILL returns HTTP 400/422
-    //    (because the loaded GGUF lacks a vision `mmproj` projector file in LM Studio/Ollama),
-    //    automatically catch the error, retry as text-only, and return `visionFallbackWarning`!
-    if (chatResponse.status === 400 || chatResponse.status === 422) {
-      if (!isSystemMergedFormat) {
-        const retryResponse = await fetch(`${v1Url}/chat/completions`, {
-          method: 'POST',
-          headers,
-          signal: abortSignal,
-          body: JSON.stringify({
-            model: config.modelName || 'local-model',
-            messages: systemMergedUserMessages,
-            temperature,
-            max_tokens: maxTokens,
-          }),
-        });
-
-        if (retryResponse.ok) {
-          const retryData = await retryResponse.json();
-          const retryResult = parseChatCompletionData(
-            retryData,
-            'gemma',
-            fullSystemPrompt
-          );
-          if (retryResult) {
-            return {
-              ...retryResult,
-              usedVisionContext: Boolean(compressedJpegDataUrl),
-            };
-          }
-        }
-      }
-
-      // If an image was attached and the local server returned HTTP 400/422 (missing mmproj vision adapter),
-      // automatically retry as text-only and notify the user via `visionFallbackWarning` & `onVisionFallback`.
-      if (compressedJpegDataUrl) {
-        const mmprojWarning =
-          'Local server returned HTTP 400 for image input — this GGUF model likely lacks a Vision (mmproj) projector adapter in LM Studio / Ollama. Automatically retried using text-only context.';
-
-        const textOnlyMessages = isSystemMergedFormat
-          ? textOnlySystemMergedMessages
-          : textOnlyStandardMessages;
-
-        const textOnlyRetryRes = await fetch(`${v1Url}/chat/completions`, {
-          method: 'POST',
-          headers,
-          signal: abortSignal,
-          body: JSON.stringify({
-            model: config.modelName || 'local-model',
-            messages: textOnlyMessages,
-            temperature,
-            max_tokens: maxTokens,
-          }),
-        });
-
-        if (textOnlyRetryRes.ok) {
-          const textOnlyData = await textOnlyRetryRes.json();
-          const textOnlyParsed = parseChatCompletionData(
-            textOnlyData,
-            effectiveFormat,
-            fullSystemPrompt
-          );
-          if (textOnlyParsed) {
-            options?.onVisionFallback?.(mmprojWarning);
-            return {
-              ...textOnlyParsed,
-              usedVisionContext: false,
-              visionFallbackWarning: mmprojWarning,
-            };
-          }
-        }
-
-        // Also try system-merged text-only if standard text-only returned 400
-        if (
-          !isSystemMergedFormat &&
-          (textOnlyRetryRes.status === 400 || textOnlyRetryRes.status === 422)
-        ) {
-          const mergedTextOnlyRes = await fetch(`${v1Url}/chat/completions`, {
-            method: 'POST',
-            headers,
-            signal: abortSignal,
-            body: JSON.stringify({
-              model: config.modelName || 'local-model',
-              messages: textOnlySystemMergedMessages,
-              temperature,
-              max_tokens: maxTokens,
-            }),
-          });
-          if (mergedTextOnlyRes.ok) {
-            const mergedTextData = await mergedTextOnlyRes.json();
-            const mergedTextParsed = parseChatCompletionData(
-              mergedTextData,
-              'gemma',
-              fullSystemPrompt
-            );
-            if (mergedTextParsed) {
-              options?.onVisionFallback?.(mmprojWarning);
-              return {
-                ...mergedTextParsed,
-                usedVisionContext: false,
-                visionFallbackWarning: mmprojWarning,
-              };
-            }
-          }
-        }
-      }
-    }
-
-    // Fallback: `/api/v1/generate`
-    if (
-      chatResponse.status === 404 ||
-      chatResponse.status === 405 ||
-      config.preset === 'koboldcpp'
-    ) {
-      const fallbackResponse = await fetch(`${rootUrl}/api/v1/generate`, {
-        method: 'POST',
-        headers,
-        signal: abortSignal,
-        body: JSON.stringify({
-          prompt: `[SYSTEM INSTRUCTIONS]\n${fullSystemPrompt}\n\n[USER REQUEST]\n${prompt}\n\n### Response:\n`,
-          max_length: maxTokens,
-          temperature,
-          ...(options?.stop ? { stop_sequence: options.stop } : {}),
-        }),
-      });
-
-      if (fallbackResponse.ok) {
-        const fallbackData = await fallbackResponse.json();
-        const fallbackText =
-          fallbackData?.results?.[0]?.text ?? fallbackData?.text ?? '';
-        const parsed = extractThinkingAndCleanContent(
-          typeof fallbackText === 'string' ? fallbackText : ''
-        );
-        if (parsed.content) {
-          return {
-            content: parsed.content,
-            reasoning: parsed.reasoning,
-            detectedFormat: effectiveFormat,
-            sentSystemPrompt: fullSystemPrompt,
-          };
-        }
-      }
-    }
-
-    throw new AIServiceError(
-      `AI endpoint returned HTTP ${chatResponse.status}: ${chatResponse.statusText || 'Generation failed'}`,
-      { statusCode: chatResponse.status }
-    );
-  } catch (err: unknown) {
-    if (err instanceof DOMException && err.name === 'AbortError') {
-      throw err;
-    }
-
+    // Try Kobold `/api/v1/generate` fallback on connection error
     try {
       const fallbackResponse = await fetch(`${rootUrl}/api/v1/generate`, {
         method: 'POST',
@@ -1485,7 +1523,7 @@ export async function generateCompletionDetailed(
       });
 
       if (fallbackResponse.ok) {
-        const fallbackData = await fallbackResponse.json();
+        const fallbackData = await fallbackResponse.json().catch(() => ({}));
         const fallbackText =
           fallbackData?.results?.[0]?.text ?? fallbackData?.text ?? '';
         const parsed = extractThinkingAndCleanContent(
@@ -1506,74 +1544,208 @@ export async function generateCompletionDetailed(
       }
     }
 
-    // If a localhost backend is unreachable in the hosted browser environment,
-    // automatically fall back to the server-side Gemini endpoint (`/api/gemini/generate`)
-    // so the app keeps working for everyone who opens it!
-    const isLocalhostUrl =
-      config.url.includes('localhost') || config.url.includes('127.0.0.1');
-    if (isLocalhostUrl) {
-      try {
-        const serverGeminiFallback = await fetch('/api/gemini/generate', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            Accept: 'application/json',
-          },
-          signal: abortSignal,
-          body: JSON.stringify({
-            model: 'gemini-3.8-flash',
-            prompt,
-            systemInstruction: fullSystemPrompt,
-            ...(compressedBase64Data
-              ? {
-                  inlineData: {
-                    mimeType: 'image/jpeg',
-                    data: compressedBase64Data,
-                  },
-                }
-              : {}),
-          }),
-        });
-        if (serverGeminiFallback.ok) {
-          const geminiData = await serverGeminiFallback.json();
-          const parsed = extractThinkingAndCleanContent(
-            typeof geminiData?.text === 'string' ? geminiData.text : '',
-            typeof geminiData?.reasoning === 'string'
-              ? geminiData.reasoning
-              : undefined
-          );
-          if (parsed.content) {
-            return {
-              content: parsed.content,
-              reasoning: parsed.reasoning,
-              detectedFormat: 'gemini_thinking',
-              sentSystemPrompt: fullSystemPrompt,
-              usedVisionContext: Boolean(compressedBase64Data),
-            };
-          }
-        }
-      } catch (geminiFallbackErr: unknown) {
-        if (
-          geminiFallbackErr instanceof DOMException &&
-          geminiFallbackErr.name === 'AbortError'
-        ) {
-          throw geminiFallbackErr;
-        }
-      }
-    }
-
-    if (err instanceof AIServiceError) {
-      throw err;
-    }
-
-    const msg = err instanceof Error ? err.message : 'Network connection failed';
+    const msg =
+      networkErr instanceof Error ? networkErr.message : 'Network connection failed';
     throw new AIServiceError(
       `Cannot connect to AI endpoint (${config.url}): ${msg}`,
-      {
-        isCorsOrNetworkError: true,
-      }
+      { isCorsOrNetworkError: true }
     );
   }
+
+  if (chatResponse.ok) {
+    const data = await chatResponse.json().catch(() => ({}));
+    const { result, hadReasoningOnly } = parseChatCompletionData(
+      data,
+      effectiveFormat,
+      fullSystemPrompt
+    );
+    if (result) {
+      return {
+        ...result,
+        usedVisionContext: Boolean(compressedJpegDataUrl),
+      };
+    }
+    throw new AIServiceError(
+      hadReasoningOnly
+        ? 'Model returned an empty final reply because internal <think> reasoning consumed the output. Increase Max Tokens or simplify the prompt.'
+        : 'Model returned an empty response body with no generated text.',
+      { statusCode: 200 }
+    );
+  }
+
+  // Automatic Gemma / Local Server HTTP 400 Fallback:
+  if (chatResponse.status === 400 || chatResponse.status === 422) {
+    if (!isSystemMergedFormat) {
+      const retryResponse = await fetch(`${v1Url}/chat/completions`, {
+        method: 'POST',
+        headers,
+        signal: abortSignal,
+        body: JSON.stringify({
+          model: config.modelName || 'local-model',
+          messages: systemMergedUserMessages,
+          temperature,
+          max_tokens: maxTokens,
+        }),
+      });
+
+      if (retryResponse.ok) {
+        const retryData = await retryResponse.json().catch(() => ({}));
+        const { result: retryResult, hadReasoningOnly } = parseChatCompletionData(
+          retryData,
+          'gemma',
+          fullSystemPrompt
+        );
+        if (retryResult) {
+          return {
+            ...retryResult,
+            usedVisionContext: Boolean(compressedJpegDataUrl),
+          };
+        }
+        throw new AIServiceError(
+          hadReasoningOnly
+            ? 'Model consumed all tokens inside internal thinking without emitting a final reply.'
+            : 'Model returned an empty completion response.',
+          { statusCode: 200 }
+        );
+      }
+    }
+
+    if (compressedJpegDataUrl) {
+      const mmprojWarning =
+        'Local server returned HTTP 400 for image input — this GGUF model likely lacks a Vision (mmproj) projector adapter in LM Studio / Ollama. Automatically retried using text-only context.';
+
+      const textOnlyMessages = isSystemMergedFormat
+        ? textOnlySystemMergedMessages
+        : textOnlyStandardMessages;
+
+      const textOnlyRetryRes = await fetch(`${v1Url}/chat/completions`, {
+        method: 'POST',
+        headers,
+        signal: abortSignal,
+        body: JSON.stringify({
+          model: config.modelName || 'local-model',
+          messages: textOnlyMessages,
+          temperature,
+          max_tokens: maxTokens,
+        }),
+      });
+
+      if (textOnlyRetryRes.ok) {
+        const textOnlyData = await textOnlyRetryRes.json().catch(() => ({}));
+        const { result: textOnlyParsed, hadReasoningOnly } =
+          parseChatCompletionData(
+            textOnlyData,
+            effectiveFormat,
+            fullSystemPrompt
+          );
+        if (textOnlyParsed) {
+          options?.onVisionFallback?.(mmprojWarning);
+          return {
+            ...textOnlyParsed,
+            usedVisionContext: false,
+            visionFallbackWarning: mmprojWarning,
+          };
+        }
+        throw new AIServiceError(
+          hadReasoningOnly
+            ? 'Model consumed all tokens inside internal thinking without emitting a final reply.'
+            : 'Model returned an empty completion response.',
+          { statusCode: 200 }
+        );
+      }
+
+      if (
+        !isSystemMergedFormat &&
+        (textOnlyRetryRes.status === 400 || textOnlyRetryRes.status === 422)
+      ) {
+        const mergedTextOnlyRes = await fetch(`${v1Url}/chat/completions`, {
+          method: 'POST',
+          headers,
+          signal: abortSignal,
+          body: JSON.stringify({
+            model: config.modelName || 'local-model',
+            messages: textOnlySystemMergedMessages,
+            temperature,
+            max_tokens: maxTokens,
+          }),
+        });
+        if (mergedTextOnlyRes.ok) {
+          const mergedTextData = await mergedTextOnlyRes.json().catch(() => ({}));
+          const { result: mergedTextParsed, hadReasoningOnly } =
+            parseChatCompletionData(
+              mergedTextData,
+              'gemma',
+              fullSystemPrompt
+            );
+          if (mergedTextParsed) {
+            options?.onVisionFallback?.(mmprojWarning);
+            return {
+              ...mergedTextParsed,
+              usedVisionContext: false,
+              visionFallbackWarning: mmprojWarning,
+            };
+          }
+          throw new AIServiceError(
+            hadReasoningOnly
+              ? 'Model consumed all tokens inside internal thinking without emitting a final reply.'
+              : 'Model returned an empty completion response.',
+            { statusCode: 200 }
+          );
+        }
+      }
+    }
+  }
+
+  // Fallback: `/api/v1/generate`
+  if (
+    chatResponse.status === 404 ||
+    chatResponse.status === 405 ||
+    config.preset === 'koboldcpp'
+  ) {
+    const fallbackResponse = await fetch(`${rootUrl}/api/v1/generate`, {
+      method: 'POST',
+      headers,
+      signal: abortSignal,
+      body: JSON.stringify({
+        prompt: `[SYSTEM INSTRUCTIONS]\n${fullSystemPrompt}\n\n[USER REQUEST]\n${prompt}\n\n### Response:\n`,
+        max_length: maxTokens,
+        temperature,
+        ...(options?.stop ? { stop_sequence: options.stop } : {}),
+      }),
+    });
+
+    if (fallbackResponse.ok) {
+      const fallbackData = await fallbackResponse.json().catch(() => ({}));
+      const fallbackText =
+        fallbackData?.results?.[0]?.text ?? fallbackData?.text ?? '';
+      const parsed = extractThinkingAndCleanContent(
+        typeof fallbackText === 'string' ? fallbackText : ''
+      );
+      if (parsed.content) {
+        return {
+          content: parsed.content,
+          reasoning: parsed.reasoning,
+          detectedFormat: effectiveFormat,
+          sentSystemPrompt: fullSystemPrompt,
+        };
+      }
+      throw new AIServiceError(
+        'Kobold endpoint returned an empty completion response.',
+        { statusCode: 200 }
+      );
+    }
+  }
+
+  const errPayload = await chatResponse.json().catch(() => ({}));
+  const detailMsg =
+    errPayload?.error?.message ||
+    (typeof errPayload?.error === 'string' ? errPayload.error : '') ||
+    chatResponse.statusText ||
+    'Generation failed';
+  throw new AIServiceError(
+    `AI endpoint returned HTTP ${chatResponse.status}: ${detailMsg}`,
+    { statusCode: chatResponse.status }
+  );
 }
 
 /**
