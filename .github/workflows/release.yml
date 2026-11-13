@@ -246,9 +246,11 @@ jobs:
                 const dirs = resolveSavesDirectories(body.savesDir);
 
                 if (Array.isArray(body.characters)) {
+                  const usedCharFiles = new Set();
                   for (const item of body.characters) {
                     if (!item || typeof item.content !== 'string') continue;
                     const targetFile = sanitizeFileName(item.fileName || item.name || 'Character', 'Character');
+                    usedCharFiles.add(targetFile.toLowerCase());
                     if (item.oldFileName) {
                       const oldSafe = sanitizeFileName(item.oldFileName, '');
                       if (oldSafe && oldSafe !== targetFile) {
@@ -260,12 +262,22 @@ jobs:
                     }
                     fs.writeFileSync(path.join(dirs.charactersDir, targetFile), item.content, 'utf-8');
                   }
+                  try {
+                    for (const existingFile of fs.readdirSync(dirs.charactersDir)) {
+                      if (!existingFile.toLowerCase().endsWith('.json')) continue;
+                      if (!usedCharFiles.has(existingFile.toLowerCase())) {
+                        fs.unlinkSync(path.join(dirs.charactersDir, existingFile));
+                      }
+                    }
+                  } catch {}
                 }
 
                 if (Array.isArray(body.lorebooks)) {
+                  const usedLoreFiles = new Set();
                   for (const item of body.lorebooks) {
                     if (!item || typeof item.content !== 'string') continue;
                     const targetFile = sanitizeFileName(item.fileName || item.name || 'Lorebook', 'Lorebook');
+                    usedLoreFiles.add(targetFile.toLowerCase());
                     if (item.oldFileName) {
                       const oldSafe = sanitizeFileName(item.oldFileName, '');
                       if (oldSafe && oldSafe !== targetFile) {
@@ -277,6 +289,14 @@ jobs:
                     }
                     fs.writeFileSync(path.join(dirs.lorebooksDir, targetFile), item.content, 'utf-8');
                   }
+                  try {
+                    for (const existingFile of fs.readdirSync(dirs.lorebooksDir)) {
+                      if (!existingFile.toLowerCase().endsWith('.json')) continue;
+                      if (!usedLoreFiles.has(existingFile.toLowerCase())) {
+                        fs.unlinkSync(path.join(dirs.lorebooksDir, existingFile));
+                      }
+                    }
+                  } catch {}
                 }
 
                 if (body.meta !== undefined && body.meta !== null) {
@@ -502,39 +522,65 @@ jobs:
 
                   if parsed_url.path == "/api/disk/save":
                       dirs = resolve_saves_directories(body.get("savesDir"))
-                      for item in body.get("characters") or []:
-                          if not isinstance(item, dict) or not isinstance(item.get("content"), str):
-                              continue
-                          target_file = sanitize_file_name(item.get("fileName") or item.get("name") or "Character", "Character")
-                          old_name = item.get("oldFileName")
-                          if old_name:
-                              old_safe = sanitize_file_name(old_name, "")
-                              if old_safe and old_safe != target_file:
-                                  old_full = os.path.join(dirs["charactersDir"], old_safe)
-                                  if os.path.isfile(old_full):
-                                      try:
-                                          os.unlink(old_full)
-                                      except Exception:
-                                          pass
-                          with open(os.path.join(dirs["charactersDir"], target_file), "w", encoding="utf-8") as f:
-                              f.write(item["content"])
+                      if isinstance(body.get("characters"), list):
+                          used_char_files = set()
+                          for item in body.get("characters"):
+                              if not isinstance(item, dict) or not isinstance(item.get("content"), str):
+                                  continue
+                              target_file = sanitize_file_name(item.get("fileName") or item.get("name") or "Character", "Character")
+                              used_char_files.add(target_file.lower())
+                              old_name = item.get("oldFileName")
+                              if old_name:
+                                  old_safe = sanitize_file_name(old_name, "")
+                                  if old_safe and old_safe != target_file:
+                                      old_full = os.path.join(dirs["charactersDir"], old_safe)
+                                      if os.path.isfile(old_full):
+                                          try:
+                                              os.unlink(old_full)
+                                          except Exception:
+                                              pass
+                              with open(os.path.join(dirs["charactersDir"], target_file), "w", encoding="utf-8") as f:
+                                  f.write(item["content"])
+                          try:
+                              for existing_file in os.listdir(dirs["charactersDir"]):
+                                  if not existing_file.lower().endswith(".json"):
+                                      continue
+                                  if existing_file.lower() not in used_char_files:
+                                      orphan_path = os.path.join(dirs["charactersDir"], existing_file)
+                                      if os.path.isfile(orphan_path):
+                                          os.unlink(orphan_path)
+                          except Exception:
+                              pass
 
-                      for item in body.get("lorebooks") or []:
-                          if not isinstance(item, dict) or not isinstance(item.get("content"), str):
-                              continue
-                          target_file = sanitize_file_name(item.get("fileName") or item.get("name") or "Lorebook", "Lorebook")
-                          old_name = item.get("oldFileName")
-                          if old_name:
-                              old_safe = sanitize_file_name(old_name, "")
-                              if old_safe and old_safe != target_file:
-                                  old_full = os.path.join(dirs["lorebooksDir"], old_safe)
-                                  if os.path.isfile(old_full):
-                                      try:
-                                          os.unlink(old_full)
-                                      except Exception:
-                                          pass
-                          with open(os.path.join(dirs["lorebooksDir"], target_file), "w", encoding="utf-8") as f:
-                              f.write(item["content"])
+                      if isinstance(body.get("lorebooks"), list):
+                          used_lore_files = set()
+                          for item in body.get("lorebooks"):
+                              if not isinstance(item, dict) or not isinstance(item.get("content"), str):
+                                  continue
+                              target_file = sanitize_file_name(item.get("fileName") or item.get("name") or "Lorebook", "Lorebook")
+                              used_lore_files.add(target_file.lower())
+                              old_name = item.get("oldFileName")
+                              if old_name:
+                                  old_safe = sanitize_file_name(old_name, "")
+                                  if old_safe and old_safe != target_file:
+                                      old_full = os.path.join(dirs["lorebooksDir"], old_safe)
+                                      if os.path.isfile(old_full):
+                                          try:
+                                              os.unlink(old_full)
+                                          except Exception:
+                                              pass
+                              with open(os.path.join(dirs["lorebooksDir"], target_file), "w", encoding="utf-8") as f:
+                                  f.write(item["content"])
+                          try:
+                              for existing_file in os.listdir(dirs["lorebooksDir"]):
+                                  if not existing_file.lower().endswith(".json"):
+                                      continue
+                                  if existing_file.lower() not in used_lore_files:
+                                      orphan_path = os.path.join(dirs["lorebooksDir"], existing_file)
+                                      if os.path.isfile(orphan_path):
+                                          os.unlink(orphan_path)
+                          except Exception:
+                              pass
 
                       if body.get("meta") is not None:
                           meta_val = body["meta"]

@@ -14,9 +14,9 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const SUPPORTED_GEMINI_MODELS = [
-  'gemini-3.8-flash',
-  'gemini-3.1-flash-lite',
-  'gemini-flash-latest',
+  'gemini-2.5-flash',
+  'gemini-2.5-pro',
+  'gemini-2.0-flash',
   'gemma-3-27b-it',
 ];
 
@@ -48,31 +48,33 @@ function createGeminiClient(customApiKey?: string): GoogleGenAI {
 
 /**
  * Normalizes requested Gemini model names to active supported models
- * and prevents any deprecated 1.5 / 2.0 / 2.5 aliases from causing 404 errors.
+ * and prevents fake/deprecated aliases from causing 404 errors.
  */
 function resolveServerGeminiModel(rawModel?: string): string {
   const clean = (rawModel || '').trim().replace(/^models\//i, '');
-  if (!clean) return 'gemini-3.8-flash';
+  if (!clean) return 'gemini-2.5-flash';
 
   const lower = clean.toLowerCase();
   if (
-    lower.startsWith('gemini-1.5') ||
-    lower.startsWith('gemini-2.0') ||
-    lower.startsWith('gemini-2.5') ||
-    lower === 'gemini-pro'
+    lower.startsWith('gemini-1.') ||
+    lower === 'gemini-pro' ||
+    lower === 'gemini-3.8-flash' ||
+    lower === 'gemini-4-hydrogen'
   ) {
-    return 'gemini-3.8-flash';
+    return 'gemini-2.5-flash';
   }
 
   if (
     SUPPORTED_GEMINI_MODELS.includes(clean) ||
+    lower.startsWith('gemini-2.5') ||
+    lower.startsWith('gemini-2.0') ||
     lower.startsWith('gemini-3.') ||
     lower.startsWith('gemma-3')
   ) {
     return clean;
   }
 
-  return 'gemini-3.8-flash';
+  return 'gemini-2.5-flash';
 }
 
 function formatGeminiErrorMessage(err: unknown): {
@@ -185,7 +187,7 @@ async function startServer() {
 
       res.json({
         models: SUPPORTED_GEMINI_MODELS,
-        defaultModel: 'gemini-3.8-flash',
+        defaultModel: 'gemini-2.5-flash',
       });
     } catch (err: unknown) {
       const formatted = formatGeminiErrorMessage(err);

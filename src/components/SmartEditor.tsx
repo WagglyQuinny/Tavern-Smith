@@ -166,6 +166,7 @@ export const SmartEditor: React.FC<SmartEditorProps> = ({
 
   // Predictive AI Ghost Text state (100% text-only — NEVER sends vision images)
   const [ghostText, setGhostText] = useState('');
+  const [ghostError, setGhostError] = useState<string | null>(null);
   const [isFetchingGhost, setIsFetchingGhost] = useState(false);
   const [isFocused, setIsFocused] = useState(false);
 
@@ -454,9 +455,27 @@ export const SmartEditor: React.FC<SmartEditorProps> = ({
     });
   }, [cardContextSnapshot, activeTheme, tags, combinedActiveTagNames]);
 
-  // Trigger debounced AI Ghost Text when user pauses typing
-  // CRITICAL RULE: NEVER send images during background inline Ghost-Text autocomplete requests!
-  // Ghost-Text remains 100% text-only for instant typing performance and zero VRAM bloat.
+  // Keep latest ambient context in a ref so background auto-save or tag re-renders
+  // never cancel an active paused-typing AI suggestion request.
+  const suggestionContextRef = useRef({
+    aiConfig,
+    activeTheme,
+    tags,
+    cardContextSnapshot,
+    combinedActiveTagNames,
+    label,
+  });
+  suggestionContextRef.current = {
+    aiConfig,
+    activeTheme,
+    tags,
+    cardContextSnapshot,
+    combinedActiveTagNames,
+    label,
+  };
+
+  // Trigger debounced 1-shot AI Suggestion when user pauses typing
+  // CRITICAL RULE: NEVER send images during background autocomplete requests!
   useEffect(() => {
     cancelPendingGhostRequest();
 
@@ -473,43 +492,60 @@ export const SmartEditor: React.FC<SmartEditorProps> = ({
     const delay = Math.max(250, aiConfig.debounceMs || 650);
 
     ghostDebounceTimerRef.current = window.setTimeout(async () => {
+      const ctx = suggestionContextRef.current;
       const controller = new AbortController();
       ghostAbortControllerRef.current = controller;
       setIsFetchingGhost(true);
+      setGhostError(null);
 
       const continuationPrompt = [
-        `Continue the following "${label}" text naturally with 1 to 2 concise sentences in Markdown.`,
-        `Output ONLY the direct continuation text (no quotes around it, no preamble, do not repeat the existing text).`,
-        `\nExisting "${label}" text:\n${value.slice(-900)}`,
+        `Continue the following "${ctx.label}" text naturally with 1 to 2 concise sentences.`,
+        `Output ONLY the direct continuation text with no quotes, no markdown code fences, no preamble, and without repeating the existing text.`,
+        `\nExisting "${ctx.label}" text:\n${value.slice(-1200)}`,
       ].join('\n');
 
       try {
         const completion = await generateCompletion(
           continuationPrompt,
-          cardContextSnapshot,
-          aiConfig,
+          ctx.cardContextSnapshot,
+          ctx.aiConfig,
           controller.signal,
           {
-            maxTokens: 90,
-            temperature: aiConfig.temperature,
-            activeTheme,
-            allTags: tags,
-            characterTags: combinedActiveTagNames,
+            maxTokens: Math.max(512, ctx.aiConfig.maxTokens || 1024),
+            temperature: ctx.aiConfig.temperature,
+            activeTheme: ctx.activeTheme,
+            allTags: ctx.tags,
+            characterTags: ctx.combinedActiveTagNames,
             // Notice: `imageDataUrl` is strictly OMITTED here so Ghost-Text is 100% text-only
           }
         );
 
-        if (!controller.signal.aborted && completion.trim()) {
+        if (!controller.signal.aborted) {
           const cleaned = completion
+            .replace(/^```[\w-]*\s*\n?/i, '')
+            .replace(/\n?```\s*$/i, '')
             .replace(/^["'`]+|["'`]+$/g, '')
             .trim();
-          setGhostText(cleaned);
-          setAiError(null);
+
+          if (cleaned) {
+            setGhostText(cleaned);
+            setGhostError(null);
+            setAiError(null);
+          } else {
+            setGhostText('');
+            setGhostError('Model returned an empty suggestion.');
+          }
         }
       } catch (err: unknown) {
         if (err instanceof DOMException && err.name === 'AbortError') {
           return;
         }
+        const msg =
+          err instanceof Error && err.message
+            ? err.message
+            : 'Could not reach AI endpoint for suggestion.';
+        setGhostText('');
+        setGhostError(msg);
       } finally {
         if (!controller.signal.aborted) {
           setIsFetchingGhost(false);
@@ -523,14 +559,13 @@ export const SmartEditor: React.FC<SmartEditorProps> = ({
   }, [
     value,
     isFocused,
-    aiConfig,
+    aiConfig.ghostTextEnabled,
+    aiConfig.debounceMs,
+    aiConfig.preset,
+    aiConfig.modelName,
+    aiConfig.url,
     macroMenuOpen,
     isGeneratingField,
-    cardContextSnapshot,
-    label,
-    activeTheme,
-    tags,
-    combinedActiveTagNames,
     cancelPendingGhostRequest,
   ]);
 
@@ -783,9 +818,10 @@ export const SmartEditor: React.FC<SmartEditorProps> = ({
       return;
     }
 
-    if (ghostText && e.key === 'Escape') {
+    if ((ghostText || ghostError) && e.key === 'Escape') {
       e.preventDefault();
       setGhostText('');
+      setGhostError(null);
       return;
     }
   };
@@ -794,6 +830,9 @@ export const SmartEditor: React.FC<SmartEditorProps> = ({
     const nextValue = e.target.value;
     if (ghostText) {
       setGhostText('');
+    }
+    if (ghostError) {
+      setGhostError(null);
     }
     onChange(nextValue);
     evaluateMacroTrigger(nextValue, e.target.selectionStart ?? nextValue.length);
@@ -1384,7 +1423,7 @@ export const SmartEditor: React.FC<SmartEditorProps> = ({
               className="theme-hover-outline flex items-center gap-1 rounded-md border bg-white dark:bg-slate-900 px-2.5 py-1 font-mono text-[11px] font-semibold text-slate-900 dark:text-white cursor-pointer whitespace-nowrap"
             >
               <Check className="h-3 w-3" style={{ color: 'var(--theme-accent)' }} />
-              <span>Press Tab or Click to Insert</span>
+              <span>Click or Press Tab to Insert</span>
             </button>
             <button
               type="button"
@@ -1399,6 +1438,29 @@ export const SmartEditor: React.FC<SmartEditorProps> = ({
               <X className="h-3.5 w-3.5" />
             </button>
           </div>
+        </div>
+      )}
+
+      {!ghostText && ghostError && (
+        <div className="flex items-center justify-between gap-2.5 border-t border-amber-500/30 bg-amber-500/10 px-3.5 py-1.5 text-xs text-amber-900 dark:text-amber-200">
+          <div className="flex items-center gap-2 min-w-0">
+            <AlertTriangle className="h-3.5 w-3.5 text-amber-500 shrink-0" />
+            <span className="truncate">
+              <strong>Suggestion failed:</strong> {ghostError}
+            </span>
+          </div>
+          <button
+            type="button"
+            onMouseDown={(e) => {
+              e.preventDefault();
+              setGhostError(null);
+            }}
+            title="Dismiss error"
+            aria-label="Dismiss suggestion error"
+            className="rounded p-0.5 text-amber-700 dark:text-amber-300 hover:opacity-75 cursor-pointer shrink-0"
+          >
+            <X className="h-3.5 w-3.5" />
+          </button>
         </div>
       )}
 

@@ -311,6 +311,22 @@ export function saveToSavesDirectoryOnDisk(body: Record<string, unknown>) {
         'utf8'
       );
     }
+
+    // Mirror exact React state: prune any orphaned character .json files on disk not in body.characters
+    try {
+      const existingCharFiles = fs.readdirSync(charsDir);
+      for (const fileName of existingCharFiles) {
+        if (!fileName.toLowerCase().endsWith('.json')) continue;
+        if (!usedCharTargets.has(fileName.toLowerCase())) {
+          const orphanPath = path.join(charsDir, fileName);
+          if (fs.existsSync(orphanPath)) {
+            fs.unlinkSync(orphanPath);
+          }
+        }
+      }
+    } catch {
+      // Ignore directory prune errors
+    }
   }
 
   // 2. Write lorebooks strictly into ./Saves/Lorebooks/[UniqueSanitizedName].json
@@ -374,6 +390,22 @@ export function saveToSavesDirectoryOnDisk(body: Record<string, unknown>) {
         JSON.stringify(prepared.outPayload, null, 2),
         'utf8'
       );
+    }
+
+    // Mirror exact React state: prune any orphaned lorebook .json files on disk not in body.lorebooks
+    try {
+      const existingLoreFiles = fs.readdirSync(loreDir);
+      for (const fileName of existingLoreFiles) {
+        if (!fileName.toLowerCase().endsWith('.json')) continue;
+        if (!usedLoreTargets.has(fileName.toLowerCase())) {
+          const orphanPath = path.join(loreDir, fileName);
+          if (fs.existsSync(orphanPath)) {
+            fs.unlinkSync(orphanPath);
+          }
+        }
+      }
+    } catch {
+      // Ignore directory prune errors
     }
   }
 

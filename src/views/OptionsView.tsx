@@ -8,7 +8,6 @@ import {
   AlertCircle,
   Info,
   RotateCcw,
-  Save,
   X,
   ShieldCheck,
   Sliders,
@@ -80,7 +79,6 @@ export const OptionsView: React.FC = () => {
     connectAiBackend,
     disconnectAiBackend,
     clearAiConnectionFeedback,
-    saveAndSyncNow,
     resetWorkspaceToDefaults,
     lastSavedAt,
     savedFiles,
@@ -140,18 +138,21 @@ export const OptionsView: React.FC = () => {
   );
 
   const allSelectableModels = useMemo(() => {
+    const fakeIds = new Set(['gemini-3.8-flash', 'gemini-4-hydrogen']);
     const combined = Array.from(
       new Set([
         ...(aiConfig.availableModels || []),
         ...(currentPresetMeta.suggestedModels || []),
+        ...(aiConfig.modelName ? [aiConfig.modelName] : []),
       ])
-    ).filter(Boolean);
+    ).filter((m) => Boolean(m) && !fakeIds.has(m.toLowerCase()));
 
     const q = modelSearchQuery.trim().toLowerCase();
     if (!q) return combined;
     return combined.filter((m) => m.toLowerCase().includes(q));
   }, [
     aiConfig.availableModels,
+    aiConfig.modelName,
     currentPresetMeta.suggestedModels,
     modelSearchQuery,
   ]);
@@ -326,12 +327,6 @@ export const OptionsView: React.FC = () => {
     await connectAiBackend(aiConfig);
   };
 
-  const handleSaveAllToFolderNow = async () => {
-    const res = await saveAndSyncNow();
-    setFolderStatusMessage(res.message);
-    scheduleTimer(() => setFolderStatusMessage(null), 5000);
-  };
-
   const handleLoadFile = (file: SavedFileEntry) => {
     const res = loadSavedFileIntoWorkspace(file);
     setFolderStatusMessage(res.message);
@@ -356,16 +351,6 @@ export const OptionsView: React.FC = () => {
         </div>
 
         <div className="flex flex-wrap items-center gap-2.5 shrink-0">
-          <button
-            type="button"
-            onClick={handleSaveAllToFolderNow}
-            style={{ borderColor: 'var(--theme-accent)' }}
-            className="theme-hover-outline flex items-center gap-1.5 rounded-lg border bg-slate-900 dark:bg-white px-3.5 py-2 text-xs font-semibold text-white dark:text-slate-900 cursor-pointer"
-          >
-            <Save className="h-3.5 w-3.5" />
-            <span>Save</span>
-          </button>
-
           <button
             type="button"
             onClick={() => setShowAboutModal(true)}
@@ -451,18 +436,8 @@ export const OptionsView: React.FC = () => {
             </div>
           </div>
 
-          {/* Action Toolbar: Save + Export Folder Backup Bundle */}
+          {/* Action Toolbar: Export Folder Backup Bundle */}
           <div className="flex flex-wrap items-center gap-2 shrink-0">
-            <button
-              type="button"
-              onClick={handleSaveAllToFolderNow}
-              style={{ borderColor: 'var(--theme-accent)' }}
-              className="theme-hover-outline flex items-center gap-1.5 rounded-lg border bg-slate-900 dark:bg-white px-3 py-1.5 text-xs font-semibold text-white dark:text-slate-900 cursor-pointer"
-            >
-              <Save className="h-3.5 w-3.5" />
-              <span>Save</span>
-            </button>
-
             <button
               type="button"
               onClick={() => exportSaveFolderBundle()}
@@ -1028,20 +1003,7 @@ export const OptionsView: React.FC = () => {
               </div>
             </div>
 
-            <div className="pt-2 flex flex-wrap items-center justify-between gap-2 border-t border-slate-200 dark:border-slate-800">
-              <button
-                type="button"
-                onClick={handleSaveAllToFolderNow}
-                style={{ borderColor: 'var(--theme-accent)' }}
-                className="theme-hover-outline flex items-center gap-1.5 rounded-lg border bg-slate-50 dark:bg-slate-800 px-3 py-1.5 text-xs font-medium text-slate-900 dark:text-white cursor-pointer"
-              >
-                <Save
-                  className="h-3.5 w-3.5"
-                  style={{ color: 'var(--theme-accent)' }}
-                />
-                <span>Save</span>
-              </button>
-
+            <div className="pt-2 flex flex-wrap items-center justify-end gap-2 border-t border-slate-200 dark:border-slate-800">
               {!confirmReset ? (
                 <button
                   type="button"
@@ -1451,57 +1413,36 @@ export const OptionsView: React.FC = () => {
                 </div>
               </div>
 
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                <div className="space-y-1">
-                  <span className="text-[11px] text-slate-500 dark:text-slate-400">
-                    Available Models
-                  </span>
-                  <select
-                    value={
-                      allSelectableModels.includes(aiConfig.modelName)
-                        ? aiConfig.modelName
-                        : ''
-                    }
-                    onChange={(e) => {
-                      if (e.target.value) {
-                        setAiConfig((prev) => ({
-                          ...prev,
-                          modelName: e.target.value,
-                        }));
-                      }
-                    }}
-                    className="theme-focus-ring font-mono w-full rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-3 py-2 text-xs text-slate-900 dark:text-white cursor-pointer"
-                  >
-                    {!allSelectableModels.includes(aiConfig.modelName) && (
-                      <option value="">
-                        Custom: {aiConfig.modelName || 'Select model'}
-                      </option>
-                    )}
-                    {allSelectableModels.map((m) => (
-                      <option key={m} value={m}>
-                        {m}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-
-                <div className="space-y-1">
-                  <span className="text-[11px] text-slate-500 dark:text-slate-400">
-                    Custom Model ID
-                  </span>
-                  <input
-                    type="text"
-                    value={aiConfig.modelName}
-                    onChange={(e) =>
+              <div className="space-y-1">
+                <span className="text-[11px] text-slate-500 dark:text-slate-400">
+                  Available Models
+                </span>
+                <select
+                  value={
+                    allSelectableModels.includes(aiConfig.modelName)
+                      ? aiConfig.modelName
+                      : allSelectableModels[0] || ''
+                  }
+                  onChange={(e) => {
+                    if (e.target.value) {
                       setAiConfig((prev) => ({
                         ...prev,
                         modelName: e.target.value,
-                      }))
+                      }));
                     }
-                    placeholder="e.g., gemini-3.8-flash"
-                    className="theme-focus-ring font-mono w-full rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-3 py-2 text-xs text-slate-900 dark:text-white"
-                  />
-                </div>
+                  }}
+                  className="theme-focus-ring font-mono w-full rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-3 py-2 text-xs text-slate-900 dark:text-white cursor-pointer"
+                >
+                  {allSelectableModels.length === 0 ? (
+                    <option value="">No models match filter</option>
+                  ) : (
+                    allSelectableModels.map((m) => (
+                      <option key={m} value={m}>
+                        {m}
+                      </option>
+                    ))
+                  )}
+                </select>
               </div>
 
               {/* Parser Format & Vision Toggle in a single compact row */}

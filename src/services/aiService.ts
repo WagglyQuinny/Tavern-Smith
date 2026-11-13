@@ -139,7 +139,6 @@ export const AI_BACKEND_PRESETS: AIPresetMeta[] = [
       'gemini-2.5-flash',
       'gemini-2.5-pro',
       'gemini-2.0-flash',
-      'gemini-3.8-flash',
       'gemma-3-27b-it',
     ],
   },
@@ -710,29 +709,28 @@ export function resolveEffectiveMaxTokens(
 }
 
 /**
- * Preserves the exact user-selected Gemini / Gemma model ID when using a direct Gemini key,
- * only mapping empty values or obsolete Gemini 1.0 aliases to a valid modern default.
+ * Preserves the exact user-selected Gemini / Gemma model ID, mapping empty values
+ * or fake/obsolete aliases cleanly to gemini-2.5-flash.
  */
 function normalizeGeminiModelId(
   rawModel?: string,
-  hasCustomKey = false
+  _hasCustomKey = false
 ): string {
   const m = (rawModel || '').trim().replace(/^models\//i, '');
   if (!m) {
-    return hasCustomKey ? 'gemini-2.5-flash' : 'gemini-3.8-flash';
+    return 'gemini-2.5-flash';
   }
-  if (hasCustomKey) {
-    // Only rewrite legacy Gemini 1.0 / unversioned `gemini-pro` that Google v1beta generateContent removed;
-    // keep all 2.0, 2.5, 3.x, gemma-* IDs intact!
-    if (m === 'gemini-pro' || m === 'gemini-1.0-pro' || m === 'gemini-3.8-flash') {
-      return m === 'gemini-3.8-flash' ? 'gemini-2.5-flash' : 'gemini-2.5-flash';
-    }
-    return m;
+  const lower = m.toLowerCase();
+  if (
+    lower === 'gemini-pro' ||
+    lower === 'gemini-1.0-pro' ||
+    lower.startsWith('gemini-1.') ||
+    lower === 'gemini-3.8-flash' ||
+    lower === 'gemini-4-hydrogen'
+  ) {
+    return 'gemini-2.5-flash';
   }
-  if (m === 'gemini-pro' || m.startsWith('gemini-1.')) {
-    return 'gemini-3.8-flash';
-  }
-  if (m === 'gemini-3.1-flash-lite-preview') {
+  if (lower === 'gemini-3.1-flash-lite-preview') {
     return 'gemini-3.1-flash-lite';
   }
   return m;
@@ -835,7 +833,7 @@ export async function fetchModels(
     return [
       'gemini-2.5-flash',
       'gemini-2.5-pro',
-      'gemini-3.8-flash',
+      'gemini-2.0-flash',
       'gemma-3-27b-it',
     ];
   }

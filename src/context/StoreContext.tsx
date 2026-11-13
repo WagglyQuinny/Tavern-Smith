@@ -1905,6 +1905,37 @@ export const DEFAULT_CHARACTER: CharacterCardData = {
   },
 };
 
+const FAKE_MODEL_IDS = new Set(['gemini-3.8-flash', 'gemini-4-hydrogen']);
+
+function sanitizeModelName(rawModel?: string, preset?: AIPresetId): string {
+  const clean = (rawModel || '').trim();
+  if (!clean || FAKE_MODEL_IDS.has(clean.toLowerCase())) {
+    if (!preset || preset === 'gemini') {
+      return 'gemini-2.5-flash';
+    }
+    const found = AI_BACKEND_PRESETS.find((p) => p.id === preset);
+    return found?.defaultModel || 'gemini-2.5-flash';
+  }
+  return clean;
+}
+
+function sanitizeAvailableModelsList(
+  models?: string[],
+  fallback?: string[]
+): string[] {
+  const source = Array.isArray(models) && models.length > 0 ? models : fallback || [];
+  const filtered = Array.from(
+    new Set(
+      source
+        .map((m) => (m || '').trim())
+        .filter((m) => m && !FAKE_MODEL_IDS.has(m.toLowerCase()))
+    )
+  );
+  return filtered.length > 0
+    ? filtered
+    : ['gemini-2.5-flash', 'gemini-2.5-pro', 'gemini-2.0-flash', 'gemma-3-27b-it'];
+}
+
 export const DEFAULT_AI_CONFIG: AIBackendConfig = {
   preset: 'gemini',
   url: '/api/gemini',
@@ -1919,7 +1950,6 @@ export const DEFAULT_AI_CONFIG: AIBackendConfig = {
     'gemini-2.5-flash',
     'gemini-2.5-pro',
     'gemini-2.0-flash',
-    'gemini-3.8-flash',
     'gemma-3-27b-it',
   ],
   savedProviderKeys: {},
@@ -1983,8 +2013,9 @@ export function syncAIConfigProviderCredentials(
     keysMap[prev.preset] = prev.apiKey;
   }
   if (prev.modelName) {
-    modelsMap[prevProviderId] = prev.modelName;
-    modelsMap[prev.preset] = prev.modelName;
+    const cleanPrevModel = sanitizeModelName(prev.modelName, prev.preset);
+    modelsMap[prevProviderId] = cleanPrevModel;
+    modelsMap[prev.preset] = cleanPrevModel;
   }
 
   const nextProviderId = getProviderKeyId(next.preset);
@@ -1993,11 +2024,13 @@ export function syncAIConfigProviderCredentials(
   if (next.preset !== prev.preset) {
     const restoredKey =
       keysMap[nextProviderId] ?? keysMap[next.preset] ?? '';
-    const restoredModel =
+    const restoredModel = sanitizeModelName(
       modelsMap[nextProviderId] ??
-      modelsMap[next.preset] ??
-      presetMeta?.defaultModel ??
-      next.modelName;
+        modelsMap[next.preset] ??
+        presetMeta?.defaultModel ??
+        next.modelName,
+      next.preset
+    );
 
     keysMap[nextProviderId] = restoredKey;
     keysMap[next.preset] = restoredKey;
@@ -2010,22 +2043,30 @@ export function syncAIConfigProviderCredentials(
       ...next,
       apiKey: restoredKey,
       modelName: restoredModel,
+      availableModels: sanitizeAvailableModelsList(
+        next.availableModels,
+        presetMeta?.suggestedModels
+      ),
       savedProviderKeys: keysMap,
       savedProviderModels: modelsMap,
     };
   }
 
+  const cleanNextModel = sanitizeModelName(next.modelName, next.preset);
   keysMap[nextProviderId] = next.apiKey;
   keysMap[next.preset] = next.apiKey;
-  if (next.modelName) {
-    modelsMap[nextProviderId] = next.modelName;
-    modelsMap[next.preset] = next.modelName;
-  }
+  modelsMap[nextProviderId] = cleanNextModel;
+  modelsMap[next.preset] = cleanNextModel;
 
   savePersistedProviderCredentials(keysMap, modelsMap);
 
   return {
     ...next,
+    modelName: cleanNextModel,
+    availableModels: sanitizeAvailableModelsList(
+      next.availableModels,
+      presetMeta?.suggestedModels
+    ),
     savedProviderKeys: keysMap,
     savedProviderModels: modelsMap,
   };
@@ -2412,6 +2453,20 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
   const loreDiskFileNamesRef = useRef<Map<string, string>>(new Map());
   const initialDiskHydrationDoneRef = useRef<boolean>(false);
 
+  // Synchronous state mirrors & serialized disk operation queue to prevent delete/save races
+  const charactersRef = useRef<CharacterCardData[]>(characters);
+  const lorebooksRef = useRef<Lorebook[]>(lorebooks);
+  const activeCharacterIdRef = useRef<string>(activeCharacterId);
+  const activeLorebookIdRef = useRef<string>(activeLorebookId);
+  const diskMutationVersionRef = useRef<number>(0);
+  const diskOpQueueRef = useRef<Promise<unknown>>(Promise.resolve());
+
+  const enqueueDiskOperation = useCallback(<T,>(op: () => Promise<T>): Promise<T> => {
+    const next = diskOpQueueRef.current.then(op, op);
+    diskOpQueueRef.current = next.catch(() => undefined);
+    return next;
+  }, []);
+
   useEffect(() => {
     return () => {
       if (aiTestAbortRef.current) {
@@ -2488,14 +2543,15 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
         setIsAiConnected(result.ok);
 
         if (result.models.length > 0) {
+          const cleanModels = sanitizeAvailableModelsList(result.models);
           setAiConfigState((prev) => {
-            const currentModelValid = result.models.includes(prev.modelName);
-            const preferredDefault = result.models.includes('gemini-2.5-flash')
+            const currentModelValid = cleanModels.includes(prev.modelName);
+            const preferredDefault = cleanModels.includes('gemini-2.5-flash')
               ? 'gemini-2.5-flash'
-              : result.models[0];
+              : cleanModels[0];
             return syncAIConfigProviderCredentials(prev, {
               ...prev,
-              availableModels: result.models,
+              availableModels: cleanModels,
               modelName: currentModelValid ? prev.modelName : preferredDefault,
             });
           });
@@ -2684,9 +2740,13 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
   const applyDiskStateToWorkspace = useCallback(
     async (
       diskState: DiskStateResponse,
-      options?: { isInitialMount?: boolean }
+      options?: { isInitialMount?: boolean; expectedVersion?: number }
     ) => {
       if (!diskState || !diskState.ok) return;
+
+      const isStaleVersion =
+        typeof options?.expectedVersion === 'number' &&
+        options.expectedVersion !== diskMutationVersionRef.current;
 
       if (diskState.resolvedPath || diskState.diskRoot) {
         setDiskResolvedPath(diskState.resolvedPath || diskState.diskRoot);
@@ -2694,6 +2754,10 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
 
       if (Array.isArray(diskState.files)) {
         setDiskFiles(diskState.files);
+      }
+
+      if (isStaleVersion && !options?.isInitialMount) {
+        return;
       }
 
       // 1. Reconstruct Tags & Themes from `./Saves/_tavernsmith_meta.json`
@@ -2751,15 +2815,30 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
 
         if (options?.isInitialMount && meta.aiConfig) {
           const incomingAi = meta.aiConfig;
+          const sanitizedModelsMap: Record<string, string> = {};
           if (
             incomingAi.savedProviderModels &&
             typeof incomingAi.savedProviderModels === 'object'
           ) {
-            saveProviderModelsMap(incomingAi.savedProviderModels);
+            for (const [k, v] of Object.entries(incomingAi.savedProviderModels)) {
+              sanitizedModelsMap[k] = sanitizeModelName(v, incomingAi.preset);
+            }
+            saveProviderModelsMap(sanitizedModelsMap);
           }
+          const cleanPreset = incomingAi.preset || DEFAULT_AI_CONFIG.preset;
+          const presetDefaults = AI_BACKEND_PRESETS.find((p) => p.id === cleanPreset);
           setAiConfigState((prev) => ({
             ...prev,
             ...incomingAi,
+            modelName: sanitizeModelName(incomingAi.modelName, cleanPreset),
+            availableModels: sanitizeAvailableModelsList(
+              incomingAi.availableModels,
+              presetDefaults?.suggestedModels
+            ),
+            savedProviderModels:
+              Object.keys(sanitizedModelsMap).length > 0
+                ? sanitizedModelsMap
+                : prev.savedProviderModels,
             maxTokens: Math.max(4096, incomingAi.maxTokens || 4096),
             apiKey: prev.apiKey,
             savedProviderKeys: prev.savedProviderKeys,
@@ -2802,21 +2881,25 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
         }
       }
       charDiskFileNamesRef.current = nextCharFileNames;
+      charactersRef.current = parsedCharacters;
+      latestWorkspaceRef.current.characters = parsedCharacters;
       setCharacters(parsedCharacters);
       setActiveCharacterId((prevId) => {
+        let nextId = parsedCharacters[0]?.id || '';
         if (prevId && parsedCharacters.some((c) => c.id === prevId)) {
-          return prevId;
-        }
-        if (
+          nextId = prevId;
+        } else if (
           options?.isInitialMount &&
           diskState.meta?.activeCharacterId &&
           parsedCharacters.some(
             (c) => c.id === diskState.meta?.activeCharacterId
           )
         ) {
-          return diskState.meta.activeCharacterId;
+          nextId = diskState.meta.activeCharacterId;
         }
-        return parsedCharacters[0]?.id || '';
+        activeCharacterIdRef.current = nextId;
+        latestWorkspaceRef.current.activeCharacterId = nextId;
+        return nextId;
       });
 
       // 3. Parse `./Saves/Lorebooks/*.json` strictly as `lorebooks[]`
@@ -2848,21 +2931,25 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
         }
       }
       loreDiskFileNamesRef.current = nextLoreFileNames;
+      lorebooksRef.current = parsedLorebooks;
+      latestWorkspaceRef.current.lorebooks = parsedLorebooks;
       setLorebooks(parsedLorebooks);
       setActiveLorebookId((prevId) => {
+        let nextId = parsedLorebooks[0]?.id || '';
         if (prevId && parsedLorebooks.some((l) => l.id === prevId)) {
-          return prevId;
-        }
-        if (
+          nextId = prevId;
+        } else if (
           options?.isInitialMount &&
           diskState.meta?.activeLorebookId &&
           parsedLorebooks.some(
             (l) => l.id === diskState.meta?.activeLorebookId
           )
         ) {
-          return diskState.meta.activeLorebookId;
+          nextId = diskState.meta.activeLorebookId;
         }
-        return parsedLorebooks[0]?.id || '';
+        activeLorebookIdRef.current = nextId;
+        latestWorkspaceRef.current.activeLorebookId = nextId;
+        return nextId;
       });
 
       // 4. Hydrate AES-256-GCM Encrypted Vault from `./Saves/_tavernsmith_vault.enc`
@@ -3063,7 +3150,9 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
   const setCharacter: React.Dispatch<React.SetStateAction<CharacterCardData>> =
     useCallback(
       (updater) => {
+        diskMutationVersionRef.current += 1;
         setCharacters((prev) => {
+          let nextList: CharacterCardData[];
           if (prev.length === 0) {
             const freshBase = createBlankCharacter();
             const next =
@@ -3075,20 +3164,26 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
               isNsfw: autoNsfw,
               modification_date: Math.floor(Date.now() / 1000),
             };
+            activeCharacterIdRef.current = created.id!;
+            latestWorkspaceRef.current.activeCharacterId = created.id!;
             setActiveCharacterId(created.id!);
-            return [created];
+            nextList = [created];
+          } else {
+            nextList = prev.map((c) => {
+              if (c.id !== character.id) return c;
+              const next = typeof updater === 'function' ? updater(c) : updater;
+              const autoNsfw = isCharacterNsfw(next, tags);
+              return {
+                ...next,
+                id: c.id,
+                isNsfw: autoNsfw,
+                modification_date: Math.floor(Date.now() / 1000),
+              };
+            });
           }
-          return prev.map((c) => {
-            if (c.id !== character.id) return c;
-            const next = typeof updater === 'function' ? updater(c) : updater;
-            const autoNsfw = isCharacterNsfw(next, tags);
-            return {
-              ...next,
-              id: c.id,
-              isNsfw: autoNsfw,
-              modification_date: Math.floor(Date.now() / 1000),
-            };
-          });
+          charactersRef.current = nextList;
+          latestWorkspaceRef.current.characters = nextList;
+          return nextList;
         });
       },
       [character.id, tags]
@@ -3135,7 +3230,9 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
   const setLorebook: React.Dispatch<React.SetStateAction<Lorebook>> =
     useCallback(
       (updater) => {
+        diskMutationVersionRef.current += 1;
         setLorebooks((prev) => {
+          let nextList: Lorebook[];
           if (prev.length === 0) {
             const freshBase = createBlankLorebook();
             const next =
@@ -3147,20 +3244,26 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
               isNsfw: autoNsfw,
               modification_date: Math.floor(Date.now() / 1000),
             };
+            activeLorebookIdRef.current = created.id!;
+            latestWorkspaceRef.current.activeLorebookId = created.id!;
             setActiveLorebookId(created.id!);
-            return [created];
+            nextList = [created];
+          } else {
+            nextList = prev.map((l) => {
+              if (l.id !== lorebook.id) return l;
+              const next = typeof updater === 'function' ? updater(l) : updater;
+              const autoNsfw = isLorebookNsfw(next, tags);
+              return {
+                ...next,
+                id: l.id,
+                isNsfw: autoNsfw,
+                modification_date: Math.floor(Date.now() / 1000),
+              };
+            });
           }
-          return prev.map((l) => {
-            if (l.id !== lorebook.id) return l;
-            const next = typeof updater === 'function' ? updater(l) : updater;
-            const autoNsfw = isLorebookNsfw(next, tags);
-            return {
-              ...next,
-              id: l.id,
-              isNsfw: autoNsfw,
-              modification_date: Math.floor(Date.now() / 1000),
-            };
-          });
+          lorebooksRef.current = nextList;
+          latestWorkspaceRef.current.lorebooks = nextList;
+          return nextList;
         });
       },
       [lorebook.id, tags]
@@ -3168,8 +3271,9 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
 
   const createNewCharacter = useCallback(
     (partial?: Partial<CharacterCardData>) => {
+      diskMutationVersionRef.current += 1;
+      const currentChars = charactersRef.current;
       const fresh = createBlankCharacter(partial);
-      const currentChars = latestWorkspaceRef.current.characters;
       const uniqueName = ensureUniqueEntityName(
         fresh.name,
         currentChars.map((c) => c.name || 'New Character'),
@@ -3192,81 +3296,23 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
       if (fresh.id) {
         charDiskFileNamesRef.current.set(fresh.id, uniqueFileName);
       }
-      setCharacters((prev) => {
-        const dupeName = ensureUniqueEntityName(
-          fresh.name,
-          prev.map((c) => c.name || 'New Character'),
-          'New Character'
-        );
-        const finalChar: CharacterCardData =
-          dupeName === fresh.name ? fresh : { ...fresh, name: dupeName };
-        return [finalChar, ...prev];
-      });
+      const nextChars = [fresh, ...currentChars];
+      charactersRef.current = nextChars;
+      latestWorkspaceRef.current.characters = nextChars;
+      activeCharacterIdRef.current = fresh.id!;
+      latestWorkspaceRef.current.activeCharacterId = fresh.id!;
+      setCharacters(nextChars);
       setActiveCharacterId(fresh.id!);
       return fresh.id!;
     },
     [tags]
   );
 
-  // Real Disk Delete & Auto-Rescan for Character (`POST /api/disk/delete`)
-  const deleteCharacter = useCallback(
-    (id: string) => {
-      const target = latestWorkspaceRef.current.characters.find((c) => c.id === id);
-      const diskFileName =
-        target?.savedFileName ||
-        charDiskFileNamesRef.current.get(id) ||
-        (target ? `${sanitizeFilename(target.name)}.json` : '');
-      charDiskFileNamesRef.current.delete(id);
-
-      setCharacters((prev) => {
-        const remaining = prev.filter((c) => c.id !== id);
-        if (remaining.length === 0) {
-          setActiveCharacterId('');
-          return [];
-        }
-        if (latestWorkspaceRef.current.activeCharacterId === id) {
-          setActiveCharacterId(remaining[0].id!);
-        }
-        return remaining;
-      });
-
-      if (diskFileName) {
-        setDiskFiles((prev) =>
-          prev.filter(
-            (f) => !(f.kind === 'character' && f.fileName === diskFileName)
-          )
-        );
-      }
-
-      void fetch('/api/disk/delete', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          folder: 'Characters',
-          fileName: diskFileName || undefined,
-          savedFileName: target?.savedFileName || undefined,
-          name: target?.name || undefined,
-          id,
-          customSavePath: latestWorkspaceRef.current.settings.activeSaveFolder,
-        }),
-      })
-        .then((r) => r.json())
-        .then((diskState: DiskStateResponse) => {
-          if (diskState && diskState.ok) {
-            void applyDiskStateToWorkspace(diskState);
-          }
-        })
-        .catch(() => {
-          // Ignore transient network error
-        });
-    },
-    [applyDiskStateToWorkspace]
-  );
-
   const createNewLorebook = useCallback(
     (partial?: Partial<Lorebook>) => {
+      diskMutationVersionRef.current += 1;
+      const currentBooks = lorebooksRef.current;
       const fresh = createBlankLorebook(partial);
-      const currentBooks = latestWorkspaceRef.current.lorebooks;
       const uniqueName = ensureUniqueEntityName(
         fresh.name,
         currentBooks.map((l) => l.name || 'New World Lorebook'),
@@ -3289,75 +3335,16 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
       if (fresh.id) {
         loreDiskFileNamesRef.current.set(fresh.id, uniqueFileName);
       }
-      setLorebooks((prev) => {
-        const dupeName = ensureUniqueEntityName(
-          fresh.name,
-          prev.map((l) => l.name || 'New World Lorebook'),
-          'New World Lorebook'
-        );
-        const finalBook: Lorebook =
-          dupeName === fresh.name ? fresh : { ...fresh, name: dupeName };
-        return [finalBook, ...prev];
-      });
+      const nextBooks = [fresh, ...currentBooks];
+      lorebooksRef.current = nextBooks;
+      latestWorkspaceRef.current.lorebooks = nextBooks;
+      activeLorebookIdRef.current = fresh.id!;
+      latestWorkspaceRef.current.activeLorebookId = fresh.id!;
+      setLorebooks(nextBooks);
       setActiveLorebookId(fresh.id!);
       return fresh.id!;
     },
     [tags]
-  );
-
-  // Real Disk Delete & Auto-Rescan for Lorebook (`POST /api/disk/delete`)
-  const deleteLorebook = useCallback(
-    (id: string) => {
-      const target = latestWorkspaceRef.current.lorebooks.find((l) => l.id === id);
-      const diskFileName =
-        target?.savedFileName ||
-        loreDiskFileNamesRef.current.get(id) ||
-        (target ? `${sanitizeFilename(target.name)}.json` : '');
-      loreDiskFileNamesRef.current.delete(id);
-
-      setLorebooks((prev) => {
-        const remaining = prev.filter((l) => l.id !== id);
-        if (remaining.length === 0) {
-          setActiveLorebookId('');
-          return [];
-        }
-        if (latestWorkspaceRef.current.activeLorebookId === id) {
-          setActiveLorebookId(remaining[0].id!);
-        }
-        return remaining;
-      });
-
-      if (diskFileName) {
-        setDiskFiles((prev) =>
-          prev.filter(
-            (f) => !(f.kind === 'lorebook' && f.fileName === diskFileName)
-          )
-        );
-      }
-
-      void fetch('/api/disk/delete', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          folder: 'Lorebooks',
-          fileName: diskFileName || undefined,
-          savedFileName: target?.savedFileName || undefined,
-          name: target?.name || undefined,
-          id,
-          customSavePath: latestWorkspaceRef.current.settings.activeSaveFolder,
-        }),
-      })
-        .then((r) => r.json())
-        .then((diskState: DiskStateResponse) => {
-          if (diskState && diskState.ok) {
-            void applyDiskStateToWorkspace(diskState);
-          }
-        })
-        .catch(() => {
-          // Ignore transient network error
-        });
-    },
-    [applyDiskStateToWorkspace]
   );
 
   // Keep a live ref of all workspace state for atomic saves
@@ -3376,6 +3363,10 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
   });
 
   useEffect(() => {
+    charactersRef.current = characters;
+    lorebooksRef.current = lorebooks;
+    activeCharacterIdRef.current = activeCharacterId;
+    activeLorebookIdRef.current = activeLorebookId;
     latestWorkspaceRef.current = {
       characters,
       activeCharacterId,
@@ -3404,24 +3395,22 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
   ]);
 
   /**
-   * Executes a direct disk save (`POST /api/disk/save`) writing:
-   * - Characters strictly to `./Saves/Characters/[SanitizedName].json` (deleting `oldFileName` if renamed)
-   * - Lorebooks strictly to `./Saves/Lorebooks/[SanitizedName].json` (deleting `oldFileName` if renamed)
-   * - Tags, themes, and app settings to `./Saves/_tavernsmith_meta.json`
-   * - AES-256-GCM encrypted API keys to `./Saves/_tavernsmith_vault.enc`
-   * And immediately re-scans `./Saves/` in one atomic round-trip!
+   * Core serialized disk save helper (`POST /api/disk/save`) using the latest synchronous refs
+   * so deletions and renames mirror exact state to `./Saves/` and prune any orphaned `.json` files.
    */
-  const executeDiskSaveAndRescan = useCallback(
+  const runDiskSaveRequest = useCallback(
     async (
       mode: 'manual' | 'autosave' = 'manual',
       overrideState?: {
         characters?: CharacterCardData[];
         lorebooks?: Lorebook[];
-      }
+      },
+      expectedVersion?: number
     ): Promise<{ ok: boolean; message: string }> => {
       const snap = latestWorkspaceRef.current;
-      const charsToSave = overrideState?.characters ?? snap.characters;
-      const booksToSave = overrideState?.lorebooks ?? snap.lorebooks;
+      const charsToSave = overrideState?.characters ?? charactersRef.current;
+      const booksToSave = overrideState?.lorebooks ?? lorebooksRef.current;
+      const versionAtStart = expectedVersion ?? diskMutationVersionRef.current;
 
       if (mode === 'manual') {
         const seenCharNames = new Map<string, string>();
@@ -3529,8 +3518,8 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
         tags: extractCustomUserTags(snap.tags),
         settings: snap.settings,
         aiConfig: stripApiKeysForStorage(snap.aiConfig),
-        activeCharacterId: snap.activeCharacterId,
-        activeLorebookId: snap.activeLorebookId,
+        activeCharacterId: activeCharacterIdRef.current,
+        activeLorebookId: activeLorebookIdRef.current,
       };
 
       let vaultEnvelope = readEncryptedVaultEnvelope();
@@ -3561,8 +3550,12 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
         }
 
         const diskState = (await res.json()) as DiskStateResponse;
-        await applyDiskStateToWorkspace(diskState);
-        setIsDirty(false);
+        await applyDiskStateToWorkspace(diskState, {
+          expectedVersion: versionAtStart,
+        });
+        if (diskMutationVersionRef.current === versionAtStart) {
+          setIsDirty(false);
+        }
 
         return {
           ok: true,
@@ -3576,6 +3569,164 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
       }
     },
     [applyDiskStateToWorkspace]
+  );
+
+  const executeDiskSaveAndRescan = useCallback(
+    async (
+      mode: 'manual' | 'autosave' = 'manual',
+      overrideState?: {
+        characters?: CharacterCardData[];
+        lorebooks?: Lorebook[];
+      }
+    ): Promise<{ ok: boolean; message: string }> => {
+      const versionAtEnqueue = diskMutationVersionRef.current;
+      return enqueueDiskOperation(() =>
+        runDiskSaveRequest(mode, overrideState, versionAtEnqueue)
+      );
+    },
+    [enqueueDiskOperation, runDiskSaveRequest]
+  );
+
+  // Unified Character Delete (updates React state & synchronous refs immediately, deletes on disk, and mirrors exact remaining state)
+  const deleteCharacter = useCallback(
+    (id: string) => {
+      diskMutationVersionRef.current += 1;
+      const opVersion = diskMutationVersionRef.current;
+
+      const currentChars = charactersRef.current;
+      const target = currentChars.find((c) => c.id === id);
+      const diskFileName =
+        target?.savedFileName ||
+        charDiskFileNamesRef.current.get(id) ||
+        (target ? `${sanitizeFilename(target.name)}.json` : '');
+      charDiskFileNamesRef.current.delete(id);
+
+      const remaining = currentChars.filter((c) => c.id !== id);
+      charactersRef.current = remaining;
+      latestWorkspaceRef.current.characters = remaining;
+
+      let nextActiveCharId = activeCharacterIdRef.current;
+      if (remaining.length === 0) {
+        nextActiveCharId = '';
+      } else if (
+        activeCharacterIdRef.current === id ||
+        !remaining.some((c) => c.id === activeCharacterIdRef.current)
+      ) {
+        nextActiveCharId = remaining[0].id!;
+      }
+      activeCharacterIdRef.current = nextActiveCharId;
+      latestWorkspaceRef.current.activeCharacterId = nextActiveCharId;
+
+      setCharacters(remaining);
+      setActiveCharacterId(nextActiveCharId);
+
+      if (diskFileName) {
+        setDiskFiles((prev) =>
+          prev.filter(
+            (f) => !(f.kind === 'character' && f.fileName === diskFileName)
+          )
+        );
+      }
+
+      void enqueueDiskOperation(async () => {
+        try {
+          await fetch('/api/disk/delete', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              folder: 'Characters',
+              fileName: diskFileName || undefined,
+              savedFileName: target?.savedFileName || undefined,
+              name: target?.name || undefined,
+              id,
+              customSavePath: latestWorkspaceRef.current.settings.activeSaveFolder,
+            }),
+          });
+        } catch {
+          // Proceed to authoritative mirrored save even if direct delete encountered an error
+        }
+        await runDiskSaveRequest(
+          'autosave',
+          {
+            characters: charactersRef.current,
+            lorebooks: lorebooksRef.current,
+          },
+          opVersion
+        );
+      });
+    },
+    [enqueueDiskOperation, runDiskSaveRequest]
+  );
+
+  // Unified Lorebook Delete (updates React state & synchronous refs immediately, deletes on disk, and mirrors exact remaining state)
+  const deleteLorebook = useCallback(
+    (id: string) => {
+      diskMutationVersionRef.current += 1;
+      const opVersion = diskMutationVersionRef.current;
+
+      const currentBooks = lorebooksRef.current;
+      const target = currentBooks.find((l) => l.id === id);
+      const diskFileName =
+        target?.savedFileName ||
+        loreDiskFileNamesRef.current.get(id) ||
+        (target ? `${sanitizeFilename(target.name)}.json` : '');
+      loreDiskFileNamesRef.current.delete(id);
+
+      const remaining = currentBooks.filter((l) => l.id !== id);
+      lorebooksRef.current = remaining;
+      latestWorkspaceRef.current.lorebooks = remaining;
+
+      let nextActiveBookId = activeLorebookIdRef.current;
+      if (remaining.length === 0) {
+        nextActiveBookId = '';
+      } else if (
+        activeLorebookIdRef.current === id ||
+        !remaining.some((l) => l.id === activeLorebookIdRef.current)
+      ) {
+        nextActiveBookId = remaining[0].id!;
+      }
+      activeLorebookIdRef.current = nextActiveBookId;
+      latestWorkspaceRef.current.activeLorebookId = nextActiveBookId;
+
+      setLorebooks(remaining);
+      setActiveLorebookId(nextActiveBookId);
+
+      if (diskFileName) {
+        setDiskFiles((prev) =>
+          prev.filter(
+            (f) => !(f.kind === 'lorebook' && f.fileName === diskFileName)
+          )
+        );
+      }
+
+      void enqueueDiskOperation(async () => {
+        try {
+          await fetch('/api/disk/delete', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              folder: 'Lorebooks',
+              fileName: diskFileName || undefined,
+              savedFileName: target?.savedFileName || undefined,
+              name: target?.name || undefined,
+              id,
+              customSavePath: latestWorkspaceRef.current.settings.activeSaveFolder,
+            }),
+          });
+        } catch {
+          // Proceed to authoritative mirrored save even if direct delete encountered an error
+        }
+        await runDiskSaveRequest(
+          'autosave',
+          {
+            characters: charactersRef.current,
+            lorebooks: lorebooksRef.current,
+          },
+          opVersion
+        );
+      });
+    },
+    [enqueueDiskOperation, runDiskSaveRequest]
   );
 
   const saveNow = useCallback(
@@ -3763,14 +3914,14 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
     [characters, lorebooks, tags]
   );
 
-  // Real Disk Delete & Auto-Rescan from Options File List
+  // Unified Disk Delete from Options File List — routes directly through deleteCharacter / deleteLorebook
   const deleteSavedFile = useCallback(
     (fileId: string) => {
       const target =
         diskFiles.find((f) => f.id === fileId) ||
         buildUnifiedSavedFiles(
-          latestWorkspaceRef.current.characters,
-          latestWorkspaceRef.current.lorebooks,
+          charactersRef.current,
+          lorebooksRef.current,
           latestWorkspaceRef.current.themes,
           latestWorkspaceRef.current.tags,
           latestWorkspaceRef.current.settings.activeThemeId,
@@ -3805,76 +3956,82 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
         // Ignore non-JSON preview
       }
 
-      setDiskFiles((prev) => prev.filter((f) => f.id !== fileId));
-
       if (target.kind === 'character') {
-        setCharacters((prev) => {
-          const remaining = prev.filter((c) => {
-            const mappedFile =
-              c.savedFileName ||
-              (c.id ? charDiskFileNamesRef.current.get(c.id) : undefined);
-            if (mappedFile && mappedFile === target.fileName) return false;
-            if (embeddedId && c.id === embeddedId) return false;
-            return true;
-          });
-          if (remaining.length === 0) {
-            setActiveCharacterId('');
-          } else if (
-            !remaining.some(
-              (c) => c.id === latestWorkspaceRef.current.activeCharacterId
-            )
+        const matchingChar = charactersRef.current.find((c) => {
+          const mappedFile =
+            c.savedFileName ||
+            (c.id ? charDiskFileNamesRef.current.get(c.id) : undefined);
+          if (mappedFile && mappedFile === target.fileName) return true;
+          if (embeddedId && c.id === embeddedId) return true;
+          if (
+            embeddedName &&
+            (c.name || '').trim().toLowerCase() === embeddedName.toLowerCase()
           ) {
-            setActiveCharacterId(remaining[0].id!);
+            return true;
           }
-          return remaining;
+          return false;
         });
+
+        if (matchingChar?.id) {
+          deleteCharacter(matchingChar.id);
+          return;
+        }
       } else {
-        setLorebooks((prev) => {
-          const remaining = prev.filter((l) => {
-            const mappedFile =
-              l.savedFileName ||
-              (l.id ? loreDiskFileNamesRef.current.get(l.id) : undefined);
-            if (mappedFile && mappedFile === target.fileName) return false;
-            if (embeddedId && l.id === embeddedId) return false;
-            return true;
-          });
-          if (remaining.length === 0) {
-            setActiveLorebookId('');
-          } else if (
-            !remaining.some(
-              (l) => l.id === latestWorkspaceRef.current.activeLorebookId
-            )
+        const matchingBook = lorebooksRef.current.find((l) => {
+          const mappedFile =
+            l.savedFileName ||
+            (l.id ? loreDiskFileNamesRef.current.get(l.id) : undefined);
+          if (mappedFile && mappedFile === target.fileName) return true;
+          if (embeddedId && l.id === embeddedId) return true;
+          if (
+            embeddedName &&
+            (l.name || '').trim().toLowerCase() === embeddedName.toLowerCase()
           ) {
-            setActiveLorebookId(remaining[0].id!);
+            return true;
           }
-          return remaining;
+          return false;
         });
+
+        if (matchingBook?.id) {
+          deleteLorebook(matchingBook.id);
+          return;
+        }
       }
 
+      // Unattached on-disk file not currently loaded into React state
+      diskMutationVersionRef.current += 1;
+      const opVersion = diskMutationVersionRef.current;
+      setDiskFiles((prev) => prev.filter((f) => f.id !== fileId));
+
       const folder = target.kind === 'lorebook' ? 'Lorebooks' : 'Characters';
-      void fetch('/api/disk/delete', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          folder,
-          fileName: target.fileName,
-          savedFileName: target.fileName,
-          name: embeddedName,
-          id: embeddedId,
-          customSavePath: latestWorkspaceRef.current.settings.activeSaveFolder,
-        }),
-      })
-        .then((r) => r.json())
-        .then((diskState: DiskStateResponse) => {
-          if (diskState && diskState.ok) {
-            void applyDiskStateToWorkspace(diskState);
-          }
-        })
-        .catch(() => {
-          // Ignore network error
-        });
+      void enqueueDiskOperation(async () => {
+        try {
+          await fetch('/api/disk/delete', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              folder,
+              fileName: target.fileName,
+              savedFileName: target.fileName,
+              name: embeddedName,
+              id: embeddedId,
+              customSavePath: latestWorkspaceRef.current.settings.activeSaveFolder,
+            }),
+          });
+        } catch {
+          // Ignore transient network error
+        }
+        await runDiskSaveRequest(
+          'autosave',
+          {
+            characters: charactersRef.current,
+            lorebooks: lorebooksRef.current,
+          },
+          opVersion
+        );
+      });
     },
-    [diskFiles, applyDiskStateToWorkspace]
+    [diskFiles, deleteCharacter, deleteLorebook, enqueueDiskOperation, runDiskSaveRequest]
   );
 
   const requestDeleteCharacter = useCallback((id: string) => {
