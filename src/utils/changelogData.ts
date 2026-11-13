@@ -7,9 +7,25 @@ export interface ChangelogReleaseEntry {
   fileChanges: string[];
 }
 
-export const APP_VERSION = "4.1.0";
+export const APP_VERSION = "4.2.0";
 
 export const CHANGELOG_RELEASES: ChangelogReleaseEntry[] = [
+  {
+    "version": "v4.2.0",
+    "date": "2026-11-13",
+    "title": "Automated release v4.2.0 incorporating 3 updated module(s) (3 files changed, 518 insertions(+), 352 deletions(-)).",
+    "highlights": [
+      "Automated release v4.2.0 incorporating 3 updated module(s) (3 files changed, 518 insertions(+), 352 deletions(-))."
+    ],
+    "fixes": [
+      "Improve disk save logic and state naming (b9bf6d2)"
+    ],
+    "fileChanges": [
+      ".github/workflows/release.yml — Updated GitHub Actions CI/CD & Standalone Release Workflow (+106 / -75 lines)",
+      "src/context/StoreContext.tsx — Updated Workspace State, Auto-Save & Provider Credential Vault (+375 / -193 lines)",
+      "vite.config.ts — Updated Project Configuration & Metadata (+37 / -84 lines)"
+    ]
+  },
   {
     "version": "v4.1.0",
     "date": "2026-11-13",
@@ -277,23 +293,6 @@ export const CHANGELOG_RELEASES: ChangelogReleaseEntry[] = [
     ],
     "fileChanges": [
       "src/context/StoreContext.tsx & src/views/OptionsView.tsx — Unified Save Folder tree & live sync logs"
-    ]
-  },
-  {
-    "version": "v1.0.0",
-    "date": "2026-11-10",
-    "title": "Initial Production Release",
-    "highlights": [
-      "Interactive SillyTavern 2:3 Portrait Uploader & HTML5 Canvas Cropper Modal.",
-      "Pure-browser PNG steganography (chara V2 & ccv3 V3 tEXt chunks) and JSON I/O.",
-      "Synchronized <SmartEditor /> with {{macro}} highlighting, autocomplete, and inline AI Ghost Text.",
-      "Modular DM/GM Stat-Block Builder and 5-Step Character & Lorebook Creation Wizards."
-    ],
-    "fixes": [
-      "Added multi-provider AI scanner and automatic <think> / <reasoning> block stripper."
-    ],
-    "fileChanges": [
-      "src/ — Initial TavernSmith V2/V3 Character & Lorebook IDE architecture"
     ]
   }
 ];

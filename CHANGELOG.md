@@ -2,6 +2,20 @@
 
 All notable changes to **TavernSmith** are documented in this file. This file is synced with the in-app **About & Changelog** modal (`src/utils/changelogData.ts`) and the automated GitHub Release workflows (`.github/workflows/version-update.yml` & `.github/workflows/release.yml`).
 
+## [v4.2.0] - 2026-11-13
+
+### 🚀 Highlights & Feature Additions
+- Automated release v4.2.0 incorporating 3 updated module(s) (3 files changed, 518 insertions(+), 352 deletions(-)).
+
+### 🛠️ Bug Fixes, AI & Stability Improvements
+- Improve disk save logic and state naming (b9bf6d2)
+
+### 📂 Detailed Component & File Changes
+- **Repository Diff Summary**: 3 files changed, 518 insertions(+), 352 deletions(-)
+- `.github/workflows/release.yml — Updated GitHub Actions CI/CD & Standalone Release Workflow (+106 / -75 lines)`
+- `src/context/StoreContext.tsx — Updated Workspace State, Auto-Save & Provider Credential Vault (+375 / -193 lines)`
+- `vite.config.ts — Updated Project Configuration & Metadata (+37 / -84 lines)`
+
 ## [v4.1.0] - 2026-11-13
 
 ### 🚀 Highlights & Feature Additions
