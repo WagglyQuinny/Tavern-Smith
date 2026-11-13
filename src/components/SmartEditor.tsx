@@ -511,7 +511,8 @@ export const SmartEditor: React.FC<SmartEditorProps> = ({
           ctx.aiConfig,
           controller.signal,
           {
-            maxTokens: Math.max(512, ctx.aiConfig.maxTokens || 1024),
+            isGhostText: true,
+            maxTokens: Math.max(8192, ctx.aiConfig.maxTokens || 8192),
             temperature: ctx.aiConfig.temperature,
             activeTheme: ctx.activeTheme,
             allTags: ctx.tags,

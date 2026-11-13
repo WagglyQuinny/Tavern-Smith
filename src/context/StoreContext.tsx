@@ -37,8 +37,11 @@ import {
 } from '../utils/cardIO';
 import {
   AI_BACKEND_PRESETS,
+  buildMergedGeminiModelList,
   ConnectionTestResult,
+  GEMINI_PRIORITY_MODELS,
   getProviderKeyId,
+  isDeprecatedGeminiModel,
   testBackendConnection,
 } from '../services/aiService';
 import {
@@ -1905,53 +1908,45 @@ export const DEFAULT_CHARACTER: CharacterCardData = {
   },
 };
 
-const FAKE_MODEL_IDS = new Set(['gemini-3.8-flash', 'gemini-4-hydrogen']);
-
 function sanitizeModelName(rawModel?: string, preset?: AIPresetId): string {
-  const clean = (rawModel || '').trim();
-  if (!clean || FAKE_MODEL_IDS.has(clean.toLowerCase())) {
-    if (!preset || preset === 'gemini') {
-      return 'gemini-2.5-flash';
+  const clean = (rawModel || '').trim().replace(/^models\//i, '');
+  const isGemini = !preset || preset === 'gemini';
+  if (!clean || (isGemini && isDeprecatedGeminiModel(clean))) {
+    if (isGemini) {
+      return 'gemini-3.8-flash';
     }
     const found = AI_BACKEND_PRESETS.find((p) => p.id === preset);
-    return found?.defaultModel || 'gemini-2.5-flash';
+    return found?.defaultModel || 'gemini-3.8-flash';
   }
   return clean;
 }
 
 function sanitizeAvailableModelsList(
   models?: string[],
-  fallback?: string[]
+  fallback?: string[],
+  preset?: AIPresetId
 ): string[] {
   const source = Array.isArray(models) && models.length > 0 ? models : fallback || [];
+  if (!preset || preset === 'gemini') {
+    return buildMergedGeminiModelList(source);
+  }
   const filtered = Array.from(
-    new Set(
-      source
-        .map((m) => (m || '').trim())
-        .filter((m) => m && !FAKE_MODEL_IDS.has(m.toLowerCase()))
-    )
+    new Set(source.map((m) => (m || '').trim()).filter(Boolean))
   );
-  return filtered.length > 0
-    ? filtered
-    : ['gemini-2.5-flash', 'gemini-2.5-pro', 'gemini-2.0-flash', 'gemma-3-27b-it'];
+  return filtered.length > 0 ? filtered : [...GEMINI_PRIORITY_MODELS];
 }
 
 export const DEFAULT_AI_CONFIG: AIBackendConfig = {
   preset: 'gemini',
   url: '/api/gemini',
   apiKey: '',
-  modelName: 'gemini-2.5-flash',
+  modelName: 'gemini-3.8-flash',
   compatibilityFormat: 'auto',
   temperature: 0.78,
-  maxTokens: 4096,
+  maxTokens: 16384,
   ghostTextEnabled: true,
   debounceMs: 650,
-  availableModels: [
-    'gemini-2.5-flash',
-    'gemini-2.5-pro',
-    'gemini-2.0-flash',
-    'gemma-3-27b-it',
-  ],
+  availableModels: [...GEMINI_PRIORITY_MODELS],
   savedProviderKeys: {},
   savedProviderModels: {},
 };
@@ -2045,7 +2040,8 @@ export function syncAIConfigProviderCredentials(
       modelName: restoredModel,
       availableModels: sanitizeAvailableModelsList(
         next.availableModels,
-        presetMeta?.suggestedModels
+        presetMeta?.suggestedModels,
+        next.preset
       ),
       savedProviderKeys: keysMap,
       savedProviderModels: modelsMap,
@@ -2065,7 +2061,8 @@ export function syncAIConfigProviderCredentials(
     modelName: cleanNextModel,
     availableModels: sanitizeAvailableModelsList(
       next.availableModels,
-      presetMeta?.suggestedModels
+      presetMeta?.suggestedModels,
+      next.preset
     ),
     savedProviderKeys: keysMap,
     savedProviderModels: modelsMap,
@@ -2543,11 +2540,15 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
         setIsAiConnected(result.ok);
 
         if (result.models.length > 0) {
-          const cleanModels = sanitizeAvailableModelsList(result.models);
           setAiConfigState((prev) => {
+            const cleanModels = sanitizeAvailableModelsList(
+              result.models,
+              undefined,
+              prev.preset
+            );
             const currentModelValid = cleanModels.includes(prev.modelName);
-            const preferredDefault = cleanModels.includes('gemini-2.5-flash')
-              ? 'gemini-2.5-flash'
+            const preferredDefault = cleanModels.includes('gemini-3.8-flash')
+              ? 'gemini-3.8-flash'
               : cleanModels[0];
             return syncAIConfigProviderCredentials(prev, {
               ...prev,
@@ -2815,17 +2816,19 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
 
         if (options?.isInitialMount && meta.aiConfig) {
           const incomingAi = meta.aiConfig;
+          const cleanPreset = incomingAi.preset || DEFAULT_AI_CONFIG.preset;
           const sanitizedModelsMap: Record<string, string> = {};
           if (
             incomingAi.savedProviderModels &&
             typeof incomingAi.savedProviderModels === 'object'
           ) {
             for (const [k, v] of Object.entries(incomingAi.savedProviderModels)) {
-              sanitizedModelsMap[k] = sanitizeModelName(v, incomingAi.preset);
+              const mapPreset =
+                k === 'google' || k === 'gemini' ? 'gemini' : cleanPreset;
+              sanitizedModelsMap[k] = sanitizeModelName(v, mapPreset);
             }
             saveProviderModelsMap(sanitizedModelsMap);
           }
-          const cleanPreset = incomingAi.preset || DEFAULT_AI_CONFIG.preset;
           const presetDefaults = AI_BACKEND_PRESETS.find((p) => p.id === cleanPreset);
           setAiConfigState((prev) => ({
             ...prev,
@@ -2833,13 +2836,14 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
             modelName: sanitizeModelName(incomingAi.modelName, cleanPreset),
             availableModels: sanitizeAvailableModelsList(
               incomingAi.availableModels,
-              presetDefaults?.suggestedModels
+              presetDefaults?.suggestedModels,
+              cleanPreset
             ),
             savedProviderModels:
               Object.keys(sanitizedModelsMap).length > 0
                 ? sanitizedModelsMap
                 : prev.savedProviderModels,
-            maxTokens: Math.max(4096, incomingAi.maxTokens || 4096),
+            maxTokens: Math.max(8192, incomingAi.maxTokens || 16384),
             apiKey: prev.apiKey,
             savedProviderKeys: prev.savedProviderKeys,
           }));

@@ -43,10 +43,12 @@ import {
 } from '../context/StoreContext';
 import {
   AI_BACKEND_PRESETS,
+  buildMergedGeminiModelList,
   COMPATIBILITY_FORMAT_LABELS,
   detectModelCompatibilityFormat,
   doesBackendSupportVision,
   getProviderKeyId,
+  isDeprecatedGeminiModel,
 } from '../services/aiService';
 import {
   decryptProviderKeysFromVault,
@@ -138,14 +140,20 @@ export const OptionsView: React.FC = () => {
   );
 
   const allSelectableModels = useMemo(() => {
-    const fakeIds = new Set(['gemini-3.8-flash', 'gemini-4-hydrogen']);
-    const combined = Array.from(
+    const rawCombined = Array.from(
       new Set([
         ...(aiConfig.availableModels || []),
         ...(currentPresetMeta.suggestedModels || []),
         ...(aiConfig.modelName ? [aiConfig.modelName] : []),
       ])
-    ).filter((m) => Boolean(m) && !fakeIds.has(m.toLowerCase()));
+    ).filter(Boolean);
+
+    const combined =
+      aiConfig.preset === 'gemini'
+        ? buildMergedGeminiModelList(
+            rawCombined.filter((m) => !isDeprecatedGeminiModel(m))
+          )
+        : rawCombined;
 
     const q = modelSearchQuery.trim().toLowerCase();
     if (!q) return combined;
@@ -153,6 +161,7 @@ export const OptionsView: React.FC = () => {
   }, [
     aiConfig.availableModels,
     aiConfig.modelName,
+    aiConfig.preset,
     currentPresetMeta.suggestedModels,
     modelSearchQuery,
   ]);

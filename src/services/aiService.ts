@@ -72,6 +72,35 @@ export interface AIPresetMeta {
   suggestedModels: string[];
 }
 
+export const GEMINI_PRIORITY_MODELS: readonly string[] = [
+  'gemini-4-hydrogen',
+  'gemini-4-argon',
+  'gemini-4-carbon',
+  'gemini-3.8-flash',
+  'gemini-3.6-flash',
+  'gemini-3.5-flash-lite',
+  'gemini-3.5-flash',
+  'gemini-3.1-pro-preview',
+  'gemma-4-31b-it',
+  'gemma-4-26b-a4b-it',
+];
+
+export function isDeprecatedGeminiModel(rawModel?: string): boolean {
+  const m = (rawModel || '').trim().replace(/^models\//i, '').toLowerCase();
+  if (!m) return false;
+  return (
+    m === 'gemini-pro' ||
+    m.startsWith('gemini-1.') ||
+    m.startsWith('gemini-2.0') ||
+    m.startsWith('gemini-2.5')
+  );
+}
+
+export function isGemini38Or4Model(rawModel?: string): boolean {
+  const m = (rawModel || '').trim().replace(/^models\//i, '').toLowerCase();
+  return m.startsWith('gemini-4') || m.startsWith('gemini-3.8');
+}
+
 export const AI_BACKEND_PRESETS: AIPresetMeta[] = [
   {
     id: 'lmstudio',
@@ -131,16 +160,11 @@ export const AI_BACKEND_PRESETS: AIPresetMeta[] = [
     label: 'Google Gemini',
     group: 'Cloud API',
     defaultUrl: 'https://generativelanguage.googleapis.com/v1beta/openai',
-    defaultModel: 'gemini-2.5-flash',
+    defaultModel: 'gemini-3.8-flash',
     description:
       'Google Gemini API. Calls Google Generative Language REST API directly when a Gemini API key is provided, or /api/gemini when left empty.',
     requiresKey: true,
-    suggestedModels: [
-      'gemini-2.5-flash',
-      'gemini-2.5-pro',
-      'gemini-2.0-flash',
-      'gemma-3-27b-it',
-    ],
+    suggestedModels: [...GEMINI_PRIORITY_MODELS],
   },
   {
     id: 'xai_grok',
@@ -709,37 +733,40 @@ export function resolveEffectiveMaxTokens(
 }
 
 /**
- * Preserves the exact user-selected Gemini / Gemma model ID, mapping empty values
- * or fake/obsolete aliases cleanly to gemini-2.5-flash.
+ * Preserves the selected Gemini / Gemma 4 model ID, mapping empty values or
+ * deprecated 1.x / 2.0 / 2.5 aliases to `gemini-3.8-flash`.
  */
-function normalizeGeminiModelId(
-  rawModel?: string,
-  _hasCustomKey = false
-): string {
+function normalizeGeminiModelId(rawModel?: string): string {
   const m = (rawModel || '').trim().replace(/^models\//i, '');
-  if (!m) {
-    return 'gemini-2.5-flash';
-  }
-  const lower = m.toLowerCase();
-  if (
-    lower === 'gemini-pro' ||
-    lower === 'gemini-1.0-pro' ||
-    lower.startsWith('gemini-1.') ||
-    lower === 'gemini-3.8-flash' ||
-    lower === 'gemini-4-hydrogen'
-  ) {
-    return 'gemini-2.5-flash';
-  }
-  if (lower === 'gemini-3.1-flash-lite-preview') {
-    return 'gemini-3.1-flash-lite';
+  if (!m || isDeprecatedGeminiModel(m)) {
+    return 'gemini-3.8-flash';
   }
   return m;
 }
 
 /**
+ * Merges live scanned Gemini/Gemma models with the prioritized Gemini 4 / 3.8 / Gemma 4 catalog,
+ * filtering out deprecated 1.5 / 2.0 / 2.5 models.
+ */
+export function buildMergedGeminiModelList(scannedModels: string[] = []): string[] {
+  const filteredScanned = scannedModels
+    .map((id) => id.trim().replace(/^models\//i, ''))
+    .filter(
+      (id) =>
+        id &&
+        (id.startsWith('gemini-') || id.startsWith('gemma-')) &&
+        !id.includes('embedding') &&
+        !isDeprecatedGeminiModel(id)
+    );
+
+  return Array.from(new Set([...GEMINI_PRIORITY_MODELS, ...filteredScanned]));
+}
+
+/**
  * Live Model Scanner:
  * - For Google Gemini with a user API key: calls Google's direct REST API
- *   (`https://generativelanguage.googleapis.com/v1beta/models?key=...`) and NEVER falls back to `/api/gemini`.
+ *   (`https://generativelanguage.googleapis.com/v1beta/models?pageSize=1000&key=...`, following `nextPageToken`)
+ *   and merges with the Gemini 4 / 3.8 / Gemma 4 priority catalog.
  * - For Google Gemini without an API key: queries `/api/gemini/models`.
  * - For other providers: queries `/v1/models`, Ollama `/api/tags`, and KoboldCPP `/api/v1/model`.
  */
@@ -752,65 +779,69 @@ export async function fetchModels(
   // 1. Google Gemini backend
   if (isGeminiBackend(config)) {
     if (effectiveKey) {
-      let directRes: Response;
-      try {
-        directRes = await fetch(
-          `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(effectiveKey)}`,
-          {
+      const scannedIds: string[] = [];
+      let pageToken = '';
+      let pageCount = 0;
+
+      do {
+        const pageParam = pageToken
+          ? `&pageToken=${encodeURIComponent(pageToken)}`
+          : '';
+        const url = `https://generativelanguage.googleapis.com/v1beta/models?pageSize=1000${pageParam}&key=${encodeURIComponent(effectiveKey)}`;
+
+        let directRes: Response;
+        try {
+          directRes = await fetch(url, {
             method: 'GET',
             headers: { Accept: 'application/json' },
             signal: abortSignal,
-          }
-        );
-      } catch (err: unknown) {
-        if (err instanceof DOMException && err.name === 'AbortError') throw err;
-        throw new AIServiceError(
-          `Could not reach Google Gemini REST API (generativelanguage.googleapis.com): ${err instanceof Error ? err.message : 'Network error'}`,
-          { isCorsOrNetworkError: true }
-        );
-      }
+          });
+        } catch (err: unknown) {
+          if (err instanceof DOMException && err.name === 'AbortError') throw err;
+          throw new AIServiceError(
+            `Could not reach Google Gemini REST API (generativelanguage.googleapis.com): ${err instanceof Error ? err.message : 'Network error'}`,
+            { isCorsOrNetworkError: true }
+          );
+        }
 
-      const directData = await directRes.json().catch(() => ({}));
-      if (!directRes.ok) {
-        throw new AIServiceError(
-          directData?.error?.message ||
-            `Gemini API returned HTTP ${directRes.status} (${directRes.statusText || 'Authentication or key error'})`,
-          { statusCode: directRes.status }
-        );
-      }
+        const directData = await directRes.json().catch(() => ({}));
+        if (!directRes.ok) {
+          throw new AIServiceError(
+            directData?.error?.message ||
+              `Gemini API returned HTTP ${directRes.status} (${directRes.statusText || 'Authentication or key error'})`,
+            { statusCode: directRes.status }
+          );
+        }
 
-      if (Array.isArray(directData?.models)) {
-        const list = directData.models
-          .filter((m: { name?: string; supportedGenerationMethods?: string[] }) => {
-            const id = (m.name || '').replace(/^models\//, '');
+        if (Array.isArray(directData?.models)) {
+          for (const m of directData.models as Array<{
+            name?: string;
+            supportedGenerationMethods?: string[];
+          }>) {
+            const id = (m.name || '').replace(/^models\//, '').trim();
             const supportsGen =
               !Array.isArray(m.supportedGenerationMethods) ||
               m.supportedGenerationMethods.includes('generateContent');
-            return (
+            if (
               supportsGen &&
               id &&
               (id.startsWith('gemini-') || id.startsWith('gemma-')) &&
-              !id.includes('embedding')
-            );
-          })
-          .map((m: { name?: string }) => (m.name || '').replace(/^models\//, ''));
-
-        if (list.length > 0) {
-          // Order preferred flash/pro models cleanly while keeping all real Google models
-          const preferredOrder = [
-            'gemini-2.5-flash',
-            'gemini-2.5-pro',
-            'gemini-2.0-flash',
-          ];
-          const sorted = [
-            ...preferredOrder.filter((p) => list.includes(p)),
-            ...list.filter((id: string) => !preferredOrder.includes(id)),
-          ];
-          return Array.from(new Set(sorted));
+              !id.includes('embedding') &&
+              !isDeprecatedGeminiModel(id)
+            ) {
+              scannedIds.push(id);
+            }
+          }
         }
-      }
 
-      return ['gemini-2.5-flash', 'gemini-2.5-pro', 'gemini-2.0-flash'];
+        pageToken =
+          typeof directData?.nextPageToken === 'string'
+            ? directData.nextPageToken.trim()
+            : '';
+        pageCount += 1;
+      } while (pageToken && pageCount < 10);
+
+      return buildMergedGeminiModelList(scannedIds);
     }
 
     // Only call /api/gemini/models when the user did NOT enter a Gemini API key
@@ -828,14 +859,9 @@ export async function fetchModels(
       );
     }
     if (Array.isArray(geminiData?.models) && geminiData.models.length > 0) {
-      return geminiData.models;
+      return buildMergedGeminiModelList(geminiData.models);
     }
-    return [
-      'gemini-2.5-flash',
-      'gemini-2.5-pro',
-      'gemini-2.0-flash',
-      'gemma-3-27b-it',
-    ];
+    return [...GEMINI_PRIORITY_MODELS];
   }
 
   const { rootUrl, v1Url } = normalizeBaseUrl(config.url);
@@ -1022,6 +1048,11 @@ export interface GenerateCompletionOptions {
   maxTokens?: number;
   temperature?: number;
   stop?: string[];
+  /**
+   * True when called from SmartEditor's paused-typing bottom suggestion pill.
+   * Uses `thinkingLevel: "LOW"` and `maxOutputTokens: 8192` on Gemini 3.8 / 4.
+   */
+  isGhostText?: boolean;
   activeTheme?: ContextTheme;
   allTags?: TagDefinition[];
   characterTags?: string[];
@@ -1205,11 +1236,15 @@ export async function generateCompletionDetailed(
   // Whenever the user provides a Gemini API key, call Google's direct REST API (`generateContent`) directly!
   // NEVER fall through to `/api/gemini/generate` (which throws HTTP 501/403 when no server key exists).
   if (isGeminiBackend(config)) {
-    const hasCustomKey = Boolean(effectiveKey);
-    const geminiModel = normalizeGeminiModelId(config.modelName, hasCustomKey);
+    const geminiModel = normalizeGeminiModelId(config.modelName);
 
     if (effectiveKey) {
-      const isGemmaModel = geminiModel.toLowerCase().includes('gemma');
+      const modelLower = geminiModel.toLowerCase();
+      const isGemmaModel = modelLower.includes('gemma');
+      const is38Or4 = isGemini38Or4Model(geminiModel);
+      const isHydrogen = modelLower.includes('gemini-4-hydrogen');
+      const isGhostText = Boolean(options?.isGhostText);
+
       const userParts: Array<Record<string, unknown>> = isGemmaModel
         ? [
             {
@@ -1227,66 +1262,90 @@ export async function generateCompletionDetailed(
         });
       }
 
-      const directBody = isGemmaModel
-        ? {
-            contents: [
-              {
-                role: 'user',
-                parts: userParts,
-              },
-            ],
-            generationConfig: {
-              temperature,
-              maxOutputTokens: maxTokens,
-              ...(options?.stop && options.stop.length > 0
-                ? { stopSequences: options.stop }
-                : {}),
-            },
-          }
-        : {
-            systemInstruction: {
-              parts: [{ text: fullSystemPrompt }],
-            },
-            contents: [
-              {
-                role: 'user',
-                parts: userParts,
-              },
-            ],
-            generationConfig: {
-              temperature,
-              maxOutputTokens: maxTokens,
-              ...(options?.stop && options.stop.length > 0
-                ? { stopSequences: options.stop }
-                : {}),
-            },
-          };
+      // Gemini 3.8 / 4 use unified maxOutputTokens (thinking + output combined) and `thinkingLevel`
+      // (`LOW` for Ghost Text, `MEDIUM` for AI Assist/Wizard). Never send `thinkingBudget` or `"MINIMAL"`.
+      const geminiMaxOutputTokens = is38Or4
+        ? isGhostText
+          ? 8192
+          : 16384
+        : Math.max(8192, maxTokens);
 
-      let directRes: Response;
-      try {
-        directRes = await fetch(
-          `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(geminiModel)}:generateContent?key=${encodeURIComponent(effectiveKey)}`,
-          {
+      const buildGenerationConfig = (includeThinkingConfig: boolean) => {
+        const genCfg: Record<string, unknown> = {
+          maxOutputTokens: geminiMaxOutputTokens,
+        };
+        if (!isHydrogen) {
+          genCfg.temperature = temperature;
+        }
+        if (options?.stop && options.stop.length > 0) {
+          genCfg.stopSequences = options.stop;
+        }
+        if (includeThinkingConfig && is38Or4) {
+          genCfg.thinkingConfig = {
+            thinkingLevel: isGhostText ? 'LOW' : 'MEDIUM',
+          };
+        }
+        return genCfg;
+      };
+
+      const buildDirectBody = (includeThinkingConfig: boolean) =>
+        isGemmaModel
+          ? {
+              contents: [
+                {
+                  role: 'user',
+                  parts: userParts,
+                },
+              ],
+              generationConfig: buildGenerationConfig(includeThinkingConfig),
+            }
+          : {
+              systemInstruction: {
+                parts: [{ text: fullSystemPrompt }],
+              },
+              contents: [
+                {
+                  role: 'user',
+                  parts: userParts,
+                },
+              ],
+              generationConfig: buildGenerationConfig(includeThinkingConfig),
+            };
+
+      const endpointUrl = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(geminiModel)}:generateContent?key=${encodeURIComponent(effectiveKey)}`;
+
+      const sendDirectRequest = async (includeThinkingConfig: boolean) => {
+        let res: Response;
+        try {
+          res = await fetch(endpointUrl, {
             method: 'POST',
             headers: {
               'Content-Type': 'application/json',
               Accept: 'application/json',
             },
             signal: abortSignal,
-            body: JSON.stringify(directBody),
+            body: JSON.stringify(buildDirectBody(includeThinkingConfig)),
+          });
+        } catch (networkErr: unknown) {
+          if (networkErr instanceof DOMException && networkErr.name === 'AbortError') {
+            throw networkErr;
           }
-        );
-      } catch (networkErr: unknown) {
-        if (networkErr instanceof DOMException && networkErr.name === 'AbortError') {
-          throw networkErr;
+          throw new AIServiceError(
+            `Network error reaching Google Gemini REST API: ${networkErr instanceof Error ? networkErr.message : 'Request blocked'}`,
+            { isCorsOrNetworkError: true }
+          );
         }
-        throw new AIServiceError(
-          `Network error reaching Google Gemini REST API: ${networkErr instanceof Error ? networkErr.message : 'Request blocked'}`,
-          { isCorsOrNetworkError: true }
-        );
+        const data = await res.json().catch(() => ({}));
+        return { res, data };
+      };
+
+      let { res: directRes, data: directData } = await sendDirectRequest(is38Or4);
+
+      // Automatic fallback: if any model rejects `thinkingConfig` with HTTP 400, retry once WITHOUT `thinkingConfig`
+      if (directRes.status === 400 && is38Or4) {
+        ({ res: directRes, data: directData } = await sendDirectRequest(false));
       }
 
-      const directData = await directRes.json().catch(() => ({}));
       if (!directRes.ok) {
         throw new AIServiceError(
           directData?.error?.message ||
