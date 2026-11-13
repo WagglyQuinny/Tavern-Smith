@@ -7,9 +7,23 @@ export interface ChangelogReleaseEntry {
   fileChanges: string[];
 }
 
-export const APP_VERSION = "3.0.2";
+export const APP_VERSION = "3.1.0";
 
 export const CHANGELOG_RELEASES: ChangelogReleaseEntry[] = [
+  {
+    "version": "v3.1.0",
+    "date": "2026-11-13",
+    "title": "Automated release v3.1.0 incorporating 1 updated module(s) (1 file changed, 5 insertions(+), 1 deletion(-)).",
+    "highlights": [
+      "Automated release v3.1.0 incorporating 1 updated module(s) (1 file changed, 5 insertions(+), 1 deletion(-))."
+    ],
+    "fixes": [
+      "Disable HMR and file watching in dev server (ddda2ec)"
+    ],
+    "fileChanges": [
+      "server.ts — Updated Project Configuration & Metadata (+5 / -1 lines)"
+    ]
+  },
   {
     "version": "v3.0.2",
     "date": "2026-11-12",

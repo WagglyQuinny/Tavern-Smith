@@ -2,6 +2,18 @@
 
 All notable changes to **TavernSmith** are documented in this file. This file is synced with the in-app **About & Changelog** modal (`src/utils/changelogData.ts`) and the automated GitHub Release workflows (`.github/workflows/version-update.yml` & `.github/workflows/release.yml`).
 
+## [v3.1.0] - 2026-11-13
+
+### 🚀 Highlights & Feature Additions
+- Automated release v3.1.0 incorporating 1 updated module(s) (1 file changed, 5 insertions(+), 1 deletion(-)).
+
+### 🛠️ Bug Fixes, AI & Stability Improvements
+- Disable HMR and file watching in dev server (ddda2ec)
+
+### 📂 Detailed Component & File Changes
+- **Repository Diff Summary**: 1 file changed, 5 insertions(+), 1 deletion(-)
+- `server.ts — Updated Project Configuration & Metadata (+5 / -1 lines)`
+
 ## [v3.0.2] - 2026-11-12
 
 ### 🚀 Highlights & Feature Additions
