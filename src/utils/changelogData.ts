@@ -7,9 +7,23 @@ export interface ChangelogReleaseEntry {
   fileChanges: string[];
 }
 
-export const APP_VERSION = "3.1.0";
+export const APP_VERSION = "4.0.0";
 
 export const CHANGELOG_RELEASES: ChangelogReleaseEntry[] = [
+  {
+    "version": "v4.0.0",
+    "date": "2026-11-13",
+    "title": "Automated release v4.0.0 incorporating 1 updated module(s).",
+    "highlights": [
+      "Automated release v4.0.0 incorporating 1 updated module(s)."
+    ],
+    "fixes": [
+      "Verified TypeScript compilation, zero-crash sandbox storage guards, and cross-platform standalone launcher compatibility."
+    ],
+    "fileChanges": [
+      "package.json & CHANGELOG.md — Version bump and release metadata sync"
+    ]
+  },
   {
     "version": "v3.1.0",
     "date": "2026-11-13",

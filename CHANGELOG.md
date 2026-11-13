@@ -2,6 +2,17 @@
 
 All notable changes to **TavernSmith** are documented in this file. This file is synced with the in-app **About & Changelog** modal (`src/utils/changelogData.ts`) and the automated GitHub Release workflows (`.github/workflows/version-update.yml` & `.github/workflows/release.yml`).
 
+## [v4.0.0] - 2026-11-13
+
+### 🚀 Highlights & Feature Additions
+- Automated release v4.0.0 incorporating 1 updated module(s).
+
+### 🛠️ Bug Fixes, AI & Stability Improvements
+- Verified TypeScript compilation, zero-crash sandbox storage guards, and cross-platform standalone launcher compatibility.
+
+### 📂 Detailed Component & File Changes
+- `package.json & CHANGELOG.md — Version bump and release metadata sync`
+
 ## [v3.1.0] - 2026-11-13
 
 ### 🚀 Highlights & Feature Additions
