@@ -2,6 +2,33 @@
 
 All notable changes to **TavernSmith** are documented in this file. This file is synced with the in-app **About & Changelog** modal (`src/utils/changelogData.ts`) and the automated GitHub Release workflows (`.github/workflows/version-update.yml` & `.github/workflows/release.yml`).
 
+## [v4.0.1] - 2026-11-13
+
+### 🚀 Highlights & Feature Additions
+- Reorganize And add tags
+- Reorganize and expand tag categories (1a787ab)
+- Add multimodal vision support and API key auth (42a54bf)
+
+### 🛠️ Bug Fixes, AI & Stability Improvements
+- Verified TypeScript compilation, zero-crash sandbox storage guards, and cross-platform standalone launcher compatibility.
+
+### 📂 Detailed Component & File Changes
+- **Repository Diff Summary**: 14 files changed, 3096 insertions(+), 234 deletions(-)
+- `server.ts — Updated Project Configuration & Metadata (+78 / -15 lines)`
+- `src/components/CharacterEditor.tsx — Updated Character Card Workbench & Wizard (+294 / -33 lines)`
+- `src/components/LorebookEditor.tsx — Updated Lorebook / World Info Workbench & Wizard (+215 / -34 lines)`
+- `src/components/SidebarNav.tsx — Updated UI Workbench Component (+6 / -6 lines)`
+- `src/components/SmartEditor.tsx — Updated Synchronized Macro & Ghost-Text SmartEditor (+384 / -5 lines)`
+- `src/components/TagSelector.tsx — Updated Tag & Sub-Tag Selector Bar (+6 / -2 lines)`
+- `src/context/StoreContext.tsx — Updated Workspace State, Auto-Save & Provider Credential Vault (+505 / -41 lines)`
+- `src/services/aiService.ts — Updated AI Backend Service & Model Format Engine (+512 / -56 lines)`
+- `src/types.ts — Updated Project Configuration & Metadata (+6 / -0 lines)`
+- `src/utils/cardIO.ts — Updated PNG tEXt Chunk & JSON Import/Export Parser (+78 / -0 lines)`
+- `src/utils/cryptoVault.ts — Added Core Utility Module (+535 / -0 lines)`
+- `src/views/OptionsView.tsx — Updated Options, AI Scanner & Save Folder Manager (+429 / -38 lines)`
+- `src/views/ThemesAndTagsView.tsx — Updated Context Themes & Global Tag/Sub-Tag Manager (+26 / -3 lines)`
+- `vite.config.ts — Updated Project Configuration & Metadata (+22 / -1 lines)`
+
 ## [v4.0.0] - 2026-11-13
 
 ### 🚀 Highlights & Feature Additions
