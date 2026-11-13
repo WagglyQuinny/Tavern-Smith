@@ -72,28 +72,28 @@ import {
 const WIZARD_STEPS = [
   {
     step: 1,
-    title: 'Concept & Identity',
-    subtitle: 'Portrait, name, tags & 1-click AI concept generator',
+    title: 'Identity & Tags',
+    subtitle: 'Portrait, name, tags & AI starter generator',
   },
   {
     step: 2,
-    title: 'Description & Persona',
-    subtitle: 'Physical traits, backstory & behavioral psychology',
+    title: 'Description & Personality',
+    subtitle: 'Appearance, backstory, voice & quirks',
   },
   {
     step: 3,
     title: 'Scenario & Greetings',
-    subtitle: 'Opening scene, First Message & Alternate Greetings',
+    subtitle: 'Starting scene, first message & alternates',
   },
   {
     step: 4,
-    title: 'Examples & System',
-    subtitle: '<START> dialogue calibration & UJB instructions',
+    title: 'Dialogue & Instructions',
+    subtitle: 'Example chats & extra AI rules',
   },
   {
     step: 5,
-    title: 'DM StatBlock & Review',
-    subtitle: 'Dynamic RPG/status tracker & 1-click compiler',
+    title: 'Stat Tracker & Review',
+    subtitle: 'Optional RPG stats & final token check',
   },
 ];
 
@@ -934,7 +934,7 @@ export const CharacterEditor: React.FC = () => {
     }));
 
     setCompiledBanner(
-      'Compiled DM Stat Tracker rules into post_history_instructions and injected starting Status Block into first_mes.'
+      'Added your Stat Tracker rules to Post-History Instructions and your starting stats to the First Message.'
     );
     scheduleTimer(() => setCompiledBanner(null), 4000);
   };
@@ -1084,7 +1084,7 @@ export const CharacterEditor: React.FC = () => {
               }`}
             >
               <span className="leading-tight">
-                👁️ Use Portrait as Visual Context (~260 tok)
+                👁️ Include Portrait in AI Prompt (~260 tok)
               </span>
               {usePortraitAsVisionContext && (
                 <Check
@@ -1099,7 +1099,7 @@ export const CharacterEditor: React.FC = () => {
               disabled={isDescribingPortrait}
               onClick={handleDescribeAppearanceFromPortraitCard}
               style={{ borderColor: 'var(--theme-accent)' }}
-              title="Inspect Character Portrait (~260 tokens) and generate/append physical appearance & attire into the Description field"
+              title="Have the AI look at your portrait and write or expand the character's appearance in Description"
               className="theme-hover-outline w-full flex items-center justify-center gap-1.5 rounded-lg border bg-white dark:bg-slate-900 px-2.5 py-1.5 text-[11px] font-semibold text-slate-900 dark:text-white disabled:opacity-50 cursor-pointer"
             >
               {isDescribingPortrait ? (
@@ -1113,7 +1113,7 @@ export const CharacterEditor: React.FC = () => {
                   style={{ color: 'var(--theme-accent)' }}
                 />
               )}
-              <span>✨ Describe Appearance from Portrait</span>
+              <span>✨ Describe from Portrait</span>
             </button>
           </div>
         )}
@@ -1142,7 +1142,7 @@ export const CharacterEditor: React.FC = () => {
               style={{ color: 'var(--theme-accent)' }}
             />
             <h2 className="text-sm font-bold text-slate-900 dark:text-white group-hover:underline">
-              Modular DM / GM Stat-Block Builder
+              Character Stat Tracker
             </h2>
             <span className="inline-flex items-center gap-1 rounded-md border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 px-2 py-0.5 text-[11px] font-medium text-slate-600 dark:text-slate-300">
               {statBlockExpanded ? (
@@ -1159,8 +1159,8 @@ export const CharacterEditor: React.FC = () => {
             </span>
           </button>
           <Tooltip
-            title="Dynamic RPG & Relationship Telemetry"
-            content="Define custom Number, Progress Bar [████░░], Status Text, or Inventory List stats. Drag and drop attributes to reorder them, or use ✨ AI Assist on any stat to generate progression rules."
+            title="Live Chat Stat Tracker"
+            content="Track numbers, progress bars [████░░], mood text, or inventory items during roleplay. Drag stats to reorder them, or use ✨ AI Assist to write the update rules."
           />
         </div>
 
@@ -1179,7 +1179,7 @@ export const CharacterEditor: React.FC = () => {
               className="h-3.5 w-3.5 cursor-pointer"
             />
             <span className="font-semibold text-slate-700 dark:text-slate-200">
-              Enable Dynamic Stat Tracker
+              Enable Stat Tracker
             </span>
           </label>
           <span className="font-mono text-xs text-slate-400 tabular-nums">
@@ -1192,7 +1192,7 @@ export const CharacterEditor: React.FC = () => {
             className="theme-hover-outline flex items-center gap-1 rounded-lg border bg-slate-900 dark:bg-white px-3 py-1.5 text-xs font-semibold text-white dark:text-slate-900 cursor-pointer"
           >
             <Plus className="h-3.5 w-3.5" />
-            <span>Add Tracked Stat</span>
+            <span>Add Stat</span>
           </button>
         </div>
       </div>
@@ -1221,11 +1221,11 @@ export const CharacterEditor: React.FC = () => {
           }}
           className="grid gap-6 items-start"
         >
-          {/* LEFT COLUMN: Spacious Attribute Manager with Drag-and-Drop Reordering */}
+          {/* LEFT COLUMN: Spacious Stat Manager with Drag-and-Drop Reordering */}
           <div className="space-y-3 min-w-0">
             <div className="flex flex-wrap items-center justify-between gap-1">
               <span className="text-xs font-bold uppercase tracking-wider text-slate-700 dark:text-slate-300">
-                Tracked Attributes ({statBlock.stats.length})
+                Tracked Stats ({statBlock.stats.length})
               </span>
               <span className="text-[11px] text-slate-500">
                 Drag handle to reorder · ✨ AI Assist for rules
@@ -1284,7 +1284,7 @@ export const CharacterEditor: React.FC = () => {
 
                       <div className="flex-1 min-w-[160px]">
                         <label className="block text-[10px] font-medium uppercase tracking-wider text-slate-500 mb-0.5">
-                          Attribute Label
+                          Stat Name
                         </label>
                         <input
                           type="text"
@@ -1428,7 +1428,7 @@ export const CharacterEditor: React.FC = () => {
                     <div className="space-y-1.5">
                       <div className="flex flex-wrap items-center justify-between gap-2">
                         <label className="text-[11px] font-medium text-slate-600 dark:text-slate-300">
-                          AI Update &amp; Progression Rule
+                          When Should This Stat Change?
                         </label>
                         <button
                           type="button"
@@ -1469,25 +1469,25 @@ export const CharacterEditor: React.FC = () => {
 
               {statBlock.stats.length === 0 && (
                 <div className="rounded-xl border border-dashed border-slate-300 dark:border-slate-800 p-6 text-center text-xs text-slate-400">
-                  No tracked attributes configured. Click &ldquo;+ Add Tracked Stat&rdquo; above to add RPG bars, relationship meters, or inventory lists.
+                  No stats added yet. Click &ldquo;+ Add Stat&rdquo; above to add RPG bars, relationship meters, or an inventory list.
                 </div>
               )}
             </div>
           </div>
 
-          {/* RIGHT COLUMN: Wide Template Editor & Live Output Preview */}
+          {/* RIGHT COLUMN: Template & Preview */}
           <div className="space-y-4 min-w-0 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-950/50 p-4">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <div>
                 <h3 className="text-xs font-bold uppercase tracking-wider text-slate-700 dark:text-slate-200">
-                  Markdown Format Template &amp; Live Preview
+                  Stat Block Layout &amp; Preview
                 </h3>
                 <p className="text-[11px] text-slate-500">
-                  Use placeholders like{' '}
+                  Shows at the end of each reply using placeholders like{' '}
                   <code className="font-mono text-slate-700 dark:text-slate-300">
-                    {'{{stat_name}}'}
-                  </code>{' '}
-                  for dynamic rendering at the end of every AI response.
+                    {'{{stat:Name}}'}
+                  </code>
+                  .
                 </p>
               </div>
               <div className="flex flex-wrap items-center gap-1.5">
@@ -1533,20 +1533,20 @@ export const CharacterEditor: React.FC = () => {
               className="theme-focus-ring font-mono w-full rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-3 text-xs text-slate-800 dark:text-slate-200"
             />
 
-            {/* Roomy Live Rendered Stat Block Preview */}
+            {/* Preview */}
             <div className="space-y-1.5">
               <div className="flex items-center justify-between text-xs font-medium text-slate-600 dark:text-slate-400">
-                <span>Live Initial Output Preview (Injected into first_mes)</span>
+                <span>Starting Stat Preview (added to First Message)</span>
                 <span className="font-mono tabular-nums">
                   {estimateTokens(liveRenderedStatPreview)} tkn
                 </span>
               </div>
               <pre className="font-mono text-xs leading-relaxed text-slate-800 dark:text-slate-200 bg-white dark:bg-slate-900 rounded-lg p-3.5 overflow-x-auto border border-slate-200 dark:border-slate-800 whitespace-pre-wrap">
-                {liveRenderedStatPreview || 'No template configured'}
+                {liveRenderedStatPreview || 'No template set yet'}
               </pre>
             </div>
 
-            {/* 1-Click Compiler CTA */}
+            {/* Apply Stat Tracker CTA */}
             <button
               type="button"
               onClick={handleCompileStatBlockToCard}
@@ -1558,7 +1558,7 @@ export const CharacterEditor: React.FC = () => {
                 style={{ color: 'var(--theme-accent)' }}
               />
               <span>
-                1-Click Compile to post_history_instructions &amp; first_mes
+                Apply Stat Tracker to Character
               </span>
             </button>
           </div>
@@ -1578,9 +1578,9 @@ export const CharacterEditor: React.FC = () => {
       <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 dark:border-slate-800 pb-2.5">
         <div className="flex items-center gap-2">
           <span className="text-xs font-semibold text-slate-900 dark:text-white">
-            First Message &amp; Alternate Greetings Carousel ({totalGreetingsCount})
+            First Message &amp; Alternate Greetings ({totalGreetingsCount})
           </span>
-          <Tooltip content="SillyTavern lets users swipe through multiple opening greetings. Greeting #1 is stored in first_mes; additional greetings are stored in alternate_greetings[]. Drag Alt tabs to reorder them." />
+          <Tooltip content="Your opening message plus extra greetings users can swipe through in SillyTavern. Drag Alt tabs to reorder them." />
         </div>
 
         <div className="flex flex-wrap items-center gap-1.5">
@@ -1723,13 +1723,13 @@ export const CharacterEditor: React.FC = () => {
         </div>
       </div>
 
-      {/* 1-Click AI Alternate Greeting Generator Bar */}
+      {/* AI Alternate Greeting Generator Bar */}
       <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-950/60 p-2.5">
         <input
           type="text"
           value={altGreetingTwist}
           onChange={(e) => setAltGreetingTwist(e.target.value)}
-          placeholder="Optional twist for new AI Alternate Greeting (e.g., 'During a tavern brawl', 'Morning after a heist')..."
+          placeholder="Optional scene idea for a new greeting (e.g., 'During a tavern brawl', 'Rainy night in the workshop')..."
           className="theme-focus-ring flex-1 rounded border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-2.5 py-1.5 text-xs text-slate-900 dark:text-white"
         />
         <button
@@ -1750,15 +1750,15 @@ export const CharacterEditor: React.FC = () => {
               style={{ color: 'var(--theme-accent)' }}
             />
           )}
-          <span>1-Click AI Alternate Greeting</span>
+          <span>✨ Generate Alt Greeting</span>
         </button>
       </div>
 
       <SmartEditor
         label={
           activeGreetingIdx === 0
-            ? 'First Message (Primary Greeting · first_mes)'
-            : `Alternate Greeting #${activeGreetingIdx} (alternate_greetings[${activeGreetingIdx - 1}])`
+            ? 'First Message'
+            : `Alternate Greeting #${activeGreetingIdx}`
         }
         fieldKey={
           activeGreetingIdx === 0
@@ -1767,7 +1767,7 @@ export const CharacterEditor: React.FC = () => {
         }
         value={currentGreetingValue}
         onChange={handleUpdateGreetingValue}
-        tooltip="Opening message sent by {{char}} when a chat starts. Use *italics* for narration and quotes for dialogue."
+        tooltip="The opening message {{char}} sends when a new chat begins. Use *italics* for actions and quotes for spoken dialogue."
         rows={7}
         isPermanentTokenField={false}
         usePortraitVisionContext={usePortraitAsVisionContext}
@@ -2082,14 +2082,14 @@ export const CharacterEditor: React.FC = () => {
                 {characters.length === 0 ? (
                   <>
                     <div className="font-medium text-slate-500 dark:text-slate-300">
-                      Character Roster is Empty
+                      No Characters Yet
                     </div>
                     <div>
-                      Click <strong>+ New</strong> above, start editing on the right, or drop a SillyTavern <code>.PNG</code> / <code>.JSON</code> card here.
+                      Click <strong>+ New Card</strong> above or drop a SillyTavern <code>.PNG</code> / <code>.JSON</code> card here to begin.
                     </div>
                   </>
                 ) : (
-                  <div>No characters match your filter.</div>
+                  <div>No characters match your search or tag filter.</div>
                 )}
               </div>
             )}
@@ -2211,7 +2211,7 @@ export const CharacterEditor: React.FC = () => {
                 className="h-3.5 w-3.5"
                 style={{ color: 'var(--theme-accent)' }}
               />
-              <span>Inspector</span>
+              <span>Raw JSON</span>
             </button>
           </div>
         </div>
@@ -2404,7 +2404,7 @@ export const CharacterEditor: React.FC = () => {
                             : 'border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 text-slate-500 dark:text-slate-400'
                         }`}
                       >
-                        <span>👁️ Use Portrait as Visual Context (~260 tok)</span>
+                        <span>👁️ Include Portrait in AI Prompt (~260 tok)</span>
                         {usePortraitAsVisionContext && (
                           <Check
                             className="h-3.5 w-3.5 shrink-0"
@@ -2431,7 +2431,7 @@ export const CharacterEditor: React.FC = () => {
                             style={{ color: 'var(--theme-accent)' }}
                           />
                         )}
-                        <span>✨ Describe Appearance from Portrait</span>
+                        <span>✨ Describe from Portrait</span>
                       </button>
                     </div>
                   )}
@@ -2446,7 +2446,7 @@ export const CharacterEditor: React.FC = () => {
                   className="rounded-xl border bg-white dark:bg-slate-900 p-5 space-y-4"
                 >
                   <h3 className="text-sm font-semibold text-slate-900 dark:text-white">
-                    Character Portrait, Identity &amp; Semantic Tags
+                    Identity, Portrait &amp; Tags
                   </h3>
 
                   <div className="flex flex-col sm:flex-row gap-6 items-start">
@@ -2485,7 +2485,7 @@ export const CharacterEditor: React.FC = () => {
                         </div>
                         <div className="space-y-1">
                           <label className="text-xs font-medium text-slate-700 dark:text-slate-300">
-                            Nickname / Moniker (V3)
+                            Nickname (V3)
                           </label>
                           <input
                             type="text"
@@ -2532,8 +2532,9 @@ export const CharacterEditor: React.FC = () => {
                         selectedTagNames={character.tags}
                         onToggleTag={toggleCharacterTag}
                         onAddCustomTag={(tagName) => handleAddCustomCharacterTag(tagName)}
-                        label="Attach Semantic Tags (Injected into AI System Prompt)"
-                        tooltip="Click tags from your 64+ built-in SFW & NSFW Tag Library to bind their AI Context Directives to concept generation and completions."
+                        label="Character Tags"
+                        subtitle="Tags help guide the AI when generating your character"
+                        tooltip="Click tags below to shape how the AI writes this character. Any 18+ tag automatically flags the card as NSFW."
                       />
                     </div>
                   </div>
@@ -2549,18 +2550,18 @@ export const CharacterEditor: React.FC = () => {
                   fieldKey="description"
                   value={character.description}
                   onChange={(val) => updateCharacterField('description', val)}
-                  tooltip="Physical appearance, attire, backstory, and essential traits of {{char}}."
+                  tooltip="How {{char}} looks, what they wear, their background, and key traits."
                   rows={7}
                   isPermanentTokenField={true}
                   usePortraitVisionContext={usePortraitAsVisionContext}
                   onTogglePortraitVisionContext={setUsePortraitAsVisionContext}
                 />
                 <SmartEditor
-                  label="Personality Summary"
+                  label="Personality"
                   fieldKey="personality"
                   value={character.personality}
                   onChange={(val) => updateCharacterField('personality', val)}
-                  tooltip="Behavioral patterns, speech register, temperament, and core motivations."
+                  tooltip="How {{char}} acts, speaks, and reacts to others."
                   rows={5}
                   isPermanentTokenField={true}
                   usePortraitVisionContext={usePortraitAsVisionContext}
@@ -2573,11 +2574,11 @@ export const CharacterEditor: React.FC = () => {
             {wizardStep === 3 && (
               <div className="space-y-5">
                 <SmartEditor
-                  label="Scenario & Setting"
+                  label="Scenario"
                   fieldKey="scenario"
                   value={character.scenario}
                   onChange={(val) => updateCharacterField('scenario', val)}
-                  tooltip="Immediate setting and inciting situation framing the interaction."
+                  tooltip="Where the story starts and the situation between {{char}} and {{user}}."
                   rows={4}
                   isPermanentTokenField={true}
                   usePortraitVisionContext={usePortraitAsVisionContext}
@@ -2591,35 +2592,35 @@ export const CharacterEditor: React.FC = () => {
             {wizardStep === 4 && (
               <div className="space-y-5">
                 <SmartEditor
-                  label="Example Dialogue (<START>)"
+                  label="Example Dialogue"
                   fieldKey="mes_example"
                   value={character.mes_example}
                   onChange={(val) => updateCharacterField('mes_example', val)}
-                  tooltip="Sample exchanges formatted with <START>, {{user}}, and {{char}}."
+                  tooltip="Sample back-and-forth lines using <START>, {{user}}, and {{char}} to show the AI how {{char}} talks."
                   rows={6}
                   isPermanentTokenField={false}
                   usePortraitVisionContext={usePortraitAsVisionContext}
                   onTogglePortraitVisionContext={setUsePortraitAsVisionContext}
                 />
                 <SmartEditor
-                  label="System Prompt Override"
+                  label="System Prompt"
                   fieldKey="system_prompt"
                   value={character.system_prompt}
                   onChange={(val) => updateCharacterField('system_prompt', val)}
-                  tooltip="Card-specific narrative instructions overriding SillyTavern main prompt."
+                  tooltip="Optional custom rules for how the AI should roleplay this character."
                   rows={4}
                   isPermanentTokenField={true}
                   usePortraitVisionContext={usePortraitAsVisionContext}
                   onTogglePortraitVisionContext={setUsePortraitAsVisionContext}
                 />
                 <SmartEditor
-                  label="Post-History Instructions (UJB)"
+                  label="Post-History Instructions"
                   fieldKey="post_history_instructions"
                   value={character.post_history_instructions}
                   onChange={(val) =>
                     updateCharacterField('post_history_instructions', val)
                   }
-                  tooltip="High-priority instructions injected right before the AI generates its reply."
+                  tooltip="High-priority reminders placed near the bottom of the chat right before the AI replies."
                   rows={4}
                   isPermanentTokenField={true}
                   usePortraitVisionContext={usePortraitAsVisionContext}
@@ -2630,7 +2631,7 @@ export const CharacterEditor: React.FC = () => {
                   fieldKey="creator_notes"
                   value={character.creator_notes}
                   onChange={(val) => updateCharacterField('creator_notes', val)}
-                  tooltip="Usage notes for players (not sent to the AI prompt)."
+                  tooltip="Notes for other players (not sent to the AI during chat)."
                   rows={3}
                   isPermanentTokenField={false}
                   usePortraitVisionContext={usePortraitAsVisionContext}
@@ -2639,7 +2640,7 @@ export const CharacterEditor: React.FC = () => {
               </div>
             )}
 
-            {/* Step 5: Full-Width DM StatBlock & Final Review */}
+            {/* Step 5: Full-Width Stat Tracker & Final Review */}
             {wizardStep === 5 && (
               <div className="space-y-6">
                 {renderStatBlockBuilderPanel()}
@@ -2652,7 +2653,7 @@ export const CharacterEditor: React.FC = () => {
                   className="rounded-xl border bg-white dark:bg-slate-900 p-5 space-y-4"
                 >
                   <h3 className="text-sm font-semibold text-slate-900 dark:text-white">
-                    Card Readiness Summary
+                    Card Summary
                   </h3>
                   <div
                     style={{
@@ -2680,7 +2681,7 @@ export const CharacterEditor: React.FC = () => {
                       </span>
                     </div>
                     <div className="rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 p-3 flex justify-between items-center">
-                      <span className="text-slate-500">Total Card Footprint</span>
+                      <span className="text-slate-500">Total Tokens</span>
                       <span className="font-mono font-bold">
                         {tokenBreakdown.totalCardTokens} tkn
                       </span>
@@ -2693,14 +2694,14 @@ export const CharacterEditor: React.FC = () => {
                       style={{ borderColor: 'var(--theme-accent)' }}
                       className="theme-hover-outline rounded-lg border bg-slate-900 dark:bg-white px-4 py-2 text-xs font-semibold text-white dark:text-slate-900 cursor-pointer"
                     >
-                      Open in Full Sandbox Workbench
+                      Open in Full Editor
                     </button>
                     <button
                       type="button"
                       onClick={() => setActiveTab('json_inspector')}
                       className="theme-hover-outline rounded-lg border border-slate-200 dark:border-slate-800 px-4 py-2 text-xs font-medium text-slate-700 dark:text-slate-200 cursor-pointer"
                     >
-                      Inspect SillyTavern JSON Payload
+                      Open Raw JSON &amp; Export
                     </button>
                   </div>
                 </div>
@@ -2747,7 +2748,7 @@ export const CharacterEditor: React.FC = () => {
         ) : (
           /* MODE B: FULL SANDBOX WORKBENCH */
           <div className="space-y-6">
-            {/* Identity, 2:3 Portrait Uploader & Semantic Tags Card */}
+            {/* Identity, Portrait & Tags Card */}
             <div
               style={{
                 borderColor:
@@ -2758,14 +2759,14 @@ export const CharacterEditor: React.FC = () => {
               <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 dark:border-slate-800 pb-3">
                 <div className="flex items-center gap-2">
                   <h2 className="text-sm font-semibold text-slate-900 dark:text-white">
-                    Character Portrait (2:3), Identity &amp; Semantic Tags
+                    Identity, Portrait &amp; Tags
                   </h2>
-                  <Tooltip content="Upload or drop a Character Portrait (automatically checks SillyTavern's 2:3 aspect ratio and opens the interactive cropper if needed), edit V2/V3 metadata, and assign semantic AI tags." />
+                  <Tooltip content="Upload or drop a portrait image (automatically cropped to 2:3 if needed), edit card info, and pick tags for your character." />
                 </div>
 
-                {/* Bound Lorebook Selector */}
+                {/* Linked Lorebook Selector */}
                 <div className="flex items-center gap-2 text-xs">
-                  <span className="text-slate-500">Bound World Book:</span>
+                  <span className="text-slate-500">Linked Lorebook:</span>
                   <select
                     value={character.character_book?.id || lorebook.id || ''}
                     onChange={(e) => {
@@ -2791,7 +2792,7 @@ export const CharacterEditor: React.FC = () => {
                 {/* Left: Prominent 2:3 Character Portrait Uploader & Cropper Slot */}
                 {renderPortraitUploaderSlot()}
 
-                {/* Right: Metadata Grid & Semantic Tags */}
+                {/* Right: Character Details & Tags */}
                 <div className="flex-1 min-w-0 w-full space-y-4">
                   <div
                     style={{
@@ -2803,7 +2804,7 @@ export const CharacterEditor: React.FC = () => {
                     <div className="space-y-1">
                       <label className="flex items-center gap-1.5 text-xs font-medium text-slate-700 dark:text-slate-300">
                         <span>Character Name</span>
-                        <Tooltip content="Replaces {{char}} macro across all prompts and greetings." />
+                        <Tooltip content="Fills in {{char}} across your descriptions, scenario, and greetings." />
                       </label>
                       <input
                         type="text"
@@ -2827,8 +2828,8 @@ export const CharacterEditor: React.FC = () => {
 
                     <div className="space-y-1">
                       <label className="flex items-center gap-1.5 text-xs font-medium text-slate-700 dark:text-slate-300">
-                        <span>Nickname / Moniker (V3)</span>
-                        <Tooltip content="Optional V3 display moniker or title." />
+                        <span>Nickname (V3)</span>
+                        <Tooltip content="Optional nickname or title used by SillyTavern V3 cards." />
                       </label>
                       <input
                         type="text"
@@ -2842,8 +2843,8 @@ export const CharacterEditor: React.FC = () => {
 
                     <div className="space-y-1">
                       <label className="flex items-center gap-1.5 text-xs font-medium text-slate-700 dark:text-slate-300">
-                        <span>Creator Attribution</span>
-                        <Tooltip content="Card author name embedded in V2/V3 metadata." />
+                        <span>Creator</span>
+                        <Tooltip content="Your name or handle saved inside the card." />
                       </label>
                       <input
                         type="text"
@@ -2857,8 +2858,8 @@ export const CharacterEditor: React.FC = () => {
 
                     <div className="space-y-1">
                       <label className="flex items-center gap-1.5 text-xs font-medium text-slate-700 dark:text-slate-300">
-                        <span>Character Version</span>
-                        <Tooltip content="Semantic version string for tracking card revisions." />
+                        <span>Version</span>
+                        <Tooltip content="Version number to keep track of your card edits (e.g. 1.0.0)." />
                       </label>
                       <input
                         type="text"
@@ -2874,22 +2875,23 @@ export const CharacterEditor: React.FC = () => {
                     </div>
                   </div>
 
-                  {/* Assigned Semantic Tags */}
+                  {/* Character Tags */}
                   <div className="pt-1">
                     <TagSelector
                       tags={tags}
                       selectedTagNames={character.tags}
                       onToggleTag={toggleCharacterTag}
                       onAddCustomTag={(tagName) => handleAddCustomCharacterTag(tagName)}
-                      label="Assigned Semantic Character Tags"
-                      tooltip="Click tags from your Global Tag Library to bind their AI Context Directives to every AI Assist and Ghost Text completion."
+                      label="Character Tags"
+                      subtitle="Tags help guide the AI when generating your character"
+                      tooltip="Click tags below to shape how the AI writes this character. Any 18+ tag automatically flags the card as NSFW."
                     />
                   </div>
                 </div>
               </div>
             </div>
 
-            {/* Full-Width Modular DM / GM Stat-Block Builder Section */}
+            {/* Full-Width Character Stat Tracker Section */}
             {renderStatBlockBuilderPanel()}
 
             {/* Full-Width Character Definition Editors */}
@@ -2899,7 +2901,7 @@ export const CharacterEditor: React.FC = () => {
                 fieldKey="description"
                 value={character.description}
                 onChange={(val) => updateCharacterField('description', val)}
-                tooltip="Physical appearance, core backstory, attire, and essential traits of {{char}}. Sent in permanent context."
+                tooltip="How {{char}} looks, what they wear, their backstory, and key traits. Always included in chat."
                 rows={6}
                 isPermanentTokenField={true}
                 usePortraitVisionContext={usePortraitAsVisionContext}
@@ -2914,11 +2916,11 @@ export const CharacterEditor: React.FC = () => {
                 className="grid gap-5 items-start"
               >
                 <SmartEditor
-                  label="Personality Summary"
+                  label="Personality"
                   fieldKey="personality"
                   value={character.personality}
                   onChange={(val) => updateCharacterField('personality', val)}
-                  tooltip="Concise behavioral patterns, temperament, speech register, and psychological drives."
+                  tooltip="How {{char}} acts, speaks, thinks, and reacts to others."
                   rows={5}
                   isPermanentTokenField={true}
                   usePortraitVisionContext={usePortraitAsVisionContext}
@@ -2926,11 +2928,11 @@ export const CharacterEditor: React.FC = () => {
                 />
 
                 <SmartEditor
-                  label="Scenario & Setting"
+                  label="Scenario"
                   fieldKey="scenario"
                   value={character.scenario}
                   onChange={(val) => updateCharacterField('scenario', val)}
-                  tooltip="Immediate setting, atmosphere, and inciting situation framing the interaction between {{char}} and {{user}}."
+                  tooltip="Where the story starts and the situation between {{char}} and {{user}}."
                   rows={5}
                   isPermanentTokenField={true}
                   usePortraitVisionContext={usePortraitAsVisionContext}
@@ -2942,11 +2944,11 @@ export const CharacterEditor: React.FC = () => {
               {renderGreetingsCarousel()}
 
               <SmartEditor
-                label="Example Dialogue (<START>)"
+                label="Example Dialogue"
                 fieldKey="mes_example"
                 value={character.mes_example}
                 onChange={(val) => updateCharacterField('mes_example', val)}
-                tooltip="Sample exchanges formatted with <START>, {{user}}, and {{char}} to calibrate voice and formatting."
+                tooltip="Sample chats using <START>, {{user}}, and {{char}} to teach the AI how {{char}} speaks and formats replies."
                 rows={5}
                 isPermanentTokenField={false}
                 usePortraitVisionContext={usePortraitAsVisionContext}
@@ -2961,11 +2963,11 @@ export const CharacterEditor: React.FC = () => {
                 className="grid gap-5 items-start"
               >
                 <SmartEditor
-                  label="System Prompt Override"
+                  label="System Prompt"
                   fieldKey="system_prompt"
                   value={character.system_prompt}
                   onChange={(val) => updateCharacterField('system_prompt', val)}
-                  tooltip="Card-specific narrative instructions overriding or supplementing SillyTavern main prompt."
+                  tooltip="Optional custom rules that override or add to SillyTavern's main prompt for this character."
                   rows={4}
                   isPermanentTokenField={true}
                   usePortraitVisionContext={usePortraitAsVisionContext}
@@ -2973,13 +2975,13 @@ export const CharacterEditor: React.FC = () => {
                 />
 
                 <SmartEditor
-                  label="Post-History Instructions (UJB / Jailbreak)"
+                  label="Post-History Instructions"
                   fieldKey="post_history_instructions"
                   value={character.post_history_instructions}
                   onChange={(val) =>
                     updateCharacterField('post_history_instructions', val)
                   }
-                  tooltip="High-priority instructions injected at the bottom of chat history right before the AI generates its reply. Also holds compiled DM StatBlock rules."
+                  tooltip="High-priority reminders added near the end of chat history right before the AI replies. Stat Tracker rules also go here."
                   rows={4}
                   isPermanentTokenField={true}
                   usePortraitVisionContext={usePortraitAsVisionContext}
@@ -2992,7 +2994,7 @@ export const CharacterEditor: React.FC = () => {
                 fieldKey="creator_notes"
                 value={character.creator_notes}
                 onChange={(val) => updateCharacterField('creator_notes', val)}
-                tooltip="Author notes, recommended settings, and context for users (does not consume prompt tokens)."
+                tooltip="Tips and notes for users downloading your card (never sent to the AI or counted as chat tokens)."
                 rows={3}
                 isPermanentTokenField={false}
                 usePortraitVisionContext={usePortraitAsVisionContext}

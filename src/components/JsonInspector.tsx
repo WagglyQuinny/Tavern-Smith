@@ -113,28 +113,28 @@ export const JsonInspector: React.FC = () => {
     if (character.description.trim().length > 0) {
       issues.push({
         level: 'ok',
-        label: 'Core Description',
+        label: 'Description',
         detail: `${tokenBreakdown.description} tokens in description.`,
       });
     } else {
       issues.push({
         level: 'warn',
         label: 'Empty Description',
-        detail: 'Adding physical/narrative traits improves roleplay consistency.',
+        detail: 'Adding appearance and backstory helps keep the character consistent.',
       });
     }
 
     if (character.first_mes.trim().length > 0) {
       issues.push({
         level: 'ok',
-        label: 'First Greeting (`first_mes`)',
+        label: 'First Greeting',
         detail: `${tokenBreakdown.first_mes} tokens (+${character.alternate_greetings.length} alternates).`,
       });
     } else {
       issues.push({
         level: 'warn',
         label: 'Empty First Greeting',
-        detail: 'SillyTavern cards should include an opening message.',
+        detail: 'SillyTavern cards work best with an opening message.',
       });
     }
 
@@ -155,13 +155,13 @@ export const JsonInspector: React.FC = () => {
     if (openMacros === closeMacros) {
       issues.push({
         level: 'ok',
-        label: 'Macro Syntax Integrity',
-        detail: `${openMacros} balanced {{macro}} tag(s) verified.`,
+        label: 'Macro Braces Match',
+        detail: `${openMacros} {{macro}} tag(s) look good.`,
       });
     } else {
       issues.push({
         level: 'warn',
-        label: 'Unbalanced Macro Braces',
+        label: 'Unmatched Macro Braces',
         detail: `Found ${openMacros} opening "{{" vs ${closeMacros} closing "}}".`,
       });
     }
@@ -173,14 +173,14 @@ export const JsonInspector: React.FC = () => {
     if (invalidEntries.length === 0) {
       issues.push({
         level: 'ok',
-        label: 'Lorebook Entry Triggers',
-        detail: `${lorebook.entries.length} entries validated (${lorebook.entries.filter((e) => e.enabled).length} enabled).`,
+        label: 'Lorebook Keywords',
+        detail: `${lorebook.entries.length} entries checked (${lorebook.entries.filter((e) => e.enabled).length} enabled).`,
       });
     } else {
       issues.push({
         level: 'warn',
-        label: 'Unkeyed Lorebook Entries',
-        detail: `${invalidEntries.length} enabled non-constant entry has no trigger keywords.`,
+        label: 'Entries Missing Keywords',
+        detail: `${invalidEntries.length} enabled entry has no trigger keywords and isn't Always Active.`,
       });
     }
 
@@ -190,8 +190,8 @@ export const JsonInspector: React.FC = () => {
     if (!hasSecretKey) {
       issues.push({
         level: 'ok',
-        label: 'Sanitized Export Payload',
-        detail: 'Zero API keys or endpoint credentials present in card JSON.',
+        label: 'Safe Export',
+        detail: 'No API keys or secrets are stored in your card JSON.',
       });
     }
 
@@ -369,18 +369,18 @@ export const JsonInspector: React.FC = () => {
   };
 
   const breakdownRows = [
-    { label: 'Core Description', tokens: tokenBreakdown.description },
-    { label: 'Personality Summary', tokens: tokenBreakdown.personality },
-    { label: 'Scenario & Setting', tokens: tokenBreakdown.scenario },
-    { label: 'First Greeting (first_mes)', tokens: tokenBreakdown.first_mes },
-    { label: 'Example Dialogue (mes_example)', tokens: tokenBreakdown.mes_example },
-    { label: 'System Prompt Override', tokens: tokenBreakdown.system_prompt },
+    { label: 'Description', tokens: tokenBreakdown.description },
+    { label: 'Personality', tokens: tokenBreakdown.personality },
+    { label: 'Scenario', tokens: tokenBreakdown.scenario },
+    { label: 'First Message', tokens: tokenBreakdown.first_mes },
+    { label: 'Example Dialogue', tokens: tokenBreakdown.mes_example },
+    { label: 'System Prompt', tokens: tokenBreakdown.system_prompt },
     {
-      label: 'Post-History / Jailbreak',
+      label: 'Post-History Instructions',
       tokens: tokenBreakdown.post_history_instructions,
     },
-    { label: 'DM StatBlock Tracker', tokens: tokenBreakdown.stat_block },
-    { label: 'Lorebook (Constant)', tokens: tokenBreakdown.lorebook_constant },
+    { label: 'Stat Tracker', tokens: tokenBreakdown.stat_block },
+    { label: 'Lorebook (Always On)', tokens: tokenBreakdown.lorebook_constant },
     { label: 'Lorebook (Triggered)', tokens: tokenBreakdown.lorebook_Triggered },
   ];
 
@@ -417,12 +417,12 @@ export const JsonInspector: React.FC = () => {
           <div>
             <div className="flex items-center gap-2">
               <h1 className="text-xl font-bold tracking-tight text-slate-900 dark:text-white">
-                SillyTavern V2/V3 JSON &amp; Schema Inspector
+                Raw JSON &amp; Export
               </h1>
-              <Tooltip content="Inspect live V2/V3 serialized JSON, verify schema & token budgets, edit raw JSON directly, or export PNG/JSON cards." />
+              <Tooltip content="Check your card for issues, see token counts per field, edit raw JSON directly, or export your character as a .PNG or .JSON file." />
             </div>
             <p className="text-xs text-slate-500 dark:text-slate-400">
-              Live Schema Validator · Pure-Browser PNG Steganography (`chara` + `ccv3`) · Zero-Credential Sanitized Export
+              Preview V2/V3 card JSON, inspect token counts, and export clean .PNG or .JSON cards (no API keys included).
             </p>
           </div>
         </div>
@@ -506,7 +506,7 @@ export const JsonInspector: React.FC = () => {
             ) : (
               <>
                 <Copy className="h-3.5 w-3.5" />
-                <span>Copy Payload</span>
+                <span>Copy JSON</span>
               </>
             )}
           </button>
@@ -593,7 +593,7 @@ export const JsonInspector: React.FC = () => {
 
         <div className="flex items-center gap-3 font-mono text-xs text-slate-500 dark:text-slate-400 tabular-nums">
           <span>
-            Payload Size:{' '}
+            File Size:{' '}
             <strong className="text-slate-900 dark:text-white">
               {(new Blob([displayedContent]).size / 1024).toFixed(2)} KB
             </strong>
@@ -697,7 +697,7 @@ export const JsonInspector: React.FC = () => {
                   style={{ color: 'var(--theme-accent)' }}
                 />
                 <h2 className="text-xs font-bold uppercase tracking-wider text-slate-800 dark:text-slate-200">
-                  Live Schema &amp; Security Audit
+                  Card Check
                 </h2>
               </div>
               <span className="font-mono text-[11px] text-emerald-600 dark:text-emerald-400 font-semibold">
@@ -730,7 +730,7 @@ export const JsonInspector: React.FC = () => {
             </div>
           </div>
 
-          {/* Per-Field Token Telemetry Breakdown */}
+          {/* Token Breakdown by Field */}
           <div
             style={{
               borderColor:
@@ -745,7 +745,7 @@ export const JsonInspector: React.FC = () => {
                   style={{ color: 'var(--theme-accent)' }}
                 />
                 <h2 className="text-xs font-bold uppercase tracking-wider text-slate-800 dark:text-slate-200">
-                  Per-Field Token Breakdown
+                  Tokens by Field
                 </h2>
               </div>
               <span className="font-mono text-xs font-bold text-slate-900 dark:text-white tabular-nums">

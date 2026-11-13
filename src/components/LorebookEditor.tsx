@@ -58,38 +58,38 @@ import {
 } from '../services/aiService';
 
 const LOREBOOK_POSITIONS: { value: LorebookPosition; label: string }[] = [
-  { value: 'before_char', label: 'Before Character Defs (before_char)' },
-  { value: 'after_char', label: 'After Character Defs (after_char)' },
+  { value: 'before_char', label: 'Before Character Info (before_char)' },
+  { value: 'after_char', label: 'After Character Info (after_char)' },
   { value: 'an_top', label: "Top of Author's Note (an_top)" },
   { value: 'an_bottom', label: "Bottom of Author's Note (an_bottom)" },
-  { value: 'at_depth', label: 'At Custom Chat Depth (at_depth)' },
+  { value: 'at_depth', label: 'Inside Chat History (at_depth)' },
 ];
 
 const LOREBOOK_WIZARD_STEPS = [
   {
     step: 1,
-    title: 'World Concept & Meta',
-    subtitle: 'Title, tags & ✨ AI Multi-Entry Generator',
+    title: 'Lorebook Settings',
+    subtitle: 'Title, tags & AI worldbuilder',
   },
   {
     step: 2,
-    title: 'Core Entries Builder',
-    subtitle: 'Factions, locations, systems & ✨ AI Entry Assist',
+    title: 'Entries',
+    subtitle: 'Write factions, places, NPCs & items',
   },
   {
     step: 3,
-    title: 'Trigger Keys & Rules',
-    subtitle: 'Primary/Secondary keys & ✨ AI Key Suggest',
+    title: 'Trigger Keywords',
+    subtitle: 'Words that wake up each entry in chat',
   },
   {
     step: 4,
-    title: 'Budget & Mechanics',
-    subtitle: 'Scan depth, token budget, order & positions',
+    title: 'Scan & Token Settings',
+    subtitle: 'Scan depth, token budget & priority',
   },
   {
     step: 5,
-    title: 'Review, Bind & Export',
-    subtitle: 'Token audit, 1-click Character bind & JSON export',
+    title: 'Link & Export',
+    subtitle: 'Link to a character or export .JSON',
   },
 ];
 
@@ -418,7 +418,7 @@ export const LorebookEditor: React.FC = () => {
 
   const handleBindToAnyCharacter = (charId: string, charName: string) => {
     bindLorebookToCharacter(charId, lorebook);
-    setBoundCharacterNotice(`Bound "${lorebook.name}" to ${charName}.`);
+    setBoundCharacterNotice(`Linked "${lorebook.name}" to ${charName}.`);
     scheduleTimer(() => setBoundCharacterNotice(null), 3500);
   };
 
@@ -1077,14 +1077,14 @@ export const LorebookEditor: React.FC = () => {
                 {lorebooks.length === 0 ? (
                   <>
                     <div className="font-medium text-slate-500 dark:text-slate-300">
-                      Lorebook Roster is Empty
+                      No Lorebooks Yet
                     </div>
                     <div>
-                      Click <strong>+ New</strong> above, start editing on the right, or drop a SillyTavern <code>.JSON</code> World Book here.
+                      Click <strong>+ New Book</strong> above or drop a SillyTavern <code>.JSON</code> lorebook here to get started.
                     </div>
                   </>
                 ) : (
-                  <div>No lorebooks match your filter.</div>
+                  <div>No lorebooks match your search or tag filter.</div>
                 )}
               </div>
             )}
@@ -1147,10 +1147,10 @@ export const LorebookEditor: React.FC = () => {
                 >
                   {lorebook.isNsfw ? 'Manual NSFW: ON' : 'Flag NSFW'}
                 </button>
-                <Tooltip content="SillyTavern World Info / Character Book settings and trigger entries." />
+                <Tooltip content="Settings and entries for this SillyTavern lorebook (World Info)." />
               </div>
               <p className="text-xs text-slate-500 dark:text-slate-400">
-                Constant: {activeLorebookTokens.constant} tkn · Triggered:{' '}
+                Always Active: {activeLorebookTokens.constant} tkn · Keyword-Triggered:{' '}
                 {activeLorebookTokens.triggered} tkn · Budget:{' '}
                 {lorebook.token_budget} tkn
               </p>
@@ -1173,8 +1173,8 @@ export const LorebookEditor: React.FC = () => {
                 )}
                 <span>
                   {isBoundToActiveChar
-                    ? `Bound to ${character.name}`
-                    : `Bind to ${character.name}`}
+                    ? `Linked to ${character.name}`
+                    : `Link to ${character.name}`}
                 </span>
               </button>
 
@@ -1202,98 +1202,103 @@ export const LorebookEditor: React.FC = () => {
             </div>
           </div>
 
-          {/* Lorebook Metadata Row */}
-          <div
-            style={{
-              gridTemplateColumns:
-                'repeat(auto-fit, minmax(min(100%, 190px), 1fr))',
-            }}
-            className="grid gap-3 items-end"
-          >
-            <div className="space-y-1">
-              <label className="text-xs font-medium text-slate-700 dark:text-slate-300">
-                Lorebook Title
-              </label>
-              <input
-                type="text"
-                value={lorebook.name}
-                onChange={(e) =>
-                  updateLorebookAndSync((prev) => ({
-                    ...prev,
-                    name: e.target.value,
-                  }))
-                }
-                onBlur={(e) => {
-                  if (lorebook.id) {
-                    checkAndTriggerNameConflict(
-                      'lorebook',
-                      lorebook.id,
-                      e.target.value,
-                      'rename'
-                    );
-                  }
-                }}
-                className="theme-focus-ring w-full rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 px-3 py-1.5 text-xs font-medium text-slate-900 dark:text-white"
-              />
-            </div>
-
-            <div className="space-y-1">
-              <label className="flex items-center gap-1 text-xs font-medium text-slate-700 dark:text-slate-300">
-                <span>Scan Depth</span>
-                <Tooltip content="Number of recent chat messages scanned for Lorebook trigger keys." />
-              </label>
-              <input
-                type="number"
-                min={1}
-                max={100}
-                value={lorebook.scan_depth}
-                onChange={(e) =>
-                  updateLorebookAndSync((prev) => ({
-                    ...prev,
-                    scan_depth: Number(e.target.value),
-                  }))
-                }
-                className="theme-focus-ring font-mono w-full rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 px-3 py-1.5 text-xs text-slate-900 dark:text-white tabular-nums"
-              />
-            </div>
-
-            <div className="space-y-1">
-              <label className="flex items-center gap-1 text-xs font-medium text-slate-700 dark:text-slate-300">
-                <span>Token Budget</span>
-                <Tooltip content="Maximum token budget allocated to activated Lorebook entries." />
-              </label>
-              <input
-                type="number"
-                min={128}
-                max={16384}
-                step={64}
-                value={lorebook.token_budget}
-                onChange={(e) =>
-                  updateLorebookAndSync((prev) => ({
-                    ...prev,
-                    token_budget: Number(e.target.value),
-                  }))
-                }
-                className="theme-focus-ring font-mono w-full rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 px-3 py-1.5 text-xs text-slate-900 dark:text-white tabular-nums"
-              />
-            </div>
-
-            <div className="pb-1.5">
-              <label className="flex items-center gap-2 text-xs font-medium text-slate-700 dark:text-slate-300 cursor-pointer">
+          {/* Lorebook Settings Row */}
+          <div className="space-y-3">
+            <h2 className="text-xs font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">
+              Lorebook Settings
+            </h2>
+            <div
+              style={{
+                gridTemplateColumns:
+                  'repeat(auto-fit, minmax(min(100%, 190px), 1fr))',
+              }}
+              className="grid gap-3 items-end"
+            >
+              <div className="space-y-1">
+                <label className="text-xs font-medium text-slate-700 dark:text-slate-300">
+                  Lorebook Name
+                </label>
                 <input
-                  type="checkbox"
-                  checked={lorebook.recursive_scanning}
+                  type="text"
+                  value={lorebook.name}
                   onChange={(e) =>
                     updateLorebookAndSync((prev) => ({
                       ...prev,
-                      recursive_scanning: e.target.checked,
+                      name: e.target.value,
                     }))
                   }
-                  style={{ accentColor: 'var(--theme-accent)' }}
-                  className="h-4 w-4 cursor-pointer"
+                  onBlur={(e) => {
+                    if (lorebook.id) {
+                      checkAndTriggerNameConflict(
+                        'lorebook',
+                        lorebook.id,
+                        e.target.value,
+                        'rename'
+                      );
+                    }
+                  }}
+                  className="theme-focus-ring w-full rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 px-3 py-1.5 text-xs font-medium text-slate-900 dark:text-white"
                 />
-                <span>Recursive Scan</span>
-              </label>
+              </div>
+
+              <div className="space-y-1">
+                <label className="flex items-center gap-1 text-xs font-medium text-slate-700 dark:text-slate-300">
+                  <span>Scan Depth</span>
+                  <Tooltip content="How many recent messages SillyTavern checks for trigger keywords." />
+                </label>
+                <input
+                  type="number"
+                  min={1}
+                  max={100}
+                  value={lorebook.scan_depth}
+                  onChange={(e) =>
+                    updateLorebookAndSync((prev) => ({
+                      ...prev,
+                      scan_depth: Number(e.target.value),
+                    }))
+                  }
+                  className="theme-focus-ring font-mono w-full rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 px-3 py-1.5 text-xs text-slate-900 dark:text-white tabular-nums"
+                />
+              </div>
+
+              <div className="space-y-1">
+                <label className="flex items-center gap-1 text-xs font-medium text-slate-700 dark:text-slate-300">
+                  <span>Token Budget</span>
+                  <Tooltip content="Max tokens used for triggered lorebook entries each turn." />
+                </label>
+                <input
+                  type="number"
+                  min={128}
+                  max={16384}
+                  step={64}
+                  value={lorebook.token_budget}
+                  onChange={(e) =>
+                    updateLorebookAndSync((prev) => ({
+                      ...prev,
+                      token_budget: Number(e.target.value),
+                    }))
+                  }
+                  className="theme-focus-ring font-mono w-full rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 px-3 py-1.5 text-xs text-slate-900 dark:text-white tabular-nums"
+                />
+              </div>
+
+              <div className="pb-1.5">
+                <label className="flex items-center gap-2 text-xs font-medium text-slate-700 dark:text-slate-300 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={lorebook.recursive_scanning}
+                    onChange={(e) =>
+                      updateLorebookAndSync((prev) => ({
+                        ...prev,
+                        recursive_scanning: e.target.checked,
+                      }))
+                    }
+                    style={{ accentColor: 'var(--theme-accent)' }}
+                    className="h-4 w-4 cursor-pointer"
+                  />
+                  <span>Recursive Scan</span>
+                </label>
+              </div>
             </div>
           </div>
         </div>
@@ -1499,7 +1504,7 @@ export const LorebookEditor: React.FC = () => {
                             style={{ color: 'var(--theme-accent)' }}
                           />
                           <span>
-                            👁️ Drop or Select Temp Reference Image (~260 tok · Never saved to JSON)
+                            👁️ Attach Reference Image (Temp · Never saved to JSON)
                           </span>
                         </button>
                       )}
@@ -1515,7 +1520,7 @@ export const LorebookEditor: React.FC = () => {
                   className="rounded-xl border bg-white dark:bg-slate-900 p-5 space-y-4"
                 >
                   <h3 className="text-sm font-semibold text-slate-900 dark:text-white">
-                    World Metadata &amp; Global Semantic Tags
+                    Lorebook Settings
                   </h3>
 
                   <div
@@ -1527,7 +1532,7 @@ export const LorebookEditor: React.FC = () => {
                   >
                     <div className="space-y-1">
                       <label className="text-xs font-medium text-slate-700 dark:text-slate-300">
-                        Lorebook Title
+                        Lorebook Name
                       </label>
                       <input
                         type="text"
@@ -1554,7 +1559,7 @@ export const LorebookEditor: React.FC = () => {
 
                     <div className="space-y-1">
                       <label className="text-xs font-medium text-slate-700 dark:text-slate-300">
-                        World Synopsis / Description
+                        Description
                       </label>
                       <input
                         type="text"
@@ -1565,7 +1570,7 @@ export const LorebookEditor: React.FC = () => {
                             description: e.target.value,
                           }))
                         }
-                        placeholder="High-level summary of this Lorebook..."
+                        placeholder="Short summary of what this lorebook covers..."
                         className="theme-focus-ring w-full rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 px-3 py-1.5 text-xs text-slate-900 dark:text-white"
                       />
                     </div>
@@ -1576,8 +1581,9 @@ export const LorebookEditor: React.FC = () => {
                     selectedTagNames={lorebook.tags || []}
                     onToggleTag={toggleLorebookGlobalTag}
                     onAddCustomTag={(tagName) => handleAddCustomLorebookTag(tagName)}
-                    label="Global Lorebook Semantic Tags (Injected into AI Lore Generation)"
-                    tooltip="Attach tags from the 64+ SFW & NSFW Tag Library to guide multi-entry worldbuilding and lore generation."
+                    label="Lorebook Tags"
+                    subtitle="Tags help guide the AI when writing lore"
+                    tooltip="Pick tags that match this world's genre, tone, and rating."
                   />
                 </div>
               </div>
@@ -1639,7 +1645,7 @@ export const LorebookEditor: React.FC = () => {
                   >
                     <div className="flex items-center justify-between">
                       <span className="text-xs font-bold uppercase tracking-wider text-slate-700 dark:text-slate-200">
-                        Lorebook Entries ({lorebook.entries.length})
+                        Entries ({lorebook.entries.length})
                       </span>
                       <button
                         type="button"
@@ -1868,13 +1874,13 @@ export const LorebookEditor: React.FC = () => {
                         )}
 
                         <SmartEditor
-                          label={`Entry Content · ${selectedEntry.comment || 'World Info'}`}
+                          label="Entry Content"
                           fieldKey="lorebook_entry_content"
                           value={selectedEntry.content}
                           onChange={(val) =>
                             handleUpdateSelectedEntry({ content: val })
                           }
-                          tooltip="Worldbuilding facts, faction lore, or environmental rules injected into the prompt when triggered."
+                          tooltip="The lore details that get added to chat when this entry is triggered."
                           rows={7}
                           isPermanentTokenField={selectedEntry.constant}
                           extraContextSummary={`${lorebookContextSummary}\nActive Entry Title: ${selectedEntry.comment || ''}\nTrigger Keys: ${selectedEntry.keys.join(', ')}`}
@@ -1884,7 +1890,7 @@ export const LorebookEditor: React.FC = () => {
                       </>
                     ) : (
                       <div className="py-8 text-center text-xs text-slate-400">
-                        Select or create an entry to start drafting.
+                        Pick an entry on the left or add a new one to start writing.
                       </div>
                     )}
                   </div>
@@ -1892,7 +1898,7 @@ export const LorebookEditor: React.FC = () => {
               </div>
             )}
 
-            {/* STEP 3: Trigger Keys & Discovery Rules */}
+            {/* STEP 3: Trigger Keywords */}
             {wizardStep === 3 && (
               <div
                 style={{
@@ -1904,10 +1910,10 @@ export const LorebookEditor: React.FC = () => {
                 <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 dark:border-slate-800 pb-3">
                   <div>
                     <h3 className="text-sm font-semibold text-slate-900 dark:text-white">
-                      Trigger Keys &amp; Discovery Rules Across Entries
+                      Trigger Keywords
                     </h3>
                     <p className="text-xs text-slate-500">
-                      Configure Primary <code className="font-mono">keys</code> and Selective <code className="font-mono">secondary_keys</code>, or click <strong>✨ AI Suggest Trigger Keys from Content</strong> on any entry.
+                      Words that wake up an entry when mentioned in chat, or click <strong>✨ AI Suggest Keywords</strong> to fill them in automatically.
                     </p>
                   </div>
                 </div>
@@ -1951,13 +1957,13 @@ export const LorebookEditor: React.FC = () => {
                                 style={{ color: 'var(--theme-accent)' }}
                               />
                             )}
-                            <span>✨ AI Suggest Trigger Keys from Content</span>
+                            <span>✨ AI Suggest Keywords</span>
                           </button>
                         </div>
 
                         <div className="space-y-1">
                           <label className="text-[11px] font-medium text-slate-600 dark:text-slate-400">
-                            Primary Trigger Keys (comma-separated)
+                            Trigger Keywords (comma-separated)
                           </label>
                           <input
                             type="text"
@@ -1977,7 +1983,7 @@ export const LorebookEditor: React.FC = () => {
 
                         <div className="space-y-1">
                           <label className="text-[11px] font-medium text-slate-600 dark:text-slate-400">
-                            Secondary Keys (Selective Mode)
+                            Optional Secondary Keywords
                           </label>
                           <input
                             type="text"
@@ -1990,7 +1996,7 @@ export const LorebookEditor: React.FC = () => {
                                   .filter(Boolean),
                               })
                             }
-                            placeholder="Optional secondary filter keys..."
+                            placeholder="Extra keywords used when Selective mode is on..."
                             className="theme-focus-ring font-mono w-full rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-3 py-1.5 text-xs text-slate-900 dark:text-white"
                           />
                         </div>
@@ -2013,10 +2019,10 @@ export const LorebookEditor: React.FC = () => {
                 >
                   <div>
                     <h3 className="text-sm font-semibold text-slate-900 dark:text-white">
-                      Global Scanning &amp; Token Budget Mechanics
+                      Scan &amp; Token Settings
                     </h3>
                     <p className="text-xs text-slate-500">
-                      Tune how SillyTavern scans chat messages and budgets context tokens for this Lorebook.
+                      Control how far back in chat SillyTavern looks for keywords and how many tokens this lorebook can use.
                     </p>
                   </div>
 
@@ -2051,7 +2057,7 @@ export const LorebookEditor: React.FC = () => {
                         className="w-full cursor-pointer"
                       />
                       <p className="text-[11px] text-slate-500">
-                        How many recent chat messages SillyTavern scans for trigger keywords (2–6 recommended for fast response focus).
+                        How many recent chat messages to check for keywords (2–6 is usually ideal).
                       </p>
                     </div>
 
@@ -2080,7 +2086,7 @@ export const LorebookEditor: React.FC = () => {
                         className="w-full cursor-pointer"
                       />
                       <p className="text-[11px] text-slate-500">
-                        Maximum tokens allocated to activated Lorebook entries per turn before lower-priority entries are trimmed.
+                        Max tokens reserved for triggered lore each turn before lower-priority entries are skipped.
                       </p>
                     </div>
 
@@ -2101,7 +2107,7 @@ export const LorebookEditor: React.FC = () => {
                         />
                       </label>
                       <p className="text-[11px] text-slate-500">
-                        When enabled, activated entries are themselves scanned for keywords that can chain-activate related lore entries.
+                        Lets one triggered entry wake up other lorebook entries mentioned inside it.
                       </p>
                     </div>
                   </div>
@@ -2109,7 +2115,7 @@ export const LorebookEditor: React.FC = () => {
                   {/* Per-Entry Position, Order & Constant/Selective Matrix */}
                   <div className="space-y-2.5 pt-2 border-t border-slate-200 dark:border-slate-800">
                     <h4 className="text-xs font-bold uppercase tracking-wider text-slate-700 dark:text-slate-300">
-                      Entry Activation Priority &amp; Placement
+                      Entry Order &amp; Placement
                     </h4>
                     <div className="space-y-2">
                       {lorebook.entries.map((entry) => (
@@ -2172,7 +2178,7 @@ export const LorebookEditor: React.FC = () => {
                                 style={{ accentColor: 'var(--theme-accent)' }}
                                 className="h-3.5 w-3.5 cursor-pointer"
                               />
-                              <span>Constant</span>
+                              <span>Always On</span>
                             </label>
                             <label className="flex items-center gap-1.5 cursor-pointer">
                               <input
@@ -2197,7 +2203,7 @@ export const LorebookEditor: React.FC = () => {
               </div>
             )}
 
-            {/* STEP 5: Review, Bind to Character & Export */}
+            {/* STEP 5: Review, Link & Export */}
             {wizardStep === 5 && (
               <div
                 style={{
@@ -2214,7 +2220,7 @@ export const LorebookEditor: React.FC = () => {
                   className="rounded-xl border bg-white dark:bg-slate-900 p-5 space-y-4"
                 >
                   <h3 className="text-sm font-semibold text-slate-900 dark:text-white">
-                    Lorebook Token &amp; Entry Readiness Summary
+                    Lorebook Summary
                   </h3>
 
                   <div className="space-y-2 text-xs">
@@ -2228,7 +2234,7 @@ export const LorebookEditor: React.FC = () => {
                     </div>
                     <div className="flex justify-between py-1.5 border-b border-slate-100 dark:border-slate-800">
                       <span className="text-slate-500">
-                        Constant Entries (Always Active)
+                        Always Active Entries
                       </span>
                       <span className="font-mono font-semibold">
                         {
@@ -2254,7 +2260,7 @@ export const LorebookEditor: React.FC = () => {
                     </div>
                     <div className="flex justify-between py-1.5">
                       <span className="text-slate-500">
-                        Total Lorebook Footprint / Budget
+                        Total Tokens / Budget
                       </span>
                       <span className="font-mono font-bold">
                         {activeLorebookTokens.total} / {lorebook.token_budget}{' '}
@@ -2278,12 +2284,12 @@ export const LorebookEditor: React.FC = () => {
                       onClick={() => updateSettings({ editorMode: 'sandbox' })}
                       className="theme-hover-outline rounded-lg border border-slate-200 dark:border-slate-800 px-4 py-2 text-xs font-medium text-slate-700 dark:text-slate-200 cursor-pointer"
                     >
-                      Open in Full Sandbox
+                      Open in Full Editor
                     </button>
                   </div>
                 </div>
 
-                {/* 1-Click Bind to Any Character in Library */}
+                {/* Link to Any Character in Library */}
                 <div
                   style={{
                     borderColor:
@@ -2293,11 +2299,10 @@ export const LorebookEditor: React.FC = () => {
                 >
                   <div>
                     <h3 className="text-sm font-semibold text-slate-900 dark:text-white">
-                      1-Click Bind to Character Card
+                      Link to a Character
                     </h3>
                     <p className="text-xs text-slate-500">
-                      Embed this Lorebook directly into any Character&apos;s{' '}
-                      <code className="font-mono">character_book</code> field.
+                      Attach this lorebook directly to any character card in your library.
                     </p>
                   </div>
 
@@ -2323,8 +2328,8 @@ export const LorebookEditor: React.FC = () => {
                             </div>
                             <div className="text-[11px] text-slate-500 truncate">
                               {charItem.character_book?.name
-                                ? `Current Book: ${charItem.character_book.name}`
-                                : 'No bound Lorebook'}
+                                ? `Linked: ${charItem.character_book.name}`
+                                : 'No linked lorebook'}
                             </div>
                           </div>
 
@@ -2342,7 +2347,7 @@ export const LorebookEditor: React.FC = () => {
                             {isBound ? (
                               <>
                                 <Check className="h-3.5 w-3.5 text-emerald-500" />
-                                <span>Bound</span>
+                                <span>Linked</span>
                               </>
                             ) : (
                               <>
@@ -2350,7 +2355,7 @@ export const LorebookEditor: React.FC = () => {
                                   className="h-3.5 w-3.5"
                                   style={{ color: 'var(--theme-accent)' }}
                                 />
-                                <span>Bind</span>
+                                <span>Link</span>
                               </>
                             )}
                           </button>
@@ -2588,7 +2593,7 @@ export const LorebookEditor: React.FC = () => {
 
                 {filteredEntries.length === 0 && (
                   <div className="py-8 text-center text-xs text-slate-400">
-                    No Lorebook entries found. Click &ldquo;+ Add Entry&rdquo; to create one.
+                    No entries yet. Click &ldquo;+ Add Entry&rdquo; to write your first one.
                   </div>
                 )}
               </div>
@@ -2605,7 +2610,7 @@ export const LorebookEditor: React.FC = () => {
                   <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-200 dark:border-slate-800 pb-3.5">
                     <div className="flex-1 space-y-1">
                       <label className="text-[11px] font-medium text-slate-500">
-                        Entry Title / Comment
+                        Entry Title
                       </label>
                       <input
                         type="text"
@@ -2613,7 +2618,7 @@ export const LorebookEditor: React.FC = () => {
                         onChange={(e) =>
                           handleUpdateSelectedEntry({ comment: e.target.value })
                         }
-                        placeholder="Entry title or summary..."
+                        placeholder="Give this entry a clear name..."
                         className="theme-focus-ring w-full rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 px-3 py-1.5 text-xs font-semibold text-slate-900 dark:text-white"
                       />
                     </div>
@@ -2636,7 +2641,7 @@ export const LorebookEditor: React.FC = () => {
                     </div>
                   </div>
 
-                  {/* Trigger Keys & Secondary Keys with 1-Click AI Auto-Key Suggestion */}
+                  {/* Trigger Keywords & Optional Secondary Keywords */}
                   <div
                     style={{
                       gridTemplateColumns:
@@ -2644,7 +2649,7 @@ export const LorebookEditor: React.FC = () => {
                     }}
                     className="grid gap-4"
                   >
-                    {/* Primary Keys */}
+                    {/* Trigger Keywords */}
                     <div className="space-y-2 rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50/60 dark:bg-slate-950/60 p-3">
                       <div className="flex flex-wrap items-center justify-between gap-1">
                         <label className="flex items-center gap-1.5 text-xs font-semibold text-slate-800 dark:text-slate-200">
@@ -2652,7 +2657,7 @@ export const LorebookEditor: React.FC = () => {
                             className="h-3.5 w-3.5"
                             style={{ color: 'var(--theme-accent)' }}
                           />
-                          <span>Primary Trigger Keys</span>
+                          <span>Trigger Keywords</span>
                         </label>
                         <button
                           type="button"
@@ -2672,7 +2677,7 @@ export const LorebookEditor: React.FC = () => {
                               style={{ color: 'var(--theme-accent)' }}
                             />
                           )}
-                          <span>✨ AI Suggest Keys</span>
+                          <span>✨ AI Suggest</span>
                         </button>
                       </div>
 
@@ -2687,7 +2692,7 @@ export const LorebookEditor: React.FC = () => {
                               handleAddKeyChip('keys', primaryKeyInput);
                             }
                           }}
-                          placeholder="Add key(s), comma-separated..."
+                          placeholder="Add keyword(s), comma-separated..."
                           className="theme-focus-ring flex-1 rounded border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-2.5 py-1 text-xs text-slate-900 dark:text-white"
                         />
                         <button
@@ -2720,12 +2725,12 @@ export const LorebookEditor: React.FC = () => {
                       </div>
                     </div>
 
-                    {/* Secondary Selective Keys */}
+                    {/* Optional Secondary Keywords */}
                     <div className="space-y-2 rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50/60 dark:bg-slate-950/60 p-3">
                       <div className="flex items-center justify-between">
                         <label className="flex items-center gap-1.5 text-xs font-semibold text-slate-800 dark:text-slate-200">
-                          <span>Secondary Keys (Selective)</span>
-                          <Tooltip content="When Selective mode is enabled, at least one secondary key must also appear alongside a primary key." />
+                          <span>Optional Secondary Keywords</span>
+                          <Tooltip content="When Selective mode is turned on below, at least one of these words must also show up in chat before the entry triggers." />
                         </label>
                       </div>
 
@@ -2743,7 +2748,7 @@ export const LorebookEditor: React.FC = () => {
                               );
                             }
                           }}
-                          placeholder="Add secondary key(s)..."
+                          placeholder="Add optional filter keyword(s)..."
                           className="theme-focus-ring flex-1 rounded border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-2.5 py-1 text-xs text-slate-900 dark:text-white"
                         />
                         <button
@@ -2784,13 +2789,13 @@ export const LorebookEditor: React.FC = () => {
 
                   {/* SmartEditor for Lorebook Entry Content */}
                   <SmartEditor
-                    label={`Entry Content · ${selectedEntry.comment || 'World Info'}`}
+                    label="Entry Content"
                     fieldKey="lorebook_entry_content"
                     value={selectedEntry.content}
                     onChange={(val) =>
                       handleUpdateSelectedEntry({ content: val })
                     }
-                    tooltip="Worldbuilding facts, faction lore, or environmental rules injected into the prompt when triggered."
+                    tooltip="The lore details that get added to chat whenever this entry's keywords appear."
                     rows={6}
                     isPermanentTokenField={selectedEntry.constant}
                     extraContextSummary={`${lorebookContextSummary}\nActive Entry Title: ${selectedEntry.comment || ''}\nTrigger Keys: ${selectedEntry.keys.join(', ')}`}
@@ -2808,8 +2813,8 @@ export const LorebookEditor: React.FC = () => {
                   >
                     <div className="space-y-1">
                       <label className="flex items-center gap-1 text-xs font-medium text-slate-700 dark:text-slate-300">
-                        <span>Insertion Position</span>
-                        <Tooltip content="Controls where in the prompt stack this entry is injected." />
+                        <span>Where to Insert</span>
+                        <Tooltip content="Controls where in the prompt SillyTavern places this entry." />
                       </label>
                       <select
                         value={selectedEntry.position}
@@ -2830,8 +2835,8 @@ export const LorebookEditor: React.FC = () => {
 
                     <div className="space-y-1">
                       <label className="flex items-center gap-1 text-xs font-medium text-slate-700 dark:text-slate-300">
-                        <span>Insertion Order</span>
-                        <Tooltip content="Higher numbers are inserted closer to the bottom of the prompt (higher influence)." />
+                        <span>Priority Order</span>
+                        <Tooltip content="Higher numbers appear lower in the prompt and have stronger priority." />
                       </label>
                       <input
                         type="number"
@@ -2847,8 +2852,8 @@ export const LorebookEditor: React.FC = () => {
 
                     <div className="space-y-1">
                       <label className="flex items-center gap-1 text-xs font-medium text-slate-700 dark:text-slate-300">
-                        <span>Depth (when at_depth)</span>
-                        <Tooltip content="Chat history depth from the bottom when position is set to at_depth." />
+                        <span>Chat Depth (at_depth)</span>
+                        <Tooltip content="How many messages up from the bottom to place this entry when set to Inside Chat History." />
                       </label>
                       <input
                         type="number"
@@ -2879,7 +2884,7 @@ export const LorebookEditor: React.FC = () => {
                         style={{ accentColor: 'var(--theme-accent)' }}
                         className="h-4 w-4 cursor-pointer"
                       />
-                      <span>Constant (Always Active)</span>
+                      <span>Always Active (Constant)</span>
                     </label>
 
                     <label className="flex items-center gap-2 text-xs font-medium text-slate-700 dark:text-slate-300 cursor-pointer pt-2">
@@ -2894,7 +2899,7 @@ export const LorebookEditor: React.FC = () => {
                         style={{ accentColor: 'var(--theme-accent)' }}
                         className="h-4 w-4 cursor-pointer"
                       />
-                      <span>Selective (Require Secondary Key)</span>
+                      <span>Selective (Require Secondary Keyword)</span>
                     </label>
 
                     <label className="flex items-center gap-2 text-xs font-medium text-slate-700 dark:text-slate-300 cursor-pointer pt-2">
@@ -2909,19 +2914,20 @@ export const LorebookEditor: React.FC = () => {
                         style={{ accentColor: 'var(--theme-accent)' }}
                         className="h-4 w-4 cursor-pointer"
                       />
-                      <span>Case Sensitive Keys</span>
+                      <span>Match Case</span>
                     </label>
                   </div>
 
-                  {/* Entry Semantic Tags */}
+                  {/* Entry Tags */}
                   <div className="pt-2 border-t border-slate-200 dark:border-slate-800">
                     <TagSelector
                       tags={tags}
                       selectedTagNames={selectedEntry.tags || []}
                       onToggleTag={toggleEntryTag}
                       onAddCustomTag={(tagName) => handleAddCustomEntryTag(tagName)}
-                      label="Entry Semantic Tags (Injected into AI Assist)"
-                      tooltip="Tags attached to this Lorebook entry automatically provide their AI Context Descriptions when generating or expanding this entry."
+                      label="Entry Tags"
+                      subtitle="Tags help guide the AI when writing this entry"
+                      tooltip="Attach tags to steer the tone and style when using AI Assist on this entry."
                     />
                   </div>
                 </div>
@@ -2938,10 +2944,10 @@ export const LorebookEditor: React.FC = () => {
                     style={{ color: 'var(--theme-accent)' }}
                   />
                   <div className="text-sm font-semibold text-slate-900 dark:text-white">
-                    No Lorebook Entry Selected
+                    No Entry Selected
                   </div>
                   <p className="text-xs text-slate-500">
-                    Select an entry from the list or create a new World Info entry to start editing.
+                    Pick an entry from the list or create a new one to start writing.
                   </p>
                   <button
                     type="button"

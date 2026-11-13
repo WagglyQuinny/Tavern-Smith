@@ -833,7 +833,7 @@ export const SmartEditor: React.FC<SmartEditorProps> = ({
                   borderColor:
                     'color-mix(in srgb, var(--theme-accent) 55%, transparent)',
                 }}
-                title="Inspect the Character Portrait (~260 tokens) and generate or append physical appearance & attire details"
+                title="Have the AI look at your portrait and write or expand the appearance description"
                 className="theme-hover-outline flex items-center gap-1.5 rounded-md border bg-slate-50 dark:bg-slate-950 px-2.5 py-1 text-[11px] font-semibold text-slate-800 dark:text-slate-200 disabled:opacity-50 cursor-pointer whitespace-nowrap"
               >
                 {isGeneratingField ? (
@@ -847,7 +847,7 @@ export const SmartEditor: React.FC<SmartEditorProps> = ({
                     style={{ color: 'var(--theme-accent)' }}
                   />
                 )}
-                <span>✨ Describe Appearance from Portrait</span>
+                <span>✨ Describe from Portrait</span>
               </button>
             )}
 
@@ -861,7 +861,7 @@ export const SmartEditor: React.FC<SmartEditorProps> = ({
               setSelectedMacroIdx(0);
               setMacroMenuOpen((prev) => !prev);
             }}
-            title="Insert SillyTavern {{macro}} (or type {{ in editor)"
+            title="Insert a SillyTavern {{macro}} (or just type {{ while writing)"
             className="theme-hover-outline flex items-center gap-1 rounded-md border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 px-2 py-1 font-mono text-[11px] text-slate-600 dark:text-slate-300 cursor-pointer whitespace-nowrap"
           >
             <Braces className="h-3 w-3" style={{ color: 'var(--theme-accent)' }} />
@@ -914,7 +914,7 @@ export const SmartEditor: React.FC<SmartEditorProps> = ({
               type="text"
               value={customInstruction}
               onChange={(e) => setCustomInstruction(e.target.value)}
-              placeholder={`Custom instructions for ${label} (e.g., "Make her more sarcastic", "Emphasize gothic sensory detail")...`}
+              placeholder={`Tell the AI what to write or change for ${label} (e.g., "Make her more sarcastic", "Add more detail")...`}
               className="theme-focus-ring flex-1 rounded-md border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-3 py-1.5 text-xs text-slate-900 dark:text-white placeholder:text-slate-400"
             />
             <div className="flex items-center gap-1.5 shrink-0">
@@ -1007,7 +1007,7 @@ export const SmartEditor: React.FC<SmartEditorProps> = ({
                         : 'border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 text-slate-600 dark:text-slate-400'
                     }`}
                   >
-                    <span>👁️ Use Portrait as Visual Context (~260 tok)</span>
+                    <span>👁️ Include Portrait Image (~260 tok)</span>
                     {isPortraitVisionEnabled && (
                       <Check
                         className="h-3 w-3 shrink-0"
@@ -1029,7 +1029,7 @@ export const SmartEditor: React.FC<SmartEditorProps> = ({
                       className="h-3 w-3"
                       style={{ color: 'var(--theme-accent)' }}
                     />
-                    <span>✨ Describe Appearance from Portrait</span>
+                    <span>✨ Describe from Portrait</span>
                   </button>
                 )}
               </div>
@@ -1086,7 +1086,7 @@ export const SmartEditor: React.FC<SmartEditorProps> = ({
                         {tempReferenceImageName || 'Reference Image'}
                       </span>
                       <span className="font-mono text-[9px] text-emerald-600 dark:text-emerald-400">
-                        Temp Ref · ~260 tok JPEG (Not saved to card)
+                        Temp Image · Not saved to card
                       </span>
                     </div>
                     <button
@@ -1106,13 +1106,13 @@ export const SmartEditor: React.FC<SmartEditorProps> = ({
                     type="button"
                     onClick={() => tempRefImageInputRef.current?.click()}
                     className="inline-flex items-center gap-1.5 text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white cursor-pointer"
-                    title="Drop or select a temporary reference image (location, outfit, item, or character) for this AI Assist call. Never saved into card JSON."
+                    title="Drop or pick a temporary reference image for this AI request. It is never saved into your card."
                   >
                     <ImageIcon
                       className="h-3.5 w-3.5 shrink-0"
                       style={{ color: 'var(--theme-accent)' }}
                     />
-                    <span>Drop or Select Temp Reference Image (~260 tok)</span>
+                    <span>Attach Reference Image (Temp)</span>
                     <Upload className="h-3 w-3 opacity-70" />
                   </button>
                 )}
@@ -1120,7 +1120,7 @@ export const SmartEditor: React.FC<SmartEditorProps> = ({
             </div>
           )}
 
-          {/* AI Assist Sub-bar: Format indicator + Preview Sent Context toggle + Extracted Reasoning toggle */}
+          {/* AI Assist Sub-bar: Format indicator + Preview Prompt toggle + Thinking Notes toggle */}
           <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] text-slate-500 dark:text-slate-400">
             <div className="flex flex-wrap items-center gap-2">
               <span>
@@ -1133,7 +1133,7 @@ export const SmartEditor: React.FC<SmartEditorProps> = ({
               {combinedActiveTagNames.length > 0 && (
                 <>
                   <span aria-hidden="true">·</span>
-                  <span>{combinedActiveTagNames.length} active tags injected</span>
+                  <span>{combinedActiveTagNames.length} tags included</span>
                 </>
               )}
             </div>
@@ -1146,7 +1146,7 @@ export const SmartEditor: React.FC<SmartEditorProps> = ({
                   className="inline-flex items-center gap-1 font-medium text-slate-700 dark:text-slate-200 hover:underline cursor-pointer"
                 >
                   <Brain className="h-3 w-3" style={{ color: 'var(--theme-accent)' }} />
-                  <span>AI Reasoning</span>
+                  <span>AI Thinking</span>
                   {showReasoningAccordion ? (
                     <ChevronDown className="h-3 w-3" />
                   ) : (
@@ -1163,17 +1163,17 @@ export const SmartEditor: React.FC<SmartEditorProps> = ({
               >
                 <Eye className="h-3 w-3" />
                 <span>
-                  {showPreviewContext ? 'Hide Sent Context' : 'Preview Sent Context'}
+                  {showPreviewContext ? 'Hide Prompt' : 'Preview Prompt'}
                 </span>
               </button>
             </div>
           </div>
 
-          {/* Collapsible Preview Sent Context Panel */}
+          {/* Collapsible Preview Prompt Panel */}
           {showPreviewContext && (
             <div className="rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-2.5 space-y-1">
               <div className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">
-                Synthesized System Prompt Injected Into Request
+                Full Prompt Context Sent to AI
               </div>
               <pre className="font-mono text-[11px] leading-relaxed text-slate-600 dark:text-slate-300 whitespace-pre-wrap max-h-40 overflow-y-auto">
                 {previewSentContextText}
@@ -1181,11 +1181,11 @@ export const SmartEditor: React.FC<SmartEditorProps> = ({
             </div>
           )}
 
-          {/* Collapsible Extracted AI Reasoning (<think> / reasoning_content) Accordion */}
+          {/* Collapsible Extracted AI Thinking (<think> / reasoning_content) Accordion */}
           {lastReasoning && showReasoningAccordion && (
             <div className="rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-2.5 space-y-1">
               <div className="flex items-center justify-between text-[10px] font-semibold uppercase tracking-wider text-slate-400">
-                <span>Extracted Model Chain-of-Thought (Stripped from Output)</span>
+                <span>AI Thinking Notes (Hidden from Output)</span>
                 <button
                   type="button"
                   onClick={() => setLastReasoning('')}
@@ -1253,7 +1253,7 @@ export const SmartEditor: React.FC<SmartEditorProps> = ({
             className="absolute left-3.5 top-2 z-30 w-80 rounded-lg border bg-white dark:bg-slate-900 p-1.5 shadow-xl"
           >
             <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 px-2 py-1 text-[10px] font-medium text-slate-400">
-              <span>SillyTavern Macro Autocomplete (Non-AI)</span>
+              <span>Insert Macro</span>
               <span className="font-mono">↑↓ · Enter/Tab</span>
             </div>
             <div className="max-h-48 overflow-y-auto divide-y divide-slate-100 dark:divide-slate-800/60">
@@ -1421,14 +1421,14 @@ export const SmartEditor: React.FC<SmartEditorProps> = ({
               ))}
             </div>
           ) : (
-            <span>Type {'{{'} for instant SillyTavern macros</span>
+            <span>Type {'{{'} to insert SillyTavern macros</span>
           )}
 
           {isFetchingGhost && (
             <span className="inline-flex items-center gap-1 text-slate-400">
               <span>·</span>
               <Loader2 className="h-3 w-3 animate-spin" />
-              <span>Predicting ghost text...</span>
+              <span>Writing suggestion...</span>
             </span>
           )}
         </div>

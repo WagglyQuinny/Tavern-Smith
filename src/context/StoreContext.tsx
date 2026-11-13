@@ -1865,7 +1865,7 @@ export const DEFAULT_STAT_BLOCK: StatBlockConfig = {
         'Reflects immediate emotional and physical state at the end of the turn.',
     },
   ],
-  formatTemplate: `<details><summary>Status & Telemetry</summary>\n\`\`\`yaml\nAffection: {{stat:Affection}}\nCurrent Mood: {{stat:Current Mood}}\n\`\`\`\n</details>`,
+  formatTemplate: `<details><summary>Character Stats</summary>\n\`\`\`yaml\nAffection: {{stat:Affection}}\nCurrent Mood: {{stat:Current Mood}}\n\`\`\`\n</details>`,
 };
 
 export const DEFAULT_LOREBOOK: Lorebook = {
@@ -2330,7 +2330,7 @@ export function createBlankCharacter(
         changeRules: 'Reflects immediate emotional state at the end of the turn.',
       },
     ],
-    formatTemplate: `<details><summary>Status & Telemetry</summary>\n\`\`\`yaml\nAffection: {{stat:Affection}}\nCurrent Mood: {{stat:Current Mood}}\n\`\`\`\n</details>`,
+    formatTemplate: `<details><summary>Character Stats</summary>\n\`\`\`yaml\nAffection: {{stat:Affection}}\nCurrent Mood: {{stat:Current Mood}}\n\`\`\`\n</details>`,
   };
 
   return {
@@ -2366,7 +2366,7 @@ export function createBlankLorebook(partial?: Partial<Lorebook>): Lorebook {
   return {
     id: newId,
     name: 'New World Lorebook',
-    description: 'Standalone or attachable SillyTavern World Info lorebook.',
+    description: 'World info and lore entries for SillyTavern.',
     scan_depth: 4,
     token_budget: 1024,
     recursive_scanning: true,

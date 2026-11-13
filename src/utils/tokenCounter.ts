@@ -111,7 +111,7 @@ export function buildStatTemplatePreset(
   const yamlLines = activeStats
     .map((s) => `${s.label}: {{stat:${s.label}}}`)
     .join('\n');
-  return `<details><summary>Status & Telemetry</summary>\n\`\`\`yaml\n${yamlLines}\n\`\`\`\n</details>`;
+  return `<details><summary>Character Stats</summary>\n\`\`\`yaml\n${yamlLines}\n\`\`\`\n</details>`;
 }
 
 /**

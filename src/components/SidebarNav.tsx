@@ -23,25 +23,25 @@ const navItems: NavItem[] = [
   {
     id: 'character',
     label: 'Character',
-    shortDesc: 'V2/V3 Card & DM StatBlock',
+    shortDesc: 'Card Editor & Stat Tracker',
     icon: User,
   },
   {
     id: 'lorebook',
     label: 'Lorebook',
-    shortDesc: 'World Info & Trigger Keys',
+    shortDesc: 'World Info & Keywords',
     icon: BookOpen,
   },
   {
     id: 'themes',
-    label: 'Context Themes & Tags',
-    shortDesc: 'Genre Palettes & Tag Studio',
+    label: 'Themes & Tags',
+    shortDesc: 'Writing Styles & Tags',
     icon: Palette,
   },
   {
     id: 'inspector',
-    label: 'JSON Inspector',
-    shortDesc: 'V2/V3 Live Payload & Export',
+    label: 'Raw JSON & Export',
+    shortDesc: 'Card JSON, Tokens & Export',
     icon: Code2,
   },
 ];
@@ -71,7 +71,7 @@ export const SidebarNav: React.FC = () => {
           <button
             type="button"
             onClick={toggleMainSidebar}
-            title="Expand Workspace Views Sidebar"
+            title="Expand Sidebar"
             className="theme-hover-outline flex h-9 w-9 items-center justify-center rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 text-slate-500 hover:text-slate-900 dark:hover:text-white cursor-pointer mb-1"
           >
             <PanelLeftOpen
@@ -134,8 +134,8 @@ export const SidebarNav: React.FC = () => {
             }
             title={
               isWizard
-                ? 'Editor Workflow: 5-Step Wizard (Click to switch to Full Sandbox)'
-                : 'Editor Workflow: Full Sandbox (Click to switch to 5-Step Wizard)'
+                ? 'Guided Wizard View (Click to switch to Full Editor)'
+                : 'Full Editor View (Click to switch to Guided Wizard)'
             }
             style={{ borderColor: 'var(--theme-accent)' }}
             className="theme-hover-outline flex h-9 w-9 items-center justify-center rounded-lg border bg-white dark:bg-slate-900 text-slate-700 dark:text-slate-200 cursor-pointer"
@@ -163,12 +163,12 @@ export const SidebarNav: React.FC = () => {
       <div className="space-y-1">
         <div className="flex items-center justify-between px-2.5 py-1.5">
           <span className="text-[11px] font-mono uppercase tracking-wider text-slate-400 dark:text-slate-500">
-            Workspace Views
+            Menu
           </span>
           <button
             type="button"
             onClick={toggleMainSidebar}
-            title="Collapse into Blender-style Icon Rail"
+            title="Collapse Sidebar"
             className="rounded-md p-1 text-slate-400 hover:bg-slate-200/60 dark:hover:bg-slate-800 hover:text-slate-700 dark:hover:text-slate-200 cursor-pointer"
           >
             <PanelLeftClose className="h-3.5 w-3.5" />
@@ -219,20 +219,20 @@ export const SidebarNav: React.FC = () => {
 
       {/* Bottom Workspace Summary & Workflow Mode Card (Permanently Visible Across All Views & Modes) */}
       <div className="flex flex-col gap-2.5 pt-3 border-t border-slate-200 dark:border-slate-800">
-        {/* Sandbox vs Wizard Workflow Switch */}
+        {/* Full Editor vs Wizard View Switch */}
         <div
           style={{ borderColor: 'var(--theme-accent)' }}
           className="rounded-xl border bg-white dark:bg-slate-900 p-2.5 space-y-2"
         >
           <div className="flex items-center justify-between">
             <span className="text-[10px] font-mono uppercase tracking-wider text-slate-400">
-              Editor Workflow
+              Editor Mode
             </span>
             <span
               style={{ color: 'var(--theme-accent)' }}
               className="font-mono text-[10px] font-semibold uppercase"
             >
-              {isWizard ? '5-Step Wizard' : 'Full Sandbox'}
+              {isWizard ? '5-Step Wizard' : 'Full Editor'}
             </span>
           </div>
           <div className="grid grid-cols-2 gap-1 rounded-lg bg-slate-100 dark:bg-slate-950 p-1">
@@ -249,7 +249,7 @@ export const SidebarNav: React.FC = () => {
               }`}
             >
               <Sliders className="h-3 w-3" />
-              <span>Sandbox</span>
+              <span>Full</span>
             </button>
             <button
               type="button"
@@ -273,7 +273,7 @@ export const SidebarNav: React.FC = () => {
         <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900/90 p-3 space-y-2">
           <div className="flex items-center justify-between">
             <span className="text-[10px] font-mono uppercase tracking-wider text-slate-400">
-              Active Card
+              Current Character
             </span>
             <span
               className="h-2 w-2 rounded-full"
@@ -290,7 +290,7 @@ export const SidebarNav: React.FC = () => {
             </span>
           </div>
           <div className="flex items-center justify-between text-[11px] text-slate-500 dark:text-slate-400 font-mono">
-            <span>DM Tracker</span>
+            <span>Stat Tracker</span>
             <span
               className={
                 character.extensions?.statBlock?.enableDMTracker

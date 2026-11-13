@@ -473,10 +473,10 @@ export const ThemesAndTagsView: React.FC = () => {
       <div className="flex flex-wrap items-center justify-between gap-4 border-b border-slate-200 dark:border-slate-800 pb-4">
         <div className="min-w-0">
           <h1 className="text-xl font-bold tracking-tight text-slate-900 dark:text-white">
-            Context Themes &amp; Tag Studio
+            Themes &amp; Tags
           </h1>
           <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
-            Create and customize Context Themes and semantic AI Tags (`{tags.length}` total: `{totalSfwCount}` SFW · `{totalNsfwCount}` NSFW 18+). Any tag flagged `NSFW` automatically flags Characters and Lorebooks that use it.
+            Manage writing themes and character/lorebook tags ({tags.length} total: {totalSfwCount} SFW · {totalNsfwCount} NSFW 18+). Tags marked NSFW automatically mark any card or lorebook using them.
           </p>
         </div>
 
@@ -542,9 +542,9 @@ export const ThemesAndTagsView: React.FC = () => {
                 style={{ color: 'var(--theme-accent)' }}
               />
               <h2 className="text-sm font-bold text-slate-900 dark:text-white">
-                Quick-Create or Update Semantic AI Tag
+                Create or Update a Tag
               </h2>
-              <Tooltip content="Create a new Tag in seconds: enter a name, pick a category, toggle the 🔞 NSFW Flag if it's 18+ adult content, choose a color swatch, and let AI auto-write the context description." />
+              <Tooltip content="Type a tag name, pick a category and color, mark it NSFW if it's 18+, and let AI write the description if you want." />
             </div>
             {quickTagFeedback && (
               <span className="rounded-md border border-emerald-500/40 bg-emerald-500/10 px-2.5 py-1 text-xs font-semibold text-emerald-600 dark:text-emerald-300">
@@ -606,7 +606,7 @@ export const ThemesAndTagsView: React.FC = () => {
             {/* 1-Click NSFW Flag Switch */}
             <div className="md:col-span-2 space-y-1">
               <label className="block text-[11px] font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">
-                Content Rating Flag
+                Rating
               </label>
               <button
                 type="button"
@@ -677,7 +677,7 @@ export const ThemesAndTagsView: React.FC = () => {
                     handleCreateQuickTag();
                   }
                 }}
-                placeholder="AI Context Description (tells the AI how to adjust tone, vocabulary & characterization when this tag is attached)..."
+                placeholder="Tag description (tells the AI what this tag means when writing your card or lorebook)..."
                 className="w-full rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 px-3 py-2 text-xs text-slate-900 dark:text-white focus:outline-none"
               />
             </div>
@@ -701,7 +701,7 @@ export const ThemesAndTagsView: React.FC = () => {
                     style={{ color: 'var(--theme-accent)' }}
                   />
                 )}
-                <span>✨ AI Auto-Write Description</span>
+                <span>✨ Auto-Write Description</span>
               </button>
 
               <button
@@ -728,7 +728,7 @@ export const ThemesAndTagsView: React.FC = () => {
                 type="text"
                 value={tagSearch}
                 onChange={(e) => setTagSearch(e.target.value)}
-                placeholder={`Search ${filteredTags.length} visible tags by name, category, or AI directive...`}
+                placeholder={`Search ${filteredTags.length} tags by name, category, or description...`}
                 className="w-full rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 pl-9 pr-8 py-2 text-xs text-slate-900 dark:text-white focus:outline-none"
               />
               {tagSearch && (
@@ -815,7 +815,7 @@ export const ThemesAndTagsView: React.FC = () => {
           {/* Grouped Clean Interactive Tag Cards Grid */}
           {groupedTags.length === 0 ? (
             <div className="rounded-xl border border-dashed border-slate-200 dark:border-slate-800 p-8 text-center text-xs text-slate-400">
-              No tags match your current filter criteria.
+              No tags match that filter. Try clearing your search or switching categories.
             </div>
           ) : (
             <div className="space-y-5 max-h-[600px] overflow-y-auto pr-1">
@@ -896,7 +896,7 @@ export const ThemesAndTagsView: React.FC = () => {
                             </div>
 
                             <p className="text-[11px] text-slate-500 dark:text-slate-400 line-clamp-2 leading-relaxed">
-                              {desc || 'Click to add AI writing directive...'}
+                              {desc || 'Click to add AI notes for this tag...'}
                             </p>
                           </div>
                         </div>
@@ -935,9 +935,9 @@ export const ThemesAndTagsView: React.FC = () => {
                 style={{ color: 'var(--theme-accent)' }}
               />
               <h2 className="text-sm font-bold text-slate-900 dark:text-white">
-                Context Themes ({themes.length})
+                Themes ({themes.length})
               </h2>
-              <Tooltip content="Select or customize the overarching genre theme. Its AI Context Prompt and associated Tag directives are automatically injected into every AI generation call." />
+              <Tooltip content="Pick or customize a theme. Its style notes and default tags guide the AI whenever you generate or edit text." />
             </div>
           </div>
 
@@ -1020,7 +1020,7 @@ export const ThemesAndTagsView: React.FC = () => {
                       style={{ color: 'var(--theme-accent)' }}
                     />
                   )}
-                  <span>✨ AI Synthesize Prompt</span>
+                  <span>✨ Write Prompt with AI</span>
                 </button>
                 <label className="text-[11px] text-slate-500">Accent:</label>
                 <input
@@ -1036,14 +1036,14 @@ export const ThemesAndTagsView: React.FC = () => {
             </div>
 
             <SmartEditor
-              label="AI Context Prompt Injection"
+              label="Theme Style Prompt"
               fieldKey="theme_ai_context_prompt"
               value={activeTheme.aiContextPrompt}
               onChange={(val) =>
                 handleUpdateActiveTheme({ aiContextPrompt: val })
               }
               rows={3}
-              tooltip="Automatically prepended to the system prompt whenever you generate or autocomplete character fields while this theme is active."
+              tooltip="Sent to the AI whenever this theme is selected so your cards and lore match this vibe."
             />
 
             <TagSelector
@@ -1051,8 +1051,9 @@ export const ThemesAndTagsView: React.FC = () => {
               onChange={(nextTags) =>
                 handleUpdateActiveTheme({ associatedTags: nextTags })
               }
-              title="Theme Associated Tags"
-              tooltip="Attach default semantic tags to this Context Theme."
+              title="Theme Default Tags"
+              subtitle="Tags included automatically whenever this theme is active"
+              tooltip="Attach default tags to guide AI writing for this theme."
               compact
             />
           </div>
@@ -1068,7 +1069,7 @@ export const ThemesAndTagsView: React.FC = () => {
         >
           <div className="flex flex-wrap items-center justify-between gap-2">
             <h3 className="text-sm font-bold text-slate-900 dark:text-white">
-              Create Custom Context Theme
+              Create Custom Theme
             </h3>
             <button
               type="button"
@@ -1088,7 +1089,7 @@ export const ThemesAndTagsView: React.FC = () => {
                   style={{ color: 'var(--theme-accent)' }}
                 />
               )}
-              <span>✨ AI Generate from Name &amp; Tags</span>
+              <span>✨ Generate from Name &amp; Tags</span>
             </button>
           </div>
 
@@ -1135,8 +1136,8 @@ export const ThemesAndTagsView: React.FC = () => {
           <TagSelector
             selectedTags={newThemeTags}
             onChange={setNewThemeTags}
-            title="Select Tags for New Theme"
-            tooltip="Pick tags for this new theme, then click '✨ AI Generate from Name & Tags' to synthesize its prompt."
+            title="Tags for This Theme"
+            tooltip="Pick tags for your theme, then click '✨ Generate from Name & Tags' above to draft the style prompt."
             compact
           />
 
@@ -1144,7 +1145,7 @@ export const ThemesAndTagsView: React.FC = () => {
             value={newThemePrompt}
             onChange={(e) => setNewThemePrompt(e.target.value)}
             rows={3}
-            placeholder="AI Context Prompt instructions for this theme (or click ✨ AI Generate above)..."
+            placeholder="Style instructions for this theme (or click ✨ Generate above)..."
             className="w-full rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 p-3 text-xs text-slate-900 dark:text-white focus:outline-none"
           />
 
@@ -1155,7 +1156,7 @@ export const ThemesAndTagsView: React.FC = () => {
             className="theme-hover-outline flex items-center gap-1.5 rounded-lg border bg-slate-900 dark:bg-white px-3.5 py-2 text-xs font-semibold text-white dark:text-slate-900 cursor-pointer"
           >
             <Plus className="h-3.5 w-3.5" />
-            <span>Add Context Theme</span>
+            <span>Create Theme</span>
           </button>
         </div>
       </section>
@@ -1225,7 +1226,7 @@ export const ThemesAndTagsView: React.FC = () => {
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 items-end">
               <div className="space-y-1">
                 <label className="block text-[11px] font-semibold uppercase tracking-wider text-slate-500">
-                  NSFW Content Flag
+                  Rating
                 </label>
                 <button
                   type="button"
@@ -1280,7 +1281,7 @@ export const ThemesAndTagsView: React.FC = () => {
             <div className="space-y-1.5">
               <div className="flex items-center justify-between">
                 <label className="text-[11px] font-semibold uppercase tracking-wider text-slate-500">
-                  AI Context Directive
+                  AI Tag Notes
                 </label>
                 <button
                   type="button"
@@ -1293,7 +1294,7 @@ export const ThemesAndTagsView: React.FC = () => {
                   ) : (
                     <Sparkles className="h-3 w-3" />
                   )}
-                  <span>✨ AI Auto-Write Description</span>
+                  <span>✨ Auto-Write Description</span>
                 </button>
               </div>
               <textarea

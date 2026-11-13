@@ -247,9 +247,7 @@ export const OptionsView: React.FC = () => {
     await encryptAndSaveProviderKeys(updatedMap);
     setVaultStatus(getVaultStatusInfo());
     setKeyActionMessage(
-      aiConfig.preset === 'gemini'
-        ? 'Cleared Custom Gemini Key (Reverted to /api/gemini Server Fallback)'
-        : `Cleared API Key for ${currentPresetMeta.label}`
+      `Cleared API key for ${currentPresetMeta.label}`
     );
     scheduleTimer(() => setKeyActionMessage(null), 4000);
   };
@@ -350,10 +348,10 @@ export const OptionsView: React.FC = () => {
       <div className="flex flex-wrap items-center justify-between gap-4 border-b border-slate-200 dark:border-slate-800 pb-4">
         <div className="min-w-0">
           <h1 className="text-xl font-bold tracking-tight text-slate-900 dark:text-white">
-            IDE Options, AI Connections &amp; Unified Save Folder Manager
+            Options &amp; Saved Files
           </h1>
           <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
-            Configure local/cloud AI endpoints, live model scanning, unified Root Save Folder (`Characters/` &amp; `Lorebooks/`), and workspace appearance.
+            Set up your AI connection, manage saved characters and lorebooks, and customize how TavernSmith looks.
           </p>
         </div>
 
@@ -406,9 +404,9 @@ export const OptionsView: React.FC = () => {
             <div className="space-y-1.5 min-w-0">
               <div className="flex flex-wrap items-center gap-2">
                 <h2 className="text-sm font-bold text-slate-900 dark:text-white">
-                  Local Disk Storage (`./Saves/`)
+                  Saved Files Folder (`./Saves/`)
                 </h2>
-                <Tooltip content="100% of Characters, Lorebooks, Custom Tags, Context Themes, Settings, and Encrypted API Keys live directly on disk inside ./Saves/ next to the launcher script. Disk folders are automatically scanned on startup, Save, and Delete." />
+                <Tooltip content="Your characters, lorebooks, themes, tags, and encrypted API keys are saved in ./Saves/ on disk and loaded automatically." />
               </div>
 
               {/* Active Disk Path Badge */}
@@ -416,7 +414,7 @@ export const OptionsView: React.FC = () => {
                 <span className="inline-flex items-center gap-1.5 rounded-md border border-emerald-500/40 bg-emerald-500/15 px-2.5 py-1 font-mono text-xs font-semibold text-emerald-700 dark:text-emerald-300">
                   <HardDrive className="h-3.5 w-3.5 shrink-0" />
                   <span>
-                    Active Disk Path: {UNIFIED_INTERNAL_ROOT} (Characters/ · Lorebooks/ · {META_FILENAME} · {VAULT_FILENAME})
+                    Save Folder: {UNIFIED_INTERNAL_ROOT}
                   </span>
                 </span>
               </div>
@@ -474,7 +472,7 @@ export const OptionsView: React.FC = () => {
                 className="h-3.5 w-3.5"
                 style={{ color: 'var(--theme-accent)' }}
               />
-              <span>Export Folder Backup Bundle</span>
+              <span>Export Backup</span>
             </button>
           </div>
         </div>
@@ -504,12 +502,12 @@ export const OptionsView: React.FC = () => {
                 style={{ color: 'var(--theme-accent)' }}
               />
               <span>
-                Disk Folder Tree:{' '}
+                Files in{' '}
                 <code className="font-mono">{UNIFIED_INTERNAL_ROOT}</code>
               </span>
             </div>
             <span className="font-mono text-[11px] font-semibold text-slate-600 dark:text-slate-300">
-              {savedFiles.length} file{savedFiles.length === 1 ? '' : 's'} on disk
+              {savedFiles.length} file{savedFiles.length === 1 ? '' : 's'}
             </span>
           </div>
 
@@ -769,14 +767,14 @@ export const OptionsView: React.FC = () => {
             className="rounded-xl border bg-white dark:bg-slate-900 p-5 space-y-5"
           >
             <h2 className="text-sm font-semibold text-slate-900 dark:text-white border-b border-slate-200 dark:border-slate-800 pb-2.5">
-              Appearance &amp; Workspace Mode
+              Appearance &amp; Editor Mode
             </h2>
 
             {/* Appearance Mode: Dark vs Light */}
             <div className="space-y-2">
               <label className="flex items-center gap-1.5 text-xs font-medium text-slate-700 dark:text-slate-300">
                 <span>Appearance Mode</span>
-                <Tooltip content="Switches the entire application between Obsidian Dark Mode (#09090b canvas) and Alabaster Light Mode (#f4f4f5 canvas) while keeping your active Context Theme accent." />
+                <Tooltip content="Switch between Dark Mode and Light Mode. Your active theme's accent color stays applied either way." />
               </label>
               <div className="grid grid-cols-2 gap-2.5">
                 <button
@@ -816,11 +814,11 @@ export const OptionsView: React.FC = () => {
               </div>
             </div>
 
-            {/* Editor Mode: Full Sandbox vs Step-by-Step Wizard */}
+            {/* Editor Mode: Full Editor vs Step-by-Step Wizard */}
             <div className="space-y-2">
               <label className="flex items-center gap-1.5 text-xs font-medium text-slate-700 dark:text-slate-300">
-                <span>Editor Workflow Mode</span>
-                <Tooltip content="Switch between the multi-panel Full Sandbox Workbench and the guided 5-step Creation Wizard." />
+                <span>Editor Mode</span>
+                <Tooltip content="Pick Full Editor to see every field at once, or Guided Wizard to build step by step." />
               </label>
               <div className="grid grid-cols-2 gap-2.5">
                 <button
@@ -838,7 +836,7 @@ export const OptionsView: React.FC = () => {
                   }`}
                 >
                   <Sliders className="h-3.5 w-3.5" />
-                  <span>Full Workbench</span>
+                  <span>Full Editor</span>
                 </button>
                 <button
                   type="button"
@@ -863,8 +861,8 @@ export const OptionsView: React.FC = () => {
             {/* SillyTavern Card Spec Version */}
             <div className="space-y-2">
               <label className="flex items-center gap-1.5 text-xs font-medium text-slate-700 dark:text-slate-300">
-                <span>Default SillyTavern Spec Target</span>
-                <Tooltip content="Controls whether exported JSON and PNG tEXt chunks default to chara_card_v2 (2.0) or chara_card_v3 (3.0)." />
+                <span>Default Card Spec</span>
+                <Tooltip content="Choose whether exported JSON and PNG files use SillyTavern V2 or V3 format by default." />
               </label>
               <div className="grid grid-cols-2 gap-2.5">
                 <button
@@ -906,8 +904,8 @@ export const OptionsView: React.FC = () => {
             <div className="space-y-2 border-t border-slate-200 dark:border-slate-800 pt-4">
               <label className="flex items-center justify-between gap-2 text-xs font-medium text-slate-700 dark:text-slate-300">
                 <div className="flex items-center gap-1.5">
-                  <span>Show / Hide NSFW Content (Master Filter)</span>
-                  <Tooltip content="Centralized NSFW visibility control. When 'Hide NSFW Content' is enabled, all NSFW-flagged Tags, NSFW-flagged Characters, and NSFW-flagged Lorebooks are hidden across the visual UI while keeping any active AI generation context intact." />
+                  <span>Show / Hide NSFW Content</span>
+                  <Tooltip content="Hide all NSFW-marked tags, characters, and lorebooks across the app when SFW mode is turned on." />
                 </div>
                 <span
                   className={`rounded px-1.5 py-0.5 font-mono text-[10px] font-bold uppercase ${
@@ -956,7 +954,7 @@ export const OptionsView: React.FC = () => {
                 </button>
               </div>
               <p className="text-[11px] text-slate-500 dark:text-slate-400">
-                Hides all NSFW-flagged Tags, Characters, and Lorebooks across the entire workspace when enabled.
+                Hides all NSFW-flagged Tags, Characters, and Lorebooks when enabled.
               </p>
             </div>
           </div>
@@ -971,7 +969,7 @@ export const OptionsView: React.FC = () => {
           >
             <div className="flex items-center justify-between border-b border-slate-200 dark:border-slate-800 pb-2.5">
               <h2 className="text-sm font-semibold text-slate-900 dark:text-white">
-                Auto-Save Interval &amp; Reset
+                Auto-Save &amp; Reset
               </h2>
               <span className="font-mono text-[11px] text-slate-500 dark:text-slate-400 tabular-nums">
                 {lastSavedAt ? `Saved ${lastSavedAt}` : 'Not saved yet'}
@@ -983,8 +981,8 @@ export const OptionsView: React.FC = () => {
                 htmlFor="autosave-toggle"
                 className="flex items-center gap-1.5 text-xs font-medium text-slate-700 dark:text-slate-300 cursor-pointer"
               >
-                <span>Enable Automatic Folder Save</span>
-                <Tooltip content="Periodically saves all Characters (Characters/), Lorebooks (Lorebooks/), and _tavernsmith_meta.json to the active Save Folder." />
+                <span>Enable Auto-Save</span>
+                <Tooltip content="Automatically saves your characters, lorebooks, themes, and tags to ./Saves/ on a timer." />
               </label>
               <input
                 id="autosave-toggle"
@@ -1094,8 +1092,8 @@ export const OptionsView: React.FC = () => {
                 AI Connection
               </h2>
               <Tooltip
-                title="Multi-Provider AI Engine"
-                content="Connect to local or cloud AI endpoints. Automatically strips <think> blocks."
+                title="AI Providers"
+                content="Connect to local apps like LM Studio / Ollama / KoboldCPP or cloud APIs like Gemini and OpenRouter. Thinking blocks (<think>) are automatically cleaned up."
               />
             </div>
 
@@ -1177,19 +1175,19 @@ export const OptionsView: React.FC = () => {
                 />
                 <span>
                   {aiConfig.preset === 'gemini'
-                    ? 'Gemini API Key (Optional)'
+                    ? 'Gemini API Key'
                     : currentPresetMeta.requiresKey
                       ? `${currentPresetMeta.label} API Key`
                       : 'API Key (Optional)'}
                 </span>
-                <Tooltip content="Encrypted locally with AES-256-GCM. Never exported into cards or lorebooks." />
+                <Tooltip content="Encrypted locally in your browser/vault. Never saved inside exported characters or lorebooks." />
               </label>
 
               {aiConfig.preset === 'gemini' && (
                 <span className="font-mono text-[10px] text-slate-500 dark:text-slate-400">
                   {aiConfig.apiKey.trim()
-                    ? 'Custom key active'
-                    : 'Using /api/gemini fallback'}
+                    ? 'Key entered (direct Gemini API)'
+                    : 'Paste a Google AI Studio key (AIza...)'}
                 </span>
               )}
             </div>
@@ -1207,7 +1205,7 @@ export const OptionsView: React.FC = () => {
                   }
                   placeholder={
                     aiConfig.preset === 'gemini'
-                      ? 'AIza... (or leave blank for server fallback)'
+                      ? 'Paste Gemini API key (AIza...)'
                       : currentPresetMeta.requiresKey
                         ? `Paste ${currentPresetMeta.label} key...`
                         : 'Optional local token...'
@@ -1540,7 +1538,7 @@ export const OptionsView: React.FC = () => {
                       </option>
                     ))}
                   </select>
-                  <Tooltip content="Automatically strips <think> and reasoning blocks from model output." />
+                  <Tooltip content="Automatically strips <think> blocks so only clean text goes into your card." />
                 </div>
 
                 <label
@@ -1561,7 +1559,7 @@ export const OptionsView: React.FC = () => {
                     style={{ accentColor: 'var(--theme-accent)' }}
                   />
                   <span>Force Vision</span>
-                  <Tooltip content="Enable vision input (512px JPEG) for custom local GGUF vision models." />
+                  <Tooltip content="Turn this on if your local GGUF model supports vision/images." />
                 </label>
               </div>
             </div>
@@ -1573,7 +1571,7 @@ export const OptionsView: React.FC = () => {
               <div className="flex items-center justify-between text-xs">
                 <label className="flex items-center gap-1.5 font-medium text-slate-700 dark:text-slate-300">
                   <span>Temperature</span>
-                  <Tooltip content="0.2 = strict/analytical, 0.8 = expressive roleplay." />
+                  <Tooltip content="Lower = more focused and consistent. Higher = more creative and varied." />
                 </label>
                 <span className="font-mono font-semibold text-slate-900 dark:text-white tabular-nums">
                   {aiConfig.temperature.toFixed(2)}
@@ -1602,8 +1600,8 @@ export const OptionsView: React.FC = () => {
                   htmlFor="ghost-text-toggle"
                   className="flex items-center gap-1.5 text-xs font-medium text-slate-700 dark:text-slate-300 cursor-pointer"
                 >
-                  <span>Ghost Text Autocomplete</span>
-                  <Tooltip content="Inline suggestions after you pause typing." />
+                  <span>AI Writing Suggestions</span>
+                  <Tooltip content="Shows a 1–2 sentence suggestion bar at the bottom of the text box when you pause typing." />
                 </label>
                 <input
                   id="ghost-text-toggle"

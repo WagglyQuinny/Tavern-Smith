@@ -181,10 +181,10 @@ const NameConflictResolutionModal: React.FC = () => {
             </div>
             <div>
               <h3 className="text-sm font-bold text-slate-900 dark:text-white">
-                Duplicate {isChar ? 'Character' : 'Lorebook'} Name Detected
+                {isChar ? 'Character' : 'Lorebook'} Name Already Exists
               </h3>
               <p className="text-xs text-slate-500 dark:text-slate-400">
-                Prevent accidental `.json` file overwrite in `{isChar ? 'Characters/' : 'Lorebooks/'}`
+                Pick a unique name so your files don&apos;t overwrite each other
               </p>
             </div>
           </div>
@@ -198,18 +198,18 @@ const NameConflictResolutionModal: React.FC = () => {
         </div>
 
         <p className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed">
-          Another {isChar ? 'character' : 'lorebook'} in your roster already uses the name{' '}
+          You already have a {isChar ? 'character' : 'lorebook'} named{' '}
           <strong className="font-mono text-slate-900 dark:text-white">
             &ldquo;{nameConflictRequest.conflictingName}&rdquo;
           </strong>
-          . Choose a unique name below so both files save cleanly without overwriting each other:
+          . Pick a suggested name or enter a new one so both save safely:
         </p>
 
-        {/* 1-Click Suggested Unique Names */}
+        {/* Suggested Unique Names */}
         {nameConflictRequest.suggestedNames.length > 0 && (
           <div className="space-y-1.5">
             <span className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">
-              1-Click Suggested Unique Names
+              Suggested Names
             </span>
             <div className="flex flex-wrap gap-1.5">
               {nameConflictRequest.suggestedNames.map((suggestion) => (
@@ -231,10 +231,10 @@ const NameConflictResolutionModal: React.FC = () => {
           </div>
         )}
 
-        {/* Live Custom Name Input */}
+        {/* Custom Name Input */}
         <div className="space-y-1.5">
           <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300">
-            Or Enter Custom Unique Name
+            Or Type a Different Name
           </label>
           <input
             type="text"
@@ -246,12 +246,12 @@ const NameConflictResolutionModal: React.FC = () => {
                 handleApplyRename(cleanCandidate);
               }
             }}
-            placeholder={`Enter unique ${isChar ? 'character' : 'lorebook'} name...`}
+            placeholder={`Enter a unique ${isChar ? 'character' : 'lorebook'} name...`}
             className="w-full rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 px-3 py-2 text-xs font-medium text-slate-900 dark:text-white focus:outline-none"
           />
           {stillConflicts && (
             <p className="text-[11px] text-rose-500">
-              That name is still in use by another {isChar ? 'character' : 'lorebook'}. Please pick a unique name.
+              That name is already taken. Try a slightly different name.
             </p>
           )}
         </div>
@@ -262,7 +262,7 @@ const NameConflictResolutionModal: React.FC = () => {
             onClick={dismissNameConflict}
             className="rounded-lg border border-slate-200 dark:border-slate-800 px-3.5 py-2 text-xs font-medium text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800 cursor-pointer"
           >
-            Keep As-Is
+            Cancel
           </button>
           <button
             type="button"
@@ -272,7 +272,7 @@ const NameConflictResolutionModal: React.FC = () => {
             className="theme-hover-outline flex items-center gap-1.5 rounded-lg border bg-slate-900 dark:bg-white px-4 py-2 text-xs font-semibold text-white dark:text-slate-900 disabled:opacity-50 cursor-pointer"
           >
             <Check className="h-3.5 w-3.5" />
-            <span>Rename &amp; Save Cleanly</span>
+            <span>Rename &amp; Save</span>
           </button>
         </div>
       </div>
@@ -329,14 +329,14 @@ const DeleteConfirmationModal: React.FC = () => {
         </div>
 
         <p className="text-xs leading-relaxed text-slate-600 dark:text-slate-300">
-          Are you sure you want to permanently delete{' '}
+          Delete{' '}
           <strong className="text-slate-900 dark:text-white">
             &ldquo;{pendingDeleteTarget.displayName}&rdquo;
           </strong>
           {typeof pendingDeleteTarget.entryCount === 'number'
             ? ` (${pendingDeleteTarget.entryCount} entries)`
             : ''}{' '}
-          from your workspace and disk storage? This action cannot be undone.
+          from your roster and saved files? This cannot be undone.
         </p>
 
         <div className="flex items-center justify-end gap-2 pt-2">

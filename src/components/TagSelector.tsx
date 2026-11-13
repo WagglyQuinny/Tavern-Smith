@@ -20,6 +20,7 @@ interface TagSelectorProps {
   tags?: TagDefinition[];
   title?: string;
   label?: string;
+  subtitle?: string;
   tooltip?: string;
   compact?: boolean;
 }
@@ -37,13 +38,14 @@ export const TagSelector: React.FC<TagSelectorProps> = ({
   tags: tagsProp,
   title,
   label,
-  tooltip = 'Click any tag to attach or detach its AI writing directive. Tags flagged NSFW (18+) automatically mark the Character or Lorebook as NSFW. Toggle NSFW visibility in Options (⚙️).',
+  subtitle,
+  tooltip = 'Click any tag below to attach it. Tags marked NSFW (18+) automatically mark this card as NSFW, and you can hide 18+ content anytime in Options (⚙️).',
   compact = false,
 }) => {
   const { tags: storeTags, setTags, settings } = useStore();
   const tags = tagsProp || storeTags;
   const selectedTags = selectedTagsProp ?? selectedTagNames ?? [];
-  const headerTitle = title || label || 'Tags & AI Style Directives';
+  const headerTitle = title || label || 'Tags';
 
   const [searchQuery, setSearchQuery] = useState('');
   const [activeCategory, setActiveCategory] = useState<string>('All');
@@ -196,28 +198,35 @@ export const TagSelector: React.FC<TagSelectorProps> = ({
       }`}
     >
       {/* Top Header */}
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <div className="flex items-center gap-1.5">
-          <TagIcon
-            className="h-3.5 w-3.5 shrink-0"
-            style={{ color: 'var(--theme-accent)' }}
-          />
-          <span className="text-xs font-semibold text-slate-800 dark:text-slate-200">
-            {headerTitle}
-          </span>
-          <Tooltip content={tooltip} />
-          <span className="rounded bg-slate-200/80 dark:bg-slate-800 px-1.5 py-0.5 font-mono text-[10px] font-semibold text-slate-700 dark:text-slate-300">
-            {selectedTags.length} active
-          </span>
-          {hiddenSelectedNsfwCount > 0 && (
-            <span
-              title="NSFW tags are hidden visually via Options -> Hide NSFW Content, but remain active in AI generation."
-              className="rounded border border-amber-500/30 bg-amber-500/10 px-1.5 py-0.5 font-mono text-[10px] text-amber-600 dark:text-amber-400"
-            >
-              +{hiddenSelectedNsfwCount} NSFW hidden
+      <div className="space-y-0.5">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="flex items-center gap-1.5">
+            <TagIcon
+              className="h-3.5 w-3.5 shrink-0"
+              style={{ color: 'var(--theme-accent)' }}
+            />
+            <span className="text-xs font-semibold text-slate-800 dark:text-slate-200">
+              {headerTitle}
             </span>
-          )}
+            <Tooltip content={tooltip} />
+            <span className="rounded bg-slate-200/80 dark:bg-slate-800 px-1.5 py-0.5 font-mono text-[10px] font-semibold text-slate-700 dark:text-slate-300">
+              {selectedTags.length} selected
+            </span>
+            {hiddenSelectedNsfwCount > 0 && (
+              <span
+                title="18+ tags are hidden right now (Options -> Hide NSFW Content), but still count when generating."
+                className="rounded border border-amber-500/30 bg-amber-500/10 px-1.5 py-0.5 font-mono text-[10px] text-amber-600 dark:text-amber-400"
+              >
+                +{hiddenSelectedNsfwCount} NSFW hidden
+              </span>
+            )}
+          </div>
         </div>
+        {subtitle && (
+          <p className="text-[11px] text-slate-500 dark:text-slate-400">
+            {subtitle}
+          </p>
+        )}
       </div>
 
       {/* Active Attached Tags Chips Row */}
@@ -232,7 +241,7 @@ export const TagSelector: React.FC<TagSelectorProps> = ({
             const desc =
               matchedMain?.aiContextDescription ||
               matchedMain?.aiDescription ||
-              'Attached Tag Directive';
+              'Selected Tag';
             const tagFlaggedNsfw = matchedMain ? isTagNsfw(matchedMain) : false;
 
             return (
@@ -269,7 +278,7 @@ export const TagSelector: React.FC<TagSelectorProps> = ({
         </div>
       ) : (
         <div className="rounded-lg border border-dashed border-slate-200 dark:border-slate-800 px-3 py-1.5 text-[11px] text-slate-400">
-          No tags attached yet. Click any tag pill below to attach its AI context directive.
+          No tags selected yet. Click any tag below to add it.
         </div>
       )}
 
@@ -281,7 +290,7 @@ export const TagSelector: React.FC<TagSelectorProps> = ({
             type="text"
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
-            placeholder="Filter tags by name, category, or AI instruction..."
+            placeholder="Search tags by name, category, or description..."
             className="w-full rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 pl-8 pr-7 py-1.5 text-xs text-slate-900 dark:text-white focus:outline-none"
           />
           {searchQuery && (

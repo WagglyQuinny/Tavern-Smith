@@ -53,8 +53,8 @@ export const TopBar: React.FC = () => {
           onClick={toggleMainSidebar}
           title={
             isMainSidebarOpen
-              ? 'Collapse sidebar into Blender-style Icon Rail'
-              : 'Expand full workspace navigation sidebar'
+              ? 'Collapse sidebar'
+              : 'Expand sidebar'
           }
           style={{
             borderColor: !isMainSidebarOpen ? 'var(--theme-accent)' : undefined,
@@ -124,11 +124,11 @@ export const TopBar: React.FC = () => {
           </select>
         </div>
 
-        {/* Live Token Telemetry Pill */}
+        {/* Token Counter */}
         <button
           type="button"
           onClick={() => setActiveTab('inspector')}
-          title="Click to inspect full token breakdown & SillyTavern JSON"
+          title="Estimated total tokens for this card — click to view Raw JSON & Export"
           className={`flex items-center gap-1.5 rounded-lg border px-2.5 py-1 font-mono text-xs font-medium tabular-nums transition-all cursor-pointer ${tokenBadgeColor}`}
         >
           <Activity className="h-3.5 w-3.5 shrink-0" />
@@ -142,8 +142,8 @@ export const TopBar: React.FC = () => {
           onClick={() => void handleSaveAndSync()}
           title={
             lastSavedAt
-              ? `Last saved at ${lastSavedAt}. Click to save Characters, Lorebooks, Tags & Themes directly to ./Saves/ on disk.`
-              : 'Save Characters, Lorebooks, Tags & Themes directly to ./Saves/ on disk'
+              ? `Last saved at ${lastSavedAt}. Click to save Characters, Lorebooks, Tags & Themes to ./Saves/.`
+              : 'Save Characters, Lorebooks, Tags & Themes to ./Saves/'
           }
           style={{
             borderColor: justSaved ? '#10b981' : 'var(--theme-accent)',
@@ -154,7 +154,7 @@ export const TopBar: React.FC = () => {
             <>
               <Check className="h-3.5 w-3.5 text-emerald-500" />
               <span className="hidden sm:inline text-emerald-500">
-                Saved to Disk
+                Saved
               </span>
             </>
           ) : (
@@ -174,7 +174,7 @@ export const TopBar: React.FC = () => {
         <button
           type="button"
           onClick={() => setActiveTab('options')}
-          title="Open Options, AI Connections, Storage & NSFW Settings (⚙️)"
+          title="Options, AI Connections & Saved Files (⚙️)"
           style={
             isOptionsActive
               ? {
