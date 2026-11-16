@@ -12,17 +12,22 @@ import {
   AIBackendConfig,
   AIPresetId,
   CharacterCardData,
+  CharacterTabDraft,
   ContextTheme,
   DiskStateResponse,
   Lorebook,
+  LorebookTabDraft,
   NameConflictRequest,
   PendingDeleteTarget,
   SavedFileEntry,
   SaveLogEntry,
+  SmartEditorFieldDraft,
   StatBlockConfig,
   TagDefinition,
   TavernSmithMetaPayload,
+  ThemesTagsTabDraft,
   TokenBreakdown,
+  WorkspaceDraftCache,
   WorkspaceTab,
 } from '../types';
 import { calculateCardTokenBreakdown } from '../utils/tokenCounter';
@@ -58,6 +63,140 @@ import {
 export { VAULT_FILENAME };
 export const META_FILENAME = '_tavernsmith_meta.json';
 export const UNIFIED_INTERNAL_ROOT = './Saves/';
+const TAB_DRAFT_SESSION_KEY = 'tavernsmith_tab_draft_cache_v1';
+
+export const DEFAULT_CHARACTER_TAB_DRAFT: CharacterTabDraft = {
+  rosterOpen: true,
+  rosterSearch: '',
+  rosterTagFilter: 'all',
+  rosterSort: 'modified_desc',
+  newCustomTagInput: '',
+  statBlockExpanded: true,
+  wizardStep: 1,
+  conceptPrompt: '',
+  activeGreetingIdx: 0,
+  altGreetingTwist: '',
+  usePortraitAsVisionContext: true,
+};
+
+export const DEFAULT_LOREBOOK_TAB_DRAFT: LorebookTabDraft = {
+  rosterOpen: true,
+  rosterSearch: '',
+  rosterTagFilter: 'all',
+  rosterSort: 'modified_desc',
+  newCustomTagInput: '',
+  wizardStep: 1,
+  worldConceptPrompt: '',
+  entryDraftPrompt: '',
+  entrySearch: '',
+  entryTagFilter: 'all',
+  selectedEntryId: null,
+  primaryKeyInput: '',
+  secondaryKeyInput: '',
+  loreTempRefImageUrl: null,
+  loreTempRefImageName: '',
+};
+
+export const DEFAULT_THEMES_TAGS_TAB_DRAFT: ThemesTagsTabDraft = {
+  quickTagName: '',
+  quickTagColor: '#a855f7',
+  quickTagCategory: 'Setting & Vibe',
+  quickTagIsNsfw: false,
+  quickTagAiDesc: '',
+  tagSearch: '',
+  safetyFilter: 'all',
+  categoryFilter: 'All',
+  editingTagId: null,
+  editTagName: '',
+  editTagCategory: 'Genre & Setting',
+  editTagColor: '#a855f7',
+  editTagIsNsfw: false,
+  editTagAiDesc: '',
+};
+
+export const DEFAULT_SMART_EDITOR_FIELD_DRAFT: SmartEditorFieldDraft = {
+  showGenerateBar: false,
+  customInstruction: '',
+  assistMode: 'replace',
+  ghostText: '',
+  tempReferenceImageUrl: null,
+  tempReferenceImageName: '',
+};
+
+export function createDefaultWorkspaceDraftCache(): WorkspaceDraftCache {
+  return {
+    character: { ...DEFAULT_CHARACTER_TAB_DRAFT },
+    lorebook: { ...DEFAULT_LOREBOOK_TAB_DRAFT },
+    themesTags: { ...DEFAULT_THEMES_TAGS_TAB_DRAFT },
+    smartEditorDrafts: {},
+  };
+}
+
+function loadWorkspaceDraftCacheFromSession(): WorkspaceDraftCache {
+  const base = createDefaultWorkspaceDraftCache();
+  try {
+    if (typeof window === 'undefined' || !window.sessionStorage) {
+      return base;
+    }
+    const raw = window.sessionStorage.getItem(TAB_DRAFT_SESSION_KEY);
+    if (!raw) return base;
+    const parsed = JSON.parse(raw) as Partial<WorkspaceDraftCache>;
+    if (!parsed || typeof parsed !== 'object') return base;
+    return {
+      character: { ...DEFAULT_CHARACTER_TAB_DRAFT, ...(parsed.character || {}) },
+      lorebook: {
+        ...DEFAULT_LOREBOOK_TAB_DRAFT,
+        ...(parsed.lorebook || {}),
+        loreTempRefImageUrl: null,
+        loreTempRefImageName: '',
+      },
+      themesTags: {
+        ...DEFAULT_THEMES_TAGS_TAB_DRAFT,
+        ...(parsed.themesTags || {}),
+      },
+      smartEditorDrafts:
+        parsed.smartEditorDrafts && typeof parsed.smartEditorDrafts === 'object'
+          ? parsed.smartEditorDrafts
+          : {},
+    };
+  } catch {
+    return base;
+  }
+}
+
+function saveWorkspaceDraftCacheToSession(cache: WorkspaceDraftCache): void {
+  try {
+    if (typeof window === 'undefined' || !window.sessionStorage) return;
+    const strippedSmartDrafts: Record<string, SmartEditorFieldDraft> = {};
+    for (const [k, d] of Object.entries(cache.smartEditorDrafts)) {
+      if (!d) continue;
+      if (d.showGenerateBar || d.customInstruction || d.ghostText || d.assistMode !== 'replace') {
+        strippedSmartDrafts[k] = {
+          showGenerateBar: Boolean(d.showGenerateBar),
+          customInstruction: d.customInstruction || '',
+          assistMode: d.assistMode === 'append' ? 'append' : 'replace',
+          ghostText: d.ghostText || '',
+        };
+      }
+    }
+    const serializable: WorkspaceDraftCache = {
+      character: cache.character,
+      lorebook: {
+        ...cache.lorebook,
+        loreTempRefImageUrl: null,
+        loreTempRefImageName: '',
+      },
+      themesTags: cache.themesTags,
+      smartEditorDrafts: strippedSmartDrafts,
+    };
+    window.sessionStorage.setItem(
+      TAB_DRAFT_SESSION_KEY,
+      JSON.stringify(serializable)
+    );
+  } catch {
+    // Ignore storage quota or restricted context errors
+  }
+}
 
 /**
  * Purges any previously registered Service Workers and browser CacheStorage entries
@@ -2336,6 +2475,15 @@ interface StoreContextValue {
   importFromFiles: (
     files: FileList | File[]
   ) => Promise<{ count: number; summary: string }>;
+  // Tab Creation & Editor Progress Draft Cache (in-memory + sessionStorage; never creates disk files)
+  workspaceDraftCache: WorkspaceDraftCache;
+  updateCharacterDraft: (partial: Partial<CharacterTabDraft>) => void;
+  updateLorebookDraft: (partial: Partial<LorebookTabDraft>) => void;
+  updateThemesTagsDraft: (partial: Partial<ThemesTagsTabDraft>) => void;
+  updateSmartEditorDraft: (
+    scopeKey: string,
+    partial: Partial<SmartEditorFieldDraft>
+  ) => void;
 }
 
 const StoreContext = createContext<StoreContextValue | undefined>(undefined);
@@ -2442,6 +2590,69 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
     useState<string>('./Saves/');
   const [pendingDeleteTarget, setPendingDeleteTarget] =
     useState<PendingDeleteTarget | null>(null);
+  const [workspaceDraftCache, setWorkspaceDraftCache] =
+    useState<WorkspaceDraftCache>(() => loadWorkspaceDraftCacheFromSession());
+
+  useEffect(() => {
+    saveWorkspaceDraftCacheToSession(workspaceDraftCache);
+  }, [workspaceDraftCache]);
+
+  const updateCharacterDraft = useCallback(
+    (partial: Partial<CharacterTabDraft>) => {
+      setWorkspaceDraftCache((prev) => ({
+        ...prev,
+        character: { ...prev.character, ...partial },
+      }));
+    },
+    []
+  );
+
+  const updateLorebookDraft = useCallback(
+    (partial: Partial<LorebookTabDraft>) => {
+      setWorkspaceDraftCache((prev) => ({
+        ...prev,
+        lorebook: { ...prev.lorebook, ...partial },
+      }));
+    },
+    []
+  );
+
+  const updateThemesTagsDraft = useCallback(
+    (partial: Partial<ThemesTagsTabDraft>) => {
+      setWorkspaceDraftCache((prev) => ({
+        ...prev,
+        themesTags: { ...prev.themesTags, ...partial },
+      }));
+    },
+    []
+  );
+
+  const updateSmartEditorDraft = useCallback(
+    (scopeKey: string, partial: Partial<SmartEditorFieldDraft>) => {
+      setWorkspaceDraftCache((prev) => {
+        const current =
+          prev.smartEditorDrafts[scopeKey] || DEFAULT_SMART_EDITOR_FIELD_DRAFT;
+        const nextEntry: SmartEditorFieldDraft = { ...current, ...partial };
+        const isClean =
+          !nextEntry.showGenerateBar &&
+          !nextEntry.customInstruction &&
+          !nextEntry.ghostText &&
+          nextEntry.assistMode === 'replace' &&
+          !nextEntry.tempReferenceImageUrl;
+        const nextDrafts = { ...prev.smartEditorDrafts };
+        if (isClean) {
+          delete nextDrafts[scopeKey];
+        } else {
+          nextDrafts[scopeKey] = nextEntry;
+        }
+        return {
+          ...prev,
+          smartEditorDrafts: nextDrafts,
+        };
+      });
+    },
+    []
+  );
 
   // Track the exact on-disk `.json` filename for each Character ID and Lorebook ID
   // so renaming or deleting targets the exact `.json` file without colliding duplicates.
@@ -3159,28 +3370,35 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
   // Register Vault Disk Flush Callback so any key/PIN change in Options immediately writes `./Saves/_tavernsmith_vault.enc`
   useEffect(() => {
     registerVaultDiskFlushCallback((envelope) => {
-      void fetch('/api/disk/save', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          vault: envelope,
-          customSavePath: latestWorkspaceRef.current.settings.activeSaveFolder,
-        }),
-      })
-        .then((r) => r.json())
-        .then((diskState: DiskStateResponse) => {
-          if (diskState && diskState.ok && Array.isArray(diskState.files)) {
+      const versionAtStart = diskMutationVersionRef.current;
+      void enqueueDiskOperation(async () => {
+        try {
+          const r = await fetch('/api/disk/save', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              vault: envelope,
+              customSavePath: latestWorkspaceRef.current.settings.activeSaveFolder,
+            }),
+          });
+          const diskState = (await r.json()) as DiskStateResponse;
+          if (
+            diskState &&
+            diskState.ok &&
+            Array.isArray(diskState.files) &&
+            diskMutationVersionRef.current === versionAtStart
+          ) {
             setDiskFiles(diskState.files);
           }
-        })
-        .catch(() => {
+        } catch {
           // Ignore transient network error
-        });
+        }
+      });
     });
     return () => {
       registerVaultDiskFlushCallback(null);
     };
-  }, []);
+  }, [enqueueDiskOperation]);
 
   // Duplicate Character / Lorebook Name Conflict State & Handlers
   const [nameConflictRequest, setNameConflictRequest] =
@@ -3631,18 +3849,20 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
         }
 
         const diskState = (await res.json()) as DiskStateResponse;
+        const noConcurrentMutation =
+          diskMutationVersionRef.current === versionAtStart;
         if (diskState && diskState.ok) {
           if (diskState.resolvedPath || diskState.diskRoot) {
             setDiskResolvedPath(diskState.resolvedPath || diskState.diskRoot);
           }
-          if (Array.isArray(diskState.files)) {
+          if (Array.isArray(diskState.files) && noConcurrentMutation) {
             setDiskFiles(diskState.files);
           }
-          if (diskState.updatedAt) {
+          if (diskState.updatedAt && noConcurrentMutation) {
             setLastSavedAt(formatSafeTimestamp(diskState.updatedAt));
           }
         }
-        if (diskMutationVersionRef.current === versionAtStart) {
+        if (noConcurrentMutation) {
           setIsDirty(false);
         }
 
@@ -3789,9 +4009,10 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
 
       const currentChars = charactersRef.current;
       const target = currentChars.find((c) => c.id === id);
+      const wasActive = activeCharacterIdRef.current === id;
       const diskFileName =
-        target?.savedFileName ||
         charDiskFileNamesRef.current.get(id) ||
+        target?.savedFileName ||
         (target ? `${sanitizeFilename(target.name)}.json` : '');
       charDiskFileNamesRef.current.delete(id);
 
@@ -3814,10 +4035,33 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
       setCharactersState(remaining);
       setActiveCharacterIdState(nextActiveCharId);
 
-      if (diskFileName) {
+      // Purge any cached drafts belonging to the deleted character
+      setWorkspaceDraftCache((prev) => {
+        const nextSmart = { ...prev.smartEditorDrafts };
+        for (const k of Object.keys(nextSmart)) {
+          if (k.startsWith(`char:${id}:`)) {
+            delete nextSmart[k];
+          }
+        }
+        return {
+          ...prev,
+          character: wasActive
+            ? { ...prev.character, activeGreetingIdx: 0 }
+            : prev.character,
+          smartEditorDrafts: nextSmart,
+        };
+      });
+
+      if (diskFileName || target?.savedFileName) {
         setDiskFiles((prev) =>
           prev.filter(
-            (f) => !(f.kind === 'character' && f.fileName === diskFileName)
+            (f) =>
+              !(
+                f.kind === 'character' &&
+                (f.fileName === diskFileName ||
+                  (target?.savedFileName &&
+                    f.fileName === target.savedFileName))
+              )
           )
         );
       }
@@ -3860,9 +4104,10 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
 
       const currentBooks = lorebooksRef.current;
       const target = currentBooks.find((l) => l.id === id);
+      const wasActive = activeLorebookIdRef.current === id;
       const diskFileName =
-        target?.savedFileName ||
         loreDiskFileNamesRef.current.get(id) ||
+        target?.savedFileName ||
         (target ? `${sanitizeFilename(target.name)}.json` : '');
       loreDiskFileNamesRef.current.delete(id);
 
@@ -3885,10 +4130,36 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
       setLorebooksState(remaining);
       setActiveLorebookIdState(nextActiveBookId);
 
-      if (diskFileName) {
+      // Purge any cached drafts belonging to the deleted lorebook
+      setWorkspaceDraftCache((prev) => {
+        const nextSmart = { ...prev.smartEditorDrafts };
+        for (const k of Object.keys(nextSmart)) {
+          if (k.startsWith(`lore:${id}:`)) {
+            delete nextSmart[k];
+          }
+        }
+        return {
+          ...prev,
+          lorebook: wasActive
+            ? {
+                ...prev.lorebook,
+                selectedEntryId: remaining[0]?.entries[0]?.id ?? null,
+              }
+            : prev.lorebook,
+          smartEditorDrafts: nextSmart,
+        };
+      });
+
+      if (diskFileName || target?.savedFileName) {
         setDiskFiles((prev) =>
           prev.filter(
-            (f) => !(f.kind === 'lorebook' && f.fileName === diskFileName)
+            (f) =>
+              !(
+                f.kind === 'lorebook' &&
+                (f.fileName === diskFileName ||
+                  (target?.savedFileName &&
+                    f.fileName === target.savedFileName))
+              )
           )
         );
       }
@@ -4238,7 +4509,7 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
       id,
       displayName: target.name || 'Untitled Character',
       fileName:
-        target.savedFileName || charDiskFileNamesRef.current.get(id) || undefined,
+        charDiskFileNamesRef.current.get(id) || target.savedFileName || undefined,
     });
   }, []);
 
@@ -4250,7 +4521,7 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
       id,
       displayName: target.name || 'Untitled Lorebook',
       fileName:
-        target.savedFileName || loreDiskFileNamesRef.current.get(id) || undefined,
+        loreDiskFileNamesRef.current.get(id) || target.savedFileName || undefined,
       entryCount: target.entries.length,
     });
   }, []);
@@ -4556,6 +4827,15 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
 
   const resetWorkspaceToDefaults = useCallback(() => {
     purgeBrowserRuntimeCaches();
+    const freshDrafts = createDefaultWorkspaceDraftCache();
+    setWorkspaceDraftCache(freshDrafts);
+    try {
+      if (typeof window !== 'undefined' && window.sessionStorage) {
+        window.sessionStorage.removeItem(TAB_DRAFT_SESSION_KEY);
+      }
+    } catch {
+      // Ignore storage errors
+    }
     setThemes(DEFAULT_CONTEXT_THEMES);
     setTags(mergeWithDefaultTags([]));
     const inMemKeys = getInMemoryDecryptedKeys();
@@ -4649,6 +4929,11 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
       cancelPendingDelete,
       exportSaveFolderBundle,
       importFromFiles,
+      workspaceDraftCache,
+      updateCharacterDraft,
+      updateLorebookDraft,
+      updateThemesTagsDraft,
+      updateSmartEditorDraft,
     }),
     [
       activeTab,
@@ -4711,6 +4996,11 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
       cancelPendingDelete,
       exportSaveFolderBundle,
       importFromFiles,
+      workspaceDraftCache,
+      updateCharacterDraft,
+      updateLorebookDraft,
+      updateThemesTagsDraft,
+      updateSmartEditorDraft,
     ]
   );
 

@@ -317,3 +317,69 @@ export interface PendingDeleteTarget {
   entryCount?: number;
   subtitle?: string;
 }
+
+export interface SmartEditorFieldDraft {
+  showGenerateBar: boolean;
+  customInstruction: string;
+  assistMode: 'replace' | 'append';
+  ghostText: string;
+  tempReferenceImageUrl?: string | null;
+  tempReferenceImageName?: string;
+}
+
+export interface CharacterTabDraft {
+  rosterOpen: boolean;
+  rosterSearch: string;
+  rosterTagFilter: string;
+  rosterSort: RosterSortOption;
+  newCustomTagInput: string;
+  statBlockExpanded: boolean;
+  wizardStep: number;
+  conceptPrompt: string;
+  activeGreetingIdx: number;
+  altGreetingTwist: string;
+  usePortraitAsVisionContext: boolean;
+}
+
+export interface LorebookTabDraft {
+  rosterOpen: boolean;
+  rosterSearch: string;
+  rosterTagFilter: string;
+  rosterSort: RosterSortOption;
+  newCustomTagInput: string;
+  wizardStep: number;
+  worldConceptPrompt: string;
+  entryDraftPrompt: string;
+  entrySearch: string;
+  entryTagFilter: string;
+  selectedEntryId: string | number | null;
+  primaryKeyInput: string;
+  secondaryKeyInput: string;
+  loreTempRefImageUrl?: string | null;
+  loreTempRefImageName?: string;
+}
+
+export interface ThemesTagsTabDraft {
+  quickTagName: string;
+  quickTagColor: string;
+  quickTagCategory: TagCategory;
+  quickTagIsNsfw: boolean;
+  quickTagAiDesc: string;
+  tagSearch: string;
+  safetyFilter: 'all' | 'sfw' | 'nsfw';
+  categoryFilter: string;
+  editingTagId: string | null;
+  editTagName: string;
+  editTagCategory: TagCategory;
+  editTagColor: string;
+  editTagIsNsfw: boolean;
+  editTagAiDesc: string;
+}
+
+export interface WorkspaceDraftCache {
+  character: CharacterTabDraft;
+  lorebook: LorebookTabDraft;
+  themesTags: ThemesTagsTabDraft;
+  smartEditorDrafts: Record<string, SmartEditorFieldDraft>;
+}
+

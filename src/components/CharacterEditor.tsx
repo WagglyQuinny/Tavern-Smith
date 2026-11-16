@@ -121,18 +121,66 @@ export const CharacterEditor: React.FC = () => {
     setActiveTab,
     importFromFiles,
     checkAndTriggerNameConflict,
+    workspaceDraftCache,
+    updateCharacterDraft,
   } = useStore();
 
-  // Roster Sidebar UI State
-  const [rosterOpen, setRosterOpen] = useState(true);
-  const [rosterSearch, setRosterSearch] = useState('');
-  const [rosterTagFilter, setRosterTagFilter] = useState<string>('all');
-  const [rosterSort, setRosterSort] = useState<RosterSortOption>('modified_desc');
+  const charDraft = workspaceDraftCache.character;
+  const rosterOpen = charDraft.rosterOpen;
+  const setRosterOpen = (next: React.SetStateAction<boolean>) =>
+    updateCharacterDraft({
+      rosterOpen: typeof next === 'function' ? next(charDraft.rosterOpen) : next,
+    });
+  const rosterSearch = charDraft.rosterSearch;
+  const setRosterSearch = (next: string) =>
+    updateCharacterDraft({ rosterSearch: next });
+  const rosterTagFilter = charDraft.rosterTagFilter;
+  const setRosterTagFilter = (next: string) =>
+    updateCharacterDraft({ rosterTagFilter: next });
+  const rosterSort = charDraft.rosterSort;
+  const setRosterSort = (next: RosterSortOption) =>
+    updateCharacterDraft({ rosterSort: next });
+  const newCustomTagInput = charDraft.newCustomTagInput;
+  const setNewCustomTagInput = (next: string) =>
+    updateCharacterDraft({ newCustomTagInput: next });
+  const statBlockExpanded = charDraft.statBlockExpanded;
+  const setStatBlockExpanded = (next: React.SetStateAction<boolean>) =>
+    updateCharacterDraft({
+      statBlockExpanded:
+        typeof next === 'function' ? next(charDraft.statBlockExpanded) : next,
+    });
+  const wizardStep = charDraft.wizardStep;
+  const setWizardStep = (next: React.SetStateAction<number>) =>
+    updateCharacterDraft({
+      wizardStep:
+        typeof next === 'function' ? next(charDraft.wizardStep) : next,
+    });
+  const conceptPrompt = charDraft.conceptPrompt;
+  const setConceptPrompt = (next: string) =>
+    updateCharacterDraft({ conceptPrompt: next });
+  const activeGreetingIdx = charDraft.activeGreetingIdx;
+  const setActiveGreetingIdx = (next: React.SetStateAction<number>) =>
+    updateCharacterDraft({
+      activeGreetingIdx:
+        typeof next === 'function' ? next(charDraft.activeGreetingIdx) : next,
+    });
+  const altGreetingTwist = charDraft.altGreetingTwist;
+  const setAltGreetingTwist = (next: string) =>
+    updateCharacterDraft({ altGreetingTwist: next });
+  const usePortraitAsVisionContext = charDraft.usePortraitAsVisionContext;
+  const setUsePortraitAsVisionContext = (next: React.SetStateAction<boolean>) =>
+    updateCharacterDraft({
+      usePortraitAsVisionContext:
+        typeof next === 'function'
+          ? next(charDraft.usePortraitAsVisionContext)
+          : next,
+    });
+
+  // Transient per-mount UI State (file drag, modals, active AI requests)
   const [isDraggingFile, setIsDraggingFile] = useState(false);
   const [importStatusBanner, setImportStatusBanner] = useState<string | null>(
     null
   );
-  const [newCustomTagInput, setNewCustomTagInput] = useState('');
 
   // Interactive 2:3 Portrait Cropper Modal State
   const [cropperState, setCropperState] = useState<{
@@ -153,32 +201,25 @@ export const CharacterEditor: React.FC = () => {
     number | null
   >(null);
 
-  // Full-Width Expandable DM/GM Stat-Block Builder Section State
-  const [statBlockExpanded, setStatBlockExpanded] = useState<boolean>(true);
+  // Stat-Block transient generation indicator
   const [generatingStatRuleId, setGeneratingStatRuleId] = useState<string | null>(
     null
   );
 
-  // Wizard Step State (1..5)
-  const [wizardStep, setWizardStep] = useState<number>(1);
-  const [conceptPrompt, setConceptPrompt] = useState<string>('');
+  // Wizard transient generation state
   const [isGeneratingConcept, setIsGeneratingConcept] = useState<boolean>(false);
   const [conceptError, setConceptError] = useState<{
     message: string;
     corsHint?: string;
   } | null>(null);
 
-  // Greetings Carousel State: 0 = first_mes, 1..N = alternate_greetings[idx - 1]
-  const [activeGreetingIdx, setActiveGreetingIdx] = useState<number>(0);
-  const [altGreetingTwist, setAltGreetingTwist] = useState<string>('');
+  // Greetings transient generation state
   const [isGeneratingGreeting, setIsGeneratingGreeting] = useState<boolean>(false);
 
   // StatBlock Compiler Notification State
   const [compiledBanner, setCompiledBanner] = useState<string | null>(null);
 
-  // Multimodal Vision Context State (Character Portrait ~260 tok)
-  const [usePortraitAsVisionContext, setUsePortraitAsVisionContext] =
-    useState<boolean>(true);
+  // Multimodal Vision transient state
   const [isDescribingPortrait, setIsDescribingPortrait] =
     useState<boolean>(false);
   const [visionFallbackBanner, setVisionFallbackBanner] = useState<

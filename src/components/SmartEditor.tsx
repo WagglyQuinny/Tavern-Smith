@@ -22,7 +22,10 @@ import {
   Image as ImageIcon,
   Upload,
 } from 'lucide-react';
-import { useStore } from '../context/StoreContext';
+import {
+  DEFAULT_SMART_EDITOR_FIELD_DRAFT,
+  useStore,
+} from '../context/StoreContext';
 import {
   AIServiceError,
   buildFullSystemPromptForRequest,
@@ -90,6 +93,7 @@ export const SILLYTAVERN_MACROS: MacroDefinition[] = [
 export interface SmartEditorProps {
   label: string;
   fieldKey: string;
+  draftScopeId?: string;
   value: string;
   onChange: (newValue: string) => void;
   placeholder?: string;
@@ -140,6 +144,7 @@ function renderHighlightedBackdrop(text: string): React.ReactNode[] {
 export const SmartEditor: React.FC<SmartEditorProps> = ({
   label,
   fieldKey,
+  draftScopeId,
   value,
   onChange,
   placeholder = 'Write markdown or type {{ for SillyTavern macros...',
@@ -152,7 +157,62 @@ export const SmartEditor: React.FC<SmartEditorProps> = ({
   usePortraitVisionContext,
   onTogglePortraitVisionContext,
 }) => {
-  const { character, activeTheme, tags, aiConfig } = useStore();
+  const {
+    character,
+    activeTheme,
+    tags,
+    aiConfig,
+    workspaceDraftCache,
+    updateSmartEditorDraft,
+  } = useStore();
+
+  const resolvedScopeKey = `${draftScopeId || `char:${character.id || 'active'}`}:${fieldKey}`;
+  const fieldDraft =
+    workspaceDraftCache.smartEditorDrafts[resolvedScopeKey] ||
+    DEFAULT_SMART_EDITOR_FIELD_DRAFT;
+
+  const ghostText = fieldDraft.ghostText;
+  const showGenerateBar = fieldDraft.showGenerateBar;
+  const customInstruction = fieldDraft.customInstruction;
+  const assistMode = fieldDraft.assistMode;
+  const tempReferenceImageUrl = fieldDraft.tempReferenceImageUrl ?? null;
+  const tempReferenceImageName = fieldDraft.tempReferenceImageName ?? '';
+
+  const setGhostText = useCallback(
+    (next: string) =>
+      updateSmartEditorDraft(resolvedScopeKey, { ghostText: next }),
+    [resolvedScopeKey, updateSmartEditorDraft]
+  );
+  const setShowGenerateBar = useCallback(
+    (next: boolean | ((prev: boolean) => boolean)) => {
+      const resolvedNext =
+        typeof next === 'function' ? next(fieldDraft.showGenerateBar) : next;
+      updateSmartEditorDraft(resolvedScopeKey, {
+        showGenerateBar: resolvedNext,
+      });
+    },
+    [resolvedScopeKey, fieldDraft.showGenerateBar, updateSmartEditorDraft]
+  );
+  const setCustomInstruction = useCallback(
+    (next: string) =>
+      updateSmartEditorDraft(resolvedScopeKey, { customInstruction: next }),
+    [resolvedScopeKey, updateSmartEditorDraft]
+  );
+  const setAssistMode = useCallback(
+    (next: 'replace' | 'append') =>
+      updateSmartEditorDraft(resolvedScopeKey, { assistMode: next }),
+    [resolvedScopeKey, updateSmartEditorDraft]
+  );
+  const setTempReferenceImageUrl = useCallback(
+    (next: string | null) =>
+      updateSmartEditorDraft(resolvedScopeKey, { tempReferenceImageUrl: next }),
+    [resolvedScopeKey, updateSmartEditorDraft]
+  );
+  const setTempReferenceImageName = useCallback(
+    (next: string) =>
+      updateSmartEditorDraft(resolvedScopeKey, { tempReferenceImageName: next }),
+    [resolvedScopeKey, updateSmartEditorDraft]
+  );
 
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const backdropRef = useRef<HTMLDivElement | null>(null);
@@ -164,16 +224,12 @@ export const SmartEditor: React.FC<SmartEditorProps> = ({
   const [macroTriggerIndex, setMacroTriggerIndex] = useState<number | null>(null);
   const [selectedMacroIdx, setSelectedMacroIdx] = useState(0);
 
-  // Predictive AI Ghost Text state (100% text-only — NEVER sends vision images)
-  const [ghostText, setGhostText] = useState('');
+  // Predictive AI Ghost Text transient request state
   const [ghostError, setGhostError] = useState<string | null>(null);
   const [isFetchingGhost, setIsFetchingGhost] = useState(false);
   const [isFocused, setIsFocused] = useState(false);
 
-  // "AI Assist" Drawer state
-  const [showGenerateBar, setShowGenerateBar] = useState(false);
-  const [customInstruction, setCustomInstruction] = useState('');
-  const [assistMode, setAssistMode] = useState<'replace' | 'append'>('replace');
+  // "AI Assist" transient drawer state
   const [isGeneratingField, setIsGeneratingField] = useState(false);
   const [showPreviewContext, setShowPreviewContext] = useState(false);
   const [lastReasoning, setLastReasoning] = useState<string>('');
@@ -187,10 +243,6 @@ export const SmartEditor: React.FC<SmartEditorProps> = ({
   const [localUsePortraitVision, setLocalUsePortraitVision] = useState<boolean>(
     Boolean(usePortraitVisionContext)
   );
-  const [tempReferenceImageUrl, setTempReferenceImageUrl] = useState<string | null>(
-    null
-  );
-  const [tempReferenceImageName, setTempReferenceImageName] = useState<string>('');
   const [isDraggingRefImage, setIsDraggingRefImage] = useState(false);
   const [visionFallbackToast, setVisionFallbackToast] = useState<string | null>(
     null
@@ -385,7 +437,7 @@ export const SmartEditor: React.FC<SmartEditorProps> = ({
         textareaRef.current.setSelectionRange(end, end);
       }
     });
-  }, [ghostText, value, onChange]);
+  }, [ghostText, value, onChange, setGhostText]);
 
   // Build complete snapshot of existing Character & Lorebook fields for system context
   const cardContextSnapshot = useMemo(() => {
@@ -568,6 +620,8 @@ export const SmartEditor: React.FC<SmartEditorProps> = ({
     macroMenuOpen,
     isGeneratingField,
     cancelPendingGhostRequest,
+    resolvedScopeKey,
+    setGhostText,
   ]);
 
   // 1-Click "✨ Describe Appearance from Portrait" action for the Description field
@@ -1383,7 +1437,7 @@ export const SmartEditor: React.FC<SmartEditorProps> = ({
         />
       </div>
 
-      {/* Bottom AI Suggestion Pill / Bar (Replaces Broken Backdrop Ghost Overlay) */}
+      {/* Bottom AI Suggestion Pill / Bar */}
       {ghostText && (
         <div
           style={{
@@ -1391,7 +1445,7 @@ export const SmartEditor: React.FC<SmartEditorProps> = ({
             backgroundColor:
               'color-mix(in srgb, var(--theme-accent) 9%, transparent)',
           }}
-          className="flex flex-wrap items-center justify-between gap-2.5 border-t px-3.5 py-2 text-xs"
+          className="flex flex-col sm:flex-row sm:items-start justify-between gap-2.5 border-t px-3.5 py-2.5 text-xs"
         >
           <button
             type="button"
@@ -1399,21 +1453,23 @@ export const SmartEditor: React.FC<SmartEditorProps> = ({
               e.preventDefault();
               acceptGhostText();
             }}
-            className="flex flex-1 min-w-0 items-center gap-2 text-left cursor-pointer group"
+            className="flex flex-1 min-w-0 w-full items-start gap-2 text-left cursor-pointer group"
             title="Click or press Tab to insert this AI suggestion"
           >
             <Sparkles
-              className="h-3.5 w-3.5 shrink-0"
+              className="h-3.5 w-3.5 shrink-0 mt-0.5"
               style={{ color: 'var(--theme-accent)' }}
             />
-            <span className="font-semibold text-slate-900 dark:text-white shrink-0">
-              AI Suggestion:
-            </span>
-            <span className="truncate italic text-slate-700 dark:text-slate-200 group-hover:underline">
-              &ldquo;{ghostText}&rdquo;
-            </span>
+            <div className="min-w-0 flex-1 max-h-52 overflow-y-auto pr-1 leading-relaxed break-words">
+              <span className="font-semibold text-slate-900 dark:text-white mr-1.5">
+                AI Suggestion:
+              </span>
+              <span className="italic text-slate-700 dark:text-slate-200 group-hover:underline whitespace-pre-wrap break-words">
+                &ldquo;{ghostText}&rdquo;
+              </span>
+            </div>
           </button>
-          <div className="flex items-center gap-1.5 shrink-0">
+          <div className="flex items-center gap-1.5 shrink-0 self-end sm:self-start">
             <button
               type="button"
               onMouseDown={(e) => {
@@ -1443,10 +1499,10 @@ export const SmartEditor: React.FC<SmartEditorProps> = ({
       )}
 
       {!ghostText && ghostError && (
-        <div className="flex items-center justify-between gap-2.5 border-t border-amber-500/30 bg-amber-500/10 px-3.5 py-1.5 text-xs text-amber-900 dark:text-amber-200">
-          <div className="flex items-center gap-2 min-w-0">
-            <AlertTriangle className="h-3.5 w-3.5 text-amber-500 shrink-0" />
-            <span className="truncate">
+        <div className="flex items-start justify-between gap-2.5 border-t border-amber-500/30 bg-amber-500/10 px-3.5 py-2 text-xs text-amber-900 dark:text-amber-200">
+          <div className="flex items-start gap-2 min-w-0 flex-1">
+            <AlertTriangle className="h-3.5 w-3.5 text-amber-500 shrink-0 mt-0.5" />
+            <span className="whitespace-pre-wrap break-words leading-relaxed">
               <strong>Suggestion failed:</strong> {ghostError}
             </span>
           </div>

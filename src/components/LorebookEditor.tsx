@@ -114,18 +114,66 @@ export const LorebookEditor: React.FC = () => {
     updateSettings,
     importFromFiles,
     checkAndTriggerNameConflict,
+    workspaceDraftCache,
+    updateLorebookDraft,
   } = useStore();
 
-  // Lorebook Roster Sidebar State
-  const [rosterOpen, setRosterOpen] = useState(true);
-  const [rosterSearch, setRosterSearch] = useState('');
-  const [rosterTagFilter, setRosterTagFilter] = useState<string>('all');
-  const [rosterSort, setRosterSort] = useState<RosterSortOption>('modified_desc');
+  const lbDraft = workspaceDraftCache.lorebook;
+  const rosterOpen = lbDraft.rosterOpen;
+  const setRosterOpen = (next: React.SetStateAction<boolean>) =>
+    updateLorebookDraft({
+      rosterOpen: typeof next === 'function' ? next(lbDraft.rosterOpen) : next,
+    });
+  const rosterSearch = lbDraft.rosterSearch;
+  const setRosterSearch = (next: string) =>
+    updateLorebookDraft({ rosterSearch: next });
+  const rosterTagFilter = lbDraft.rosterTagFilter;
+  const setRosterTagFilter = (next: string) =>
+    updateLorebookDraft({ rosterTagFilter: next });
+  const rosterSort = lbDraft.rosterSort;
+  const setRosterSort = (next: RosterSortOption) =>
+    updateLorebookDraft({ rosterSort: next });
+  const newCustomTagInput = lbDraft.newCustomTagInput;
+  const setNewCustomTagInput = (next: string) =>
+    updateLorebookDraft({ newCustomTagInput: next });
+  const wizardStep = lbDraft.wizardStep;
+  const setWizardStep = (next: React.SetStateAction<number>) =>
+    updateLorebookDraft({
+      wizardStep: typeof next === 'function' ? next(lbDraft.wizardStep) : next,
+    });
+  const worldConceptPrompt = lbDraft.worldConceptPrompt;
+  const setWorldConceptPrompt = (next: string) =>
+    updateLorebookDraft({ worldConceptPrompt: next });
+  const entryDraftPrompt = lbDraft.entryDraftPrompt;
+  const setEntryDraftPrompt = (next: string) =>
+    updateLorebookDraft({ entryDraftPrompt: next });
+  const entrySearch = lbDraft.entrySearch;
+  const setEntrySearch = (next: string) =>
+    updateLorebookDraft({ entrySearch: next });
+  const entryTagFilter = lbDraft.entryTagFilter;
+  const setEntryTagFilter = (next: string) =>
+    updateLorebookDraft({ entryTagFilter: next });
+  const selectedEntryId = lbDraft.selectedEntryId ?? lorebook.entries[0]?.id ?? null;
+  const setSelectedEntryId = (next: string | number | null) =>
+    updateLorebookDraft({ selectedEntryId: next });
+  const primaryKeyInput = lbDraft.primaryKeyInput;
+  const setPrimaryKeyInput = (next: string) =>
+    updateLorebookDraft({ primaryKeyInput: next });
+  const secondaryKeyInput = lbDraft.secondaryKeyInput;
+  const setSecondaryKeyInput = (next: string) =>
+    updateLorebookDraft({ secondaryKeyInput: next });
+  const loreTempRefImageUrl = lbDraft.loreTempRefImageUrl ?? null;
+  const setLoreTempRefImageUrl = (next: string | null) =>
+    updateLorebookDraft({ loreTempRefImageUrl: next });
+  const loreTempRefImageName = lbDraft.loreTempRefImageName ?? '';
+  const setLoreTempRefImageName = (next: string) =>
+    updateLorebookDraft({ loreTempRefImageName: next });
+
+  // Transient UI / Request State
   const [isDraggingFile, setIsDraggingFile] = useState(false);
   const [importStatusBanner, setImportStatusBanner] = useState<string | null>(
     null
   );
-  const [newCustomTagInput, setNewCustomTagInput] = useState('');
   const lorebookFileInputRef = useRef<HTMLInputElement | null>(null);
 
   // Drag-and-Drop Reordering for Lorebook Entries
@@ -136,12 +184,9 @@ export const LorebookEditor: React.FC = () => {
     string | number | null
   >(null);
 
-  // 5-Step Lorebook Wizard State
-  const [wizardStep, setWizardStep] = useState<number>(1);
-  const [worldConceptPrompt, setWorldConceptPrompt] = useState<string>('');
+  // Transient Wizard AI generation flags
   const [isGeneratingMultiLore, setIsGeneratingMultiLore] =
     useState<boolean>(false);
-  const [entryDraftPrompt, setEntryDraftPrompt] = useState<string>('');
   const [isDraftingEntryContent, setIsDraftingEntryContent] =
     useState<boolean>(false);
   const [suggestingEntryId, setSuggestingEntryId] = useState<
@@ -151,27 +196,13 @@ export const LorebookEditor: React.FC = () => {
     string | null
   >(null);
 
-  // Entry List Filter & Selection State
-  const [entrySearch, setEntrySearch] = useState('');
-  const [entryTagFilter, setEntryTagFilter] = useState<string>('all');
-  const [selectedEntryId, setSelectedEntryId] = useState<string | number | null>(
-    lorebook.entries[0]?.id ?? null
-  );
-
-  // Key Input Drafts
-  const [primaryKeyInput, setPrimaryKeyInput] = useState('');
-  const [secondaryKeyInput, setSecondaryKeyInput] = useState('');
+  // Transient AI Key suggestion flags
   const [isSuggestingKeys, setIsSuggestingKeys] = useState(false);
   const [aiKeyError, setAiKeyError] = useState<{
     message: string;
     corsHint?: string;
   } | null>(null);
 
-  // Temporary Reference Image State for Lorebook AI Assist (never saved into Lorebook JSON)
-  const [loreTempRefImageUrl, setLoreTempRefImageUrl] = useState<string | null>(
-    null
-  );
-  const [loreTempRefImageName, setLoreTempRefImageName] = useState<string>('');
   const [visionFallbackBanner, setVisionFallbackBanner] = useState<
     string | null
   >(null);
@@ -192,8 +223,10 @@ export const LorebookEditor: React.FC = () => {
     try {
       const rawUrl = await readImageFileAsDataUrl(file);
       const compressed = await compressImageForVision(rawUrl, 512);
-      setLoreTempRefImageUrl(compressed);
-      setLoreTempRefImageName(file.name);
+      updateLorebookDraft({
+        loreTempRefImageUrl: compressed,
+        loreTempRefImageName: file.name,
+      });
       setAiKeyError(null);
     } catch (err) {
       setAiKeyError({
@@ -264,10 +297,16 @@ export const LorebookEditor: React.FC = () => {
 
   // Keep selectedEntryId valid when switching lorebooks
   useEffect(() => {
-    if (!lorebook.entries.some((e) => e.id === selectedEntryId)) {
-      setSelectedEntryId(lorebook.entries[0]?.id ?? null);
+    if (lorebook.entries.length === 0) {
+      if (lbDraft.selectedEntryId !== null) {
+        setSelectedEntryId(null);
+      }
+      return;
     }
-  }, [lorebook.id, lorebook.entries, selectedEntryId]);
+    if (!lorebook.entries.some((e) => e.id === selectedEntryId)) {
+      setSelectedEntryId(lorebook.entries[0].id);
+    }
+  }, [lorebook.id, lorebook.entries, selectedEntryId, lbDraft.selectedEntryId]);
 
   const lorebooksWithTokens = useMemo(() => {
     return lorebooks.map((lb) => ({
@@ -1876,6 +1915,7 @@ export const LorebookEditor: React.FC = () => {
                         <SmartEditor
                           label="Entry Content"
                           fieldKey="lorebook_entry_content"
+                          draftScopeId={`lore:${lorebook.id || 'active'}:${selectedEntry.id}`}
                           value={selectedEntry.content}
                           onChange={(val) =>
                             handleUpdateSelectedEntry({ content: val })
@@ -2791,6 +2831,7 @@ export const LorebookEditor: React.FC = () => {
                   <SmartEditor
                     label="Entry Content"
                     fieldKey="lorebook_entry_content"
+                    draftScopeId={`lore:${lorebook.id || 'active'}:${selectedEntry.id}`}
                     value={selectedEntry.content}
                     onChange={(val) =>
                       handleUpdateSelectedEntry({ content: val })

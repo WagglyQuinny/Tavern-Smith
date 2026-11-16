@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useRef, useEffect } from 'react';
 import {
   Palette,
   Plus,
@@ -17,7 +17,6 @@ import {
   Settings,
 } from 'lucide-react';
 import {
-  DEFAULT_CONTEXT_THEMES,
   DEFAULT_TAGS,
   isTagNsfwFlagged,
   mergeWithDefaultTags,
@@ -66,69 +65,133 @@ export const ThemesAndTagsView: React.FC = () => {
     aiConfig,
     settings,
     setActiveTab,
+    workspaceDraftCache,
+    updateThemesTagsDraft,
   } = useStore();
 
-  // Context Theme Creation State
-  const [newThemeName, setNewThemeName] = useState('');
-  const [newThemeColor, setNewThemeColor] = useState('#ec4899');
-  const [newThemePrompt, setNewThemePrompt] = useState('');
-  const [newThemeTags, setNewThemeTags] = useState<string[]>([]);
-  const [generatingThemeMode, setGeneratingThemeMode] = useState<
-    'new' | 'active' | null
-  >(null);
+  // Merged Theme Editor & Creator State
+  const [generatingThemePrompt, setGeneratingThemePrompt] = useState(false);
   const [themeAiError, setThemeAiError] = useState<string | null>(null);
+  const themeNameInputRef = useRef<HTMLInputElement | null>(null);
+  const focusTimerRef = useRef<number | null>(null);
 
-  // Streamlined Quick-Creator Bar State for Tags
-  const [quickTagName, setQuickTagName] = useState('');
-  const [quickTagColor, setQuickTagColor] = useState('#a855f7');
-  const [quickTagCategory, setQuickTagCategory] =
-    useState<TagCategory>('Setting & Vibe');
-  const [quickTagIsNsfw, setQuickTagIsNsfw] = useState(false);
-  const [quickTagAiDesc, setQuickTagAiDesc] = useState('');
+  useEffect(() => {
+    return () => {
+      if (focusTimerRef.current !== null) {
+        window.clearTimeout(focusTimerRef.current);
+      }
+    };
+  }, []);
+
+  const ttDraft = workspaceDraftCache.themesTags;
+
+  // Streamlined Quick-Creator Bar State for Tags (cached across tab switches)
+  const quickTagName = ttDraft.quickTagName;
+  const setQuickTagName = (next: string) =>
+    updateThemesTagsDraft({ quickTagName: next });
+  const quickTagColor = ttDraft.quickTagColor;
+  const setQuickTagColor = (next: string) =>
+    updateThemesTagsDraft({ quickTagColor: next });
+  const quickTagCategory = ttDraft.quickTagCategory;
+  const setQuickTagCategory = (next: TagCategory) =>
+    updateThemesTagsDraft({ quickTagCategory: next });
+  const quickTagIsNsfw = ttDraft.quickTagIsNsfw;
+  const setQuickTagIsNsfw = (next: React.SetStateAction<boolean>) =>
+    updateThemesTagsDraft({
+      quickTagIsNsfw:
+        typeof next === 'function' ? next(ttDraft.quickTagIsNsfw) : next,
+    });
+  const quickTagAiDesc = ttDraft.quickTagAiDesc;
+  const setQuickTagAiDesc = (next: string) =>
+    updateThemesTagsDraft({ quickTagAiDesc: next });
   const [generatingQuickTagDesc, setGeneratingQuickTagDesc] = useState(false);
   const [quickTagFeedback, setQuickTagFeedback] = useState<string | null>(null);
 
-  // Tag Grid Filter & Search State
-  const [tagSearch, setTagSearch] = useState('');
-  const [safetyFilter, setSafetyFilter] = useState<'all' | 'sfw' | 'nsfw'>('all');
-  const [categoryFilter, setCategoryFilter] = useState<string>('All');
+  // Tag Grid Filter & Search State (cached across tab switches)
+  const tagSearch = ttDraft.tagSearch;
+  const setTagSearch = (next: string) =>
+    updateThemesTagsDraft({ tagSearch: next });
+  const safetyFilter = ttDraft.safetyFilter;
+  const setSafetyFilter = (next: 'all' | 'sfw' | 'nsfw') =>
+    updateThemesTagsDraft({ safetyFilter: next });
+  const categoryFilter = ttDraft.categoryFilter;
+  const setCategoryFilter = (next: string) =>
+    updateThemesTagsDraft({ categoryFilter: next });
   const [resetConfirm, setResetConfirm] = useState(false);
 
-  // Focused Edit Tag Modal State
-  const [editingTag, setEditingTag] = useState<TagDefinition | null>(null);
-  const [editTagName, setEditTagName] = useState('');
-  const [editTagCategory, setEditTagCategory] =
-    useState<TagCategory>('Genre & Setting');
-  const [editTagColor, setEditTagColor] = useState('#a855f7');
-  const [editTagIsNsfw, setEditTagIsNsfw] = useState(false);
-  const [editTagAiDesc, setEditTagAiDesc] = useState('');
+  // Focused Edit Tag Modal State (cached across tab switches)
+  const editingTag = useMemo(
+    () =>
+      ttDraft.editingTagId
+        ? tags.find((t) => t.id === ttDraft.editingTagId) || null
+        : null,
+    [ttDraft.editingTagId, tags]
+  );
+  const setEditingTag = (tag: TagDefinition | null) =>
+    updateThemesTagsDraft({ editingTagId: tag ? tag.id : null });
+  const editTagName = ttDraft.editTagName;
+  const setEditTagName = (next: string) =>
+    updateThemesTagsDraft({ editTagName: next });
+  const editTagCategory = ttDraft.editTagCategory;
+  const setEditTagCategory = (next: TagCategory) =>
+    updateThemesTagsDraft({ editTagCategory: next });
+  const editTagColor = ttDraft.editTagColor;
+  const setEditTagColor = (next: string) =>
+    updateThemesTagsDraft({ editTagColor: next });
+  const editTagIsNsfw = ttDraft.editTagIsNsfw;
+  const setEditTagIsNsfw = (next: React.SetStateAction<boolean>) =>
+    updateThemesTagsDraft({
+      editTagIsNsfw:
+        typeof next === 'function' ? next(ttDraft.editTagIsNsfw) : next,
+    });
+  const editTagAiDesc = ttDraft.editTagAiDesc;
+  const setEditTagAiDesc = (next: string) =>
+    updateThemesTagsDraft({ editTagAiDesc: next });
   const [generatingEditTagDesc, setGeneratingEditTagDesc] = useState(false);
 
   const hideNsfw = Boolean(settings.hideNsfwTags);
 
   const handleUpdateActiveTheme = (partial: Partial<ContextTheme>) => {
+    const targetId = activeTheme.id;
     setThemes((prev) =>
-      prev.map((t) => (t.id === activeTheme.id ? { ...t, ...partial } : t))
+      prev.map((t) => (t.id === targetId ? { ...t, ...partial } : t))
     );
   };
 
-  const handleCreateTheme = () => {
-    if (!newThemeName.trim()) return;
+  const handleCreateNewTheme = () => {
+    setThemeAiError(null);
+    const existingNames = new Set(
+      themes.map((t) => t.name.trim().toLowerCase())
+    );
+    let suffix = 1;
+    let candidateName = 'Custom Theme';
+    while (existingNames.has(candidateName.toLowerCase())) {
+      suffix += 1;
+      candidateName = `Custom Theme ${suffix}`;
+    }
+
+    const nextColor =
+      QUICK_SWATCHES[themes.length % QUICK_SWATCHES.length] || '#ec4899';
+
     const created: ContextTheme = {
-      id: `theme-${Date.now()}`,
-      name: newThemeName.trim(),
-      color: newThemeColor,
-      aiContextPrompt:
-        newThemePrompt.trim() ||
-        `Write in a compelling ${newThemeName.trim()} style with strong atmospheric detail.`,
-      associatedTags: newThemeTags,
+      id: `theme-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      name: candidateName,
+      color: nextColor,
+      aiContextPrompt: `Write in a compelling ${candidateName} style with strong atmospheric detail.`,
+      associatedTags: [],
       isBuiltIn: false,
     };
+
     setThemes((prev) => [...prev, created]);
     setActiveThemeId(created.id);
-    setNewThemeName('');
-    setNewThemePrompt('');
-    setNewThemeTags([]);
+
+    if (focusTimerRef.current !== null) {
+      window.clearTimeout(focusTimerRef.current);
+    }
+    focusTimerRef.current = window.setTimeout(() => {
+      themeNameInputRef.current?.focus();
+      themeNameInputRef.current?.select();
+    }, 40);
   };
 
   const handleDeleteTheme = (id: string) => {
@@ -140,18 +203,17 @@ export const ThemesAndTagsView: React.FC = () => {
     }
   };
 
-  const handleGenerateThemeWithAI = async (mode: 'new' | 'active') => {
-    const targetName =
-      mode === 'new' ? newThemeName.trim() : activeTheme.name.trim();
-    const targetTags =
-      mode === 'new' ? newThemeTags : activeTheme.associatedTags || [];
+  const handleGenerateThemeWithAI = async () => {
+    const targetId = activeTheme.id;
+    const targetName = activeTheme.name.trim();
+    const targetTags = activeTheme.associatedTags || [];
 
     if (!targetName) {
       setThemeAiError('Enter a Theme Name first so the AI knows what genre or atmosphere to synthesize.');
       return;
     }
 
-    setGeneratingThemeMode(mode);
+    setGeneratingThemePrompt(true);
     setThemeAiError(null);
 
     const attachedTagDetails = targetTags
@@ -190,11 +252,11 @@ export const ThemesAndTagsView: React.FC = () => {
       );
       const cleaned = res.content.trim();
       if (cleaned) {
-        if (mode === 'new') {
-          setNewThemePrompt(cleaned);
-        } else {
-          handleUpdateActiveTheme({ aiContextPrompt: cleaned });
-        }
+        setThemes((prev) =>
+          prev.map((t) =>
+            t.id === targetId ? { ...t, aiContextPrompt: cleaned } : t
+          )
+        );
       }
     } catch (err) {
       setThemeAiError(
@@ -205,7 +267,7 @@ export const ThemesAndTagsView: React.FC = () => {
             : 'Failed to generate theme instructions.'
       );
     } finally {
-      setGeneratingThemeMode(null);
+      setGeneratingThemePrompt(false);
     }
   };
 
@@ -324,8 +386,10 @@ export const ThemesAndTagsView: React.FC = () => {
       setQuickTagFeedback(`Created tag "${clean}" (${quickTagIsNsfw ? 'NSFW 18+' : 'SFW'}).`);
     }
 
-    setQuickTagName('');
-    setQuickTagAiDesc('');
+    updateThemesTagsDraft({
+      quickTagName: '',
+      quickTagAiDesc: '',
+    });
     window.setTimeout(() => setQuickTagFeedback(null), 3500);
   };
 
@@ -343,14 +407,15 @@ export const ThemesAndTagsView: React.FC = () => {
   };
 
   const handleOpenEditModal = (tag: TagDefinition) => {
-    setEditingTag(tag);
-    setEditTagName(tag.name);
-    setEditTagCategory(tag.category || 'Custom');
-    setEditTagColor(tag.color || '#a855f7');
-    setEditTagIsNsfw(isTagNsfwFlagged(tag));
-    setEditTagAiDesc(
-      tag.aiContextDescription || tag.aiDescription || tag.description || ''
-    );
+    updateThemesTagsDraft({
+      editingTagId: tag.id,
+      editTagName: tag.name,
+      editTagCategory: tag.category || 'Custom',
+      editTagColor: tag.color || '#a855f7',
+      editTagIsNsfw: isTagNsfwFlagged(tag),
+      editTagAiDesc:
+        tag.aiContextDescription || tag.aiDescription || tag.description || '',
+    });
   };
 
   const handleSaveEditModal = () => {
@@ -527,10 +592,215 @@ export const ThemesAndTagsView: React.FC = () => {
       </div>
 
       {/* ===================================================================== */}
-      {/* PART 1: STREAMLINED TAG QUICK-CREATOR BAR & INTERACTIVE TAG STUDIO     */}
+      {/* PART 1: COMPACT THEME SELECTOR & MERGED EDIT / CREATE THEME STUDIO    */}
       {/* ===================================================================== */}
       <section className="space-y-4">
-        {/* Streamlined Quick-Creator Bar at the Top */}
+        {/* Compact Theme Selection Dropdown Bar */}
+        <div
+          style={{
+            borderColor:
+              'color-mix(in srgb, var(--theme-accent) 40%, transparent)',
+          }}
+          className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border bg-white dark:bg-slate-900 px-4 py-3 shadow-xs min-w-0"
+        >
+          <div className="flex items-center gap-2 min-w-0">
+            <Palette
+              className="h-4 w-4 shrink-0"
+              style={{ color: 'var(--theme-accent)' }}
+            />
+            <h2 className="text-sm font-bold text-slate-900 dark:text-white whitespace-nowrap">
+              Themes ({themes.length})
+            </h2>
+            <Tooltip content="Select a theme from the dropdown to activate and edit it below, or click Create New Theme." />
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2 flex-1 sm:flex-initial sm:min-w-[260px] justify-end">
+            <div className="flex items-center gap-2 rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 px-3 py-1.5 flex-1 sm:flex-initial sm:min-w-[220px]">
+              <span
+                className="h-2.5 w-2.5 rounded-full shrink-0"
+                style={{ backgroundColor: activeTheme.color }}
+              />
+              <select
+                aria-label="Select Active Theme"
+                value={activeTheme.id}
+                onChange={(e) => {
+                  setThemeAiError(null);
+                  setActiveThemeId(e.target.value);
+                }}
+                className="w-full bg-transparent text-xs font-semibold text-slate-900 dark:text-white focus:outline-none cursor-pointer"
+              >
+                {themes.map((theme) => (
+                  <option
+                    key={theme.id}
+                    value={theme.id}
+                    className="bg-white dark:bg-slate-900 text-slate-900 dark:text-white"
+                  >
+                    {theme.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            {!activeTheme.isBuiltIn && themes.length > 1 && (
+              <button
+                type="button"
+                onClick={() => handleDeleteTheme(activeTheme.id)}
+                title={`Delete theme "${activeTheme.name}"`}
+                aria-label={`Delete theme ${activeTheme.name}`}
+                className="flex items-center gap-1 rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 px-2.5 py-1.5 text-xs font-medium text-slate-500 hover:border-rose-500/40 hover:text-rose-500 transition-colors cursor-pointer shrink-0"
+              >
+                <Trash2 className="h-3.5 w-3.5" />
+                <span className="hidden sm:inline">Delete</span>
+              </button>
+            )}
+          </div>
+        </div>
+
+        {/* Merged Theme Editor & Creator Tool */}
+        <div
+          style={{
+            borderColor:
+              'color-mix(in srgb, var(--theme-accent) 40%, transparent)',
+          }}
+          className="rounded-2xl border bg-white dark:bg-slate-900 p-5 space-y-4 min-w-0"
+        >
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="flex items-center gap-2 min-w-0">
+              <h3 className="text-sm font-bold text-slate-900 dark:text-white truncate">
+                Edit Theme: {activeTheme.name || 'Untitled Theme'}
+              </h3>
+              {activeTheme.isBuiltIn && (
+                <span className="rounded border border-slate-200 dark:border-slate-700 bg-slate-100 dark:bg-slate-800 px-1.5 py-0.5 text-[10px] font-medium text-slate-500 dark:text-slate-400 shrink-0">
+                  Built-in
+                </span>
+              )}
+            </div>
+
+            <button
+              type="button"
+              disabled={generatingThemePrompt}
+              onClick={() => void handleGenerateThemeWithAI()}
+              style={{ borderColor: 'var(--theme-accent)' }}
+              className="theme-hover-outline flex items-center gap-1.5 rounded-lg border bg-slate-50 dark:bg-slate-800 px-2.5 py-1 text-xs font-semibold text-slate-900 dark:text-white cursor-pointer disabled:opacity-50"
+            >
+              {generatingThemePrompt ? (
+                <Loader2
+                  className="h-3.5 w-3.5 animate-spin"
+                  style={{ color: 'var(--theme-accent)' }}
+                />
+              ) : (
+                <Sparkles
+                  className="h-3.5 w-3.5"
+                  style={{ color: 'var(--theme-accent)' }}
+                />
+              )}
+              <span>✨ Generate from Name &amp; Tags</span>
+            </button>
+          </div>
+
+          {themeAiError && (
+            <div className="flex items-start justify-between gap-2 rounded-lg border border-rose-500/40 bg-rose-500/10 p-2.5 text-xs text-rose-400">
+              <div className="flex items-start gap-2">
+                <AlertTriangle className="h-4 w-4 shrink-0 mt-0.5" />
+                <span>{themeAiError}</span>
+              </div>
+              <button
+                type="button"
+                onClick={() => setThemeAiError(null)}
+                className="text-[11px] underline shrink-0 cursor-pointer"
+              >
+                Dismiss
+              </button>
+            </div>
+          )}
+
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 items-center">
+            <div className="sm:col-span-2">
+              <input
+                ref={themeNameInputRef}
+                type="text"
+                aria-label="Theme Name"
+                value={activeTheme.name}
+                disabled={Boolean(activeTheme.isBuiltIn)}
+                title={
+                  activeTheme.isBuiltIn
+                    ? 'The built-in theme name is fixed. Click Create New Theme below to make a custom theme.'
+                    : 'Rename this custom theme'
+                }
+                onChange={(e) => {
+                  if (activeTheme.isBuiltIn) return;
+                  handleUpdateActiveTheme({ name: e.target.value });
+                }}
+                onBlur={(e) => {
+                  if (!activeTheme.isBuiltIn && !e.target.value.trim()) {
+                    handleUpdateActiveTheme({ name: 'Custom Theme' });
+                  }
+                }}
+                placeholder="Theme Name (e.g., Space Opera, Cozy Tavern, Dark Romance)"
+                className={`w-full rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 px-3 py-2 text-xs font-medium text-slate-900 dark:text-white focus:outline-none ${
+                  activeTheme.isBuiltIn ? 'opacity-75 cursor-not-allowed' : ''
+                }`}
+              />
+            </div>
+
+            <div className="flex items-center gap-2">
+              <input
+                type="color"
+                aria-label="Active Theme Accent Color"
+                value={activeTheme.color}
+                onChange={(e) =>
+                  handleUpdateActiveTheme({ color: e.target.value })
+                }
+                className="h-9 w-12 cursor-pointer rounded border border-slate-200 dark:border-slate-800 bg-transparent shrink-0"
+              />
+              <span className="font-mono text-xs text-slate-500">
+                {activeTheme.color}
+              </span>
+            </div>
+          </div>
+
+          <TagSelector
+            selectedTags={activeTheme.associatedTags || []}
+            onChange={(nextTags) =>
+              handleUpdateActiveTheme({ associatedTags: nextTags })
+            }
+            title="Theme Default Tags"
+            subtitle="Tags included automatically whenever this theme is active"
+            tooltip="Attach default tags to guide AI writing for this theme."
+            compact
+          />
+
+          <SmartEditor
+            label="Theme Style Prompt"
+            fieldKey="theme_ai_context_prompt"
+            draftScopeId={`theme:${activeTheme.id}`}
+            value={activeTheme.aiContextPrompt}
+            onChange={(val) =>
+              handleUpdateActiveTheme({ aiContextPrompt: val })
+            }
+            rows={3}
+            tooltip="Sent to the AI whenever this theme is selected so your cards and lore match this vibe."
+          />
+
+          <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
+            <button
+              type="button"
+              onClick={handleCreateNewTheme}
+              style={{ borderColor: 'var(--theme-accent)' }}
+              className="theme-hover-outline flex items-center gap-1.5 rounded-lg border bg-slate-900 dark:bg-white px-3.5 py-2 text-xs font-semibold text-white dark:text-slate-900 cursor-pointer"
+            >
+              <Plus className="h-3.5 w-3.5" />
+              <span>Create New Theme</span>
+            </button>
+          </div>
+        </div>
+      </section>
+
+      {/* ===================================================================== */}
+      {/* PART 2: STREAMLINED TAG QUICK-CREATOR BAR & INTERACTIVE TAG STUDIO     */}
+      {/* ===================================================================== */}
+      <section className="space-y-4">
+        {/* Streamlined Quick-Creator Bar */}
         <div
           style={{ borderColor: 'var(--theme-accent)' }}
           className="rounded-2xl border bg-white dark:bg-slate-900 p-5 shadow-xs space-y-4"
@@ -907,257 +1177,6 @@ export const ThemesAndTagsView: React.FC = () => {
               ))}
             </div>
           )}
-        </div>
-      </section>
-
-      {/* ===================================================================== */}
-      {/* PART 2: CONTEXT THEMES STUDIO                                         */}
-      {/* ===================================================================== */}
-      <section
-        style={{
-          gridTemplateColumns:
-            'repeat(auto-fit, minmax(min(100%, 360px), 1fr))',
-        }}
-        className="grid gap-6 items-start"
-      >
-        {/* Left Column: Active Context Theme Customizer */}
-        <div
-          style={{
-            borderColor:
-              'color-mix(in srgb, var(--theme-accent) 40%, transparent)',
-          }}
-          className="rounded-2xl border bg-white dark:bg-slate-900 p-5 space-y-4 min-w-0"
-        >
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              <Palette
-                className="h-4 w-4"
-                style={{ color: 'var(--theme-accent)' }}
-              />
-              <h2 className="text-sm font-bold text-slate-900 dark:text-white">
-                Themes ({themes.length})
-              </h2>
-              <Tooltip content="Pick or customize a theme. Its style notes and default tags guide the AI whenever you generate or edit text." />
-            </div>
-          </div>
-
-          {/* Theme Selector Grid */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
-            {themes.map((theme) => {
-              const isSelected = theme.id === activeTheme.id;
-              return (
-                <div
-                  key={theme.id}
-                  onClick={() => setActiveThemeId(theme.id)}
-                  style={
-                    isSelected ? { borderColor: theme.color } : undefined
-                  }
-                  className={`theme-hover-outline group relative flex flex-col justify-between rounded-xl border p-3 transition-all cursor-pointer ${
-                    isSelected
-                      ? 'bg-slate-50 dark:bg-slate-950 shadow-xs'
-                      : 'border-slate-200 dark:border-slate-800 hover:bg-slate-50/60 dark:hover:bg-slate-950/50'
-                  }`}
-                >
-                  <div className="flex items-center justify-between gap-2">
-                    <div className="flex items-center gap-2 min-w-0">
-                      <span
-                        className="h-3 w-3 rounded-full shrink-0"
-                        style={{ backgroundColor: theme.color }}
-                      />
-                      <span className="text-xs font-semibold text-slate-900 dark:text-white truncate">
-                        {theme.name}
-                      </span>
-                    </div>
-                    {isSelected && (
-                      <Check
-                        className="h-3.5 w-3.5 shrink-0"
-                        style={{ color: theme.color }}
-                      />
-                    )}
-                    {!theme.isBuiltIn && themes.length > 1 && (
-                      <button
-                        type="button"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          handleDeleteTheme(theme.id);
-                        }}
-                        className="opacity-0 group-hover:opacity-100 text-slate-400 hover:text-rose-500 transition-opacity cursor-pointer"
-                      >
-                        <Trash2 className="h-3.5 w-3.5" />
-                      </button>
-                    )}
-                  </div>
-                  <p className="mt-1.5 text-[11px] text-slate-500 dark:text-slate-400 line-clamp-2">
-                    {theme.aiContextPrompt}
-                  </p>
-                </div>
-              );
-            })}
-          </div>
-
-          {/* Active Theme Editor */}
-          <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-950/60 p-4 space-y-4">
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <span className="text-xs font-semibold text-slate-800 dark:text-slate-200">
-                Editing Theme: {activeTheme.name}
-              </span>
-              <div className="flex items-center gap-2">
-                <button
-                  type="button"
-                  disabled={generatingThemeMode !== null}
-                  onClick={() => void handleGenerateThemeWithAI('active')}
-                  style={{ borderColor: 'var(--theme-accent)' }}
-                  className="theme-hover-outline flex items-center gap-1.5 rounded-lg border bg-white dark:bg-slate-900 px-2.5 py-1 text-[11px] font-semibold text-slate-800 dark:text-slate-100 cursor-pointer disabled:opacity-50"
-                >
-                  {generatingThemeMode === 'active' ? (
-                    <Loader2
-                      className="h-3 w-3 animate-spin"
-                      style={{ color: 'var(--theme-accent)' }}
-                    />
-                  ) : (
-                    <Sparkles
-                      className="h-3 w-3"
-                      style={{ color: 'var(--theme-accent)' }}
-                    />
-                  )}
-                  <span>✨ Write Prompt with AI</span>
-                </button>
-                <label className="text-[11px] text-slate-500">Accent:</label>
-                <input
-                  type="color"
-                  aria-label="Active Theme Accent Color"
-                  value={activeTheme.color}
-                  onChange={(e) =>
-                    handleUpdateActiveTheme({ color: e.target.value })
-                  }
-                  className="h-6 w-8 cursor-pointer rounded border border-slate-300 dark:border-slate-700 bg-transparent"
-                />
-              </div>
-            </div>
-
-            <SmartEditor
-              label="Theme Style Prompt"
-              fieldKey="theme_ai_context_prompt"
-              value={activeTheme.aiContextPrompt}
-              onChange={(val) =>
-                handleUpdateActiveTheme({ aiContextPrompt: val })
-              }
-              rows={3}
-              tooltip="Sent to the AI whenever this theme is selected so your cards and lore match this vibe."
-            />
-
-            <TagSelector
-              selectedTags={activeTheme.associatedTags || []}
-              onChange={(nextTags) =>
-                handleUpdateActiveTheme({ associatedTags: nextTags })
-              }
-              title="Theme Default Tags"
-              subtitle="Tags included automatically whenever this theme is active"
-              tooltip="Attach default tags to guide AI writing for this theme."
-              compact
-            />
-          </div>
-        </div>
-
-        {/* Right Column: Create New Context Theme */}
-        <div
-          style={{
-            borderColor:
-              'color-mix(in srgb, var(--theme-accent) 40%, transparent)',
-          }}
-          className="rounded-2xl border bg-white dark:bg-slate-900 p-5 space-y-4 min-w-0"
-        >
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <h3 className="text-sm font-bold text-slate-900 dark:text-white">
-              Create Custom Theme
-            </h3>
-            <button
-              type="button"
-              disabled={generatingThemeMode !== null}
-              onClick={() => void handleGenerateThemeWithAI('new')}
-              style={{ borderColor: 'var(--theme-accent)' }}
-              className="theme-hover-outline flex items-center gap-1.5 rounded-lg border bg-slate-50 dark:bg-slate-800 px-2.5 py-1 text-xs font-semibold text-slate-900 dark:text-white cursor-pointer disabled:opacity-50"
-            >
-              {generatingThemeMode === 'new' ? (
-                <Loader2
-                  className="h-3.5 w-3.5 animate-spin"
-                  style={{ color: 'var(--theme-accent)' }}
-                />
-              ) : (
-                <Sparkles
-                  className="h-3.5 w-3.5"
-                  style={{ color: 'var(--theme-accent)' }}
-                />
-              )}
-              <span>✨ Generate from Name &amp; Tags</span>
-            </button>
-          </div>
-
-          {themeAiError && (
-            <div className="flex items-start justify-between gap-2 rounded-lg border border-rose-500/40 bg-rose-500/10 p-2.5 text-xs text-rose-400">
-              <div className="flex items-start gap-2">
-                <AlertTriangle className="h-4 w-4 shrink-0 mt-0.5" />
-                <span>{themeAiError}</span>
-              </div>
-              <button
-                type="button"
-                onClick={() => setThemeAiError(null)}
-                className="text-[11px] underline shrink-0 cursor-pointer"
-              >
-                Dismiss
-              </button>
-            </div>
-          )}
-
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-            <div className="sm:col-span-2">
-              <input
-                type="text"
-                value={newThemeName}
-                onChange={(e) => setNewThemeName(e.target.value)}
-                placeholder="Theme Name (e.g., Space Opera, Cozy Tavern, Dark Romance)"
-                className="w-full rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 px-3 py-2 text-xs text-slate-900 dark:text-white focus:outline-none"
-              />
-            </div>
-            <div className="flex items-center gap-2">
-              <input
-                type="color"
-                aria-label="New Theme Accent Color"
-                value={newThemeColor}
-                onChange={(e) => setNewThemeColor(e.target.value)}
-                className="h-9 w-12 cursor-pointer rounded border border-slate-200 dark:border-slate-800 bg-transparent"
-              />
-              <span className="font-mono text-xs text-slate-500">
-                {newThemeColor}
-              </span>
-            </div>
-          </div>
-
-          <TagSelector
-            selectedTags={newThemeTags}
-            onChange={setNewThemeTags}
-            title="Tags for This Theme"
-            tooltip="Pick tags for your theme, then click '✨ Generate from Name & Tags' above to draft the style prompt."
-            compact
-          />
-
-          <textarea
-            value={newThemePrompt}
-            onChange={(e) => setNewThemePrompt(e.target.value)}
-            rows={3}
-            placeholder="Style instructions for this theme (or click ✨ Generate above)..."
-            className="w-full rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 p-3 text-xs text-slate-900 dark:text-white focus:outline-none"
-          />
-
-          <button
-            type="button"
-            onClick={handleCreateTheme}
-            style={{ borderColor: 'var(--theme-accent)' }}
-            className="theme-hover-outline flex items-center gap-1.5 rounded-lg border bg-slate-900 dark:bg-white px-3.5 py-2 text-xs font-semibold text-white dark:text-slate-900 cursor-pointer"
-          >
-            <Plus className="h-3.5 w-3.5" />
-            <span>Create Theme</span>
-          </button>
         </div>
       </section>
 
