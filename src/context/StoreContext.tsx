@@ -57,6 +57,7 @@ import {
   readEncryptedVaultEnvelope,
   registerVaultDiskFlushCallback,
   saveProviderModelsMap,
+  setInMemoryVaultEnvelope,
   VAULT_FILENAME,
 } from '../utils/cryptoVault';
 
@@ -2471,6 +2472,9 @@ interface StoreContextValue {
   confirmPendingDelete: () => void;
   cancelPendingDelete: () => void;
   exportSaveFolderBundle: (folderPath?: string) => void;
+  importSaveFolderBundle: (
+    files: FileList | File[]
+  ) => Promise<{ ok: boolean; count: number; summary: string }>;
   // Unified PNG & JSON Card Importer
   importFromFiles: (
     files: FileList | File[]
@@ -4609,22 +4613,6 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
     triggerBrowserDownload(blob, 'TavernSmith_Saves_BackupBundle.json');
   }, [savedFiles, settings.activeSaveFolder]);
 
-  const bindLorebookToCharacter = useCallback(
-    (characterId: string, lorebookToBind: Lorebook) => {
-      setCharacters((prev) =>
-        prev.map((c) => {
-          if (c.id !== characterId) return c;
-          return {
-            ...c,
-            character_book: lorebookToBind,
-            modification_date: Math.floor(Date.now() / 1000),
-          };
-        })
-      );
-    },
-    []
-  );
-
   const importFromFiles = useCallback(
     async (
       files: FileList | File[]
@@ -4804,6 +4792,527 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
     [tags, executeDiskSaveAndRescan]
   );
 
+  const importSaveFolderBundle = useCallback(
+    async (
+      files: FileList | File[]
+    ): Promise<{ ok: boolean; count: number; summary: string }> => {
+      const list = Array.from(files || []);
+      if (list.length === 0) {
+        return { ok: false, count: 0, summary: 'No backup files selected.' };
+      }
+
+      const bundleEntriesList: Array<{
+        files: Array<{
+          fileName?: string;
+          subfolder?: string;
+          kind?: string;
+          data?: unknown;
+        }>;
+      }> = [];
+      const standaloneFiles: File[] = [];
+
+      for (const file of list) {
+        if (file.name.toLowerCase().endsWith('.json')) {
+          try {
+            const text = await file.text();
+            const parsed = JSON.parse(text) as Record<string, unknown>;
+            if (parsed && typeof parsed === 'object' && Array.isArray(parsed.files)) {
+              bundleEntriesList.push({
+                files: parsed.files as Array<{
+                  fileName?: string;
+                  subfolder?: string;
+                  kind?: string;
+                  data?: unknown;
+                }>,
+              });
+              continue;
+            }
+          } catch {
+            return {
+              ok: false,
+              count: 0,
+              summary: `Could not parse "${file.name}" as valid JSON.`,
+            };
+          }
+        }
+        standaloneFiles.push(file);
+      }
+
+      let restoredChars = 0;
+      let restoredBooks = 0;
+      let restoredMeta = false;
+      let restoredVault = false;
+
+      if (bundleEntriesList.length > 0) {
+        diskMutationVersionRef.current += 1;
+
+        let nextTags = [...tagsRef.current];
+        let nextThemes = [...themesRef.current];
+        let nextSettings = { ...settingsRef.current };
+        let nextAiConfig = { ...aiConfigRef.current };
+        const nextCharacters = [...charactersRef.current];
+        const nextLorebooks = [...lorebooksRef.current];
+        let preferredActiveCharId: string | undefined;
+        let preferredActiveBookId: string | undefined;
+
+        for (const bundle of bundleEntriesList) {
+          // 1. Restore Meta (`_tavernsmith_meta.json`) first so tags & themes apply to imported cards
+          for (const entry of bundle.files) {
+            if (!entry || typeof entry !== 'object') continue;
+            const isMeta =
+              entry.kind === 'meta' || entry.fileName === META_FILENAME;
+            if (!isMeta || !entry.data) continue;
+
+            try {
+              const rawMeta =
+                typeof entry.data === 'string'
+                  ? (JSON.parse(entry.data) as Partial<TavernSmithMetaPayload>)
+                  : (entry.data as Partial<TavernSmithMetaPayload>);
+
+              if (Array.isArray(rawMeta.tags)) {
+                const byName = new Map<string, TagDefinition>();
+                for (const t of extractCustomUserTags(nextTags)) {
+                  if (t?.name) byName.set(t.name.trim().toLowerCase(), t);
+                }
+                for (const t of extractCustomUserTags(rawMeta.tags)) {
+                  if (t?.name) byName.set(t.name.trim().toLowerCase(), t);
+                }
+                nextTags = mergeWithDefaultTags(Array.from(byName.values()));
+              }
+
+              if (
+                Array.isArray(rawMeta.contextThemes) &&
+                rawMeta.contextThemes.length > 0
+              ) {
+                const mapByName = new Map<string, ContextTheme>();
+                for (const t of DEFAULT_CONTEXT_THEMES) {
+                  mapByName.set(t.name.trim().toLowerCase(), t);
+                }
+                for (const t of nextThemes) {
+                  if (t?.name) mapByName.set(t.name.trim().toLowerCase(), t);
+                }
+                for (const incoming of rawMeta.contextThemes) {
+                  if (incoming?.name) {
+                    const key = incoming.name.trim().toLowerCase();
+                    const existing = mapByName.get(key);
+                    mapByName.set(key, {
+                      ...existing,
+                      ...incoming,
+                      id: existing?.id || incoming.id || `theme-${Date.now()}`,
+                    });
+                  }
+                }
+                nextThemes = Array.from(mapByName.values());
+              }
+
+              if (rawMeta.settings) {
+                const candidateThemeId =
+                  rawMeta.activeThemeId ||
+                  rawMeta.settings.activeThemeId ||
+                  nextSettings.activeThemeId;
+                const resolvedThemeId = nextThemes.some(
+                  (t) => t.id === candidateThemeId
+                )
+                  ? candidateThemeId
+                  : nextThemes[0]?.id || nextSettings.activeThemeId;
+                nextSettings = {
+                  ...nextSettings,
+                  ...rawMeta.settings,
+                  activeThemeId: resolvedThemeId,
+                  activeSaveFolder: UNIFIED_INTERNAL_ROOT,
+                };
+              } else if (
+                rawMeta.activeThemeId &&
+                nextThemes.some((t) => t.id === rawMeta.activeThemeId)
+              ) {
+                nextSettings = {
+                  ...nextSettings,
+                  activeThemeId: rawMeta.activeThemeId,
+                };
+              }
+
+              if (rawMeta.aiConfig) {
+                const incomingAi = rawMeta.aiConfig;
+                const cleanPreset = incomingAi.preset || nextAiConfig.preset;
+                const mergedModelsMap = {
+                  ...(incomingAi.savedProviderModels || {}),
+                  ...(nextAiConfig.savedProviderModels || {}),
+                };
+                if (Object.keys(mergedModelsMap).length > 0) {
+                  saveProviderModelsMap(mergedModelsMap);
+                }
+                nextAiConfig = {
+                  ...nextAiConfig,
+                  ...incomingAi,
+                  preset: cleanPreset,
+                  availableModels: sanitizeAvailableModelsList(
+                    incomingAi.availableModels,
+                    AI_BACKEND_PRESETS.find((p) => p.id === cleanPreset)
+                      ?.suggestedModels,
+                    cleanPreset
+                  ),
+                  savedProviderModels: mergedModelsMap,
+                  apiKey: nextAiConfig.apiKey,
+                  savedProviderKeys: nextAiConfig.savedProviderKeys,
+                };
+              }
+
+              if (rawMeta.activeCharacterId) {
+                preferredActiveCharId = rawMeta.activeCharacterId;
+              }
+              if (rawMeta.activeLorebookId) {
+                preferredActiveBookId = rawMeta.activeLorebookId;
+              }
+              restoredMeta = true;
+            } catch {
+              // Skip malformed meta block
+            }
+          }
+
+          // 2. Restore Encrypted Vault (`_tavernsmith_vault.enc`) if readable
+          for (const entry of bundle.files) {
+            if (!entry || typeof entry !== 'object') continue;
+            const isVault =
+              entry.kind === 'vault' || entry.fileName === VAULT_FILENAME;
+            if (!isVault || !entry.data || typeof entry.data !== 'object') {
+              continue;
+            }
+            try {
+              const decrypted = await decryptProviderKeysFromVault(
+                undefined,
+                entry.data as Record<string, unknown>
+              );
+              if (decrypted.ok) {
+                const mergedKeys: Record<string, string> = {
+                  ...decrypted.keys,
+                  ...(nextAiConfig.savedProviderKeys || {}),
+                };
+                const activeProviderId = getProviderKeyId(nextAiConfig.preset);
+                const restoredActiveKey =
+                  nextAiConfig.apiKey ||
+                  mergedKeys[activeProviderId] ||
+                  mergedKeys[nextAiConfig.preset] ||
+                  '';
+                if (restoredActiveKey) {
+                  mergedKeys[activeProviderId] = restoredActiveKey;
+                  mergedKeys[nextAiConfig.preset] = restoredActiveKey;
+                }
+                nextAiConfig = {
+                  ...nextAiConfig,
+                  apiKey: restoredActiveKey,
+                  savedProviderKeys: mergedKeys,
+                };
+                await encryptAndSaveProviderKeys(mergedKeys, undefined, true);
+                restoredVault = true;
+              } else if (
+                Object.keys(getInMemoryDecryptedKeys()).length === 0
+              ) {
+                setInMemoryVaultEnvelope(entry.data);
+                restoredVault = true;
+              }
+            } catch {
+              // Vault may use a custom passphrase
+            }
+          }
+
+          // 3. Upsert Characters from `Characters/`
+          const usedCharFiles = new Set(
+            nextCharacters
+              .map((c) =>
+                (
+                  c.savedFileName ||
+                  charDiskFileNamesRef.current.get(c.id || '') ||
+                  ''
+                ).toLowerCase()
+              )
+              .filter(Boolean)
+          );
+
+          for (const entry of bundle.files) {
+            if (!entry || typeof entry !== 'object') continue;
+            const isChar =
+              entry.kind === 'character' || entry.subfolder === 'Characters/';
+            if (!isChar || !entry.data) continue;
+
+            try {
+              const rawStr =
+                typeof entry.data === 'string'
+                  ? entry.data
+                  : JSON.stringify(entry.data);
+              const parsedRes = parseImportedJsonString(
+                rawStr,
+                undefined,
+                entry.fileName || 'Character.json',
+                'character'
+              );
+              if (parsedRes.kind !== 'character') continue;
+
+              const candidate = { ...parsedRes.character };
+              candidate.isNsfw = isCharacterNsfw(candidate, nextTags);
+
+              const existingIdx = candidate.id
+                ? nextCharacters.findIndex((c) => c.id === candidate.id)
+                : -1;
+
+              if (existingIdx >= 0) {
+                const existing = nextCharacters[existingIdx];
+                const otherNames = nextCharacters
+                  .filter((_, idx) => idx !== existingIdx)
+                  .map((c) => c.name || 'Character');
+                candidate.name = ensureUniqueEntityName(
+                  candidate.name || existing.name || 'Character',
+                  otherNames,
+                  'Character'
+                );
+                const preservedFile =
+                  existing.savedFileName ||
+                  (existing.id
+                    ? charDiskFileNamesRef.current.get(existing.id)
+                    : undefined) ||
+                  ensureUniqueSavedFileName(
+                    candidate.name,
+                    usedCharFiles,
+                    'character'
+                  );
+                candidate.savedFileName = preservedFile;
+                if (candidate.id) {
+                  charDiskFileNamesRef.current.set(candidate.id, preservedFile);
+                }
+                usedCharFiles.add(preservedFile.toLowerCase());
+                nextCharacters[existingIdx] = candidate;
+              } else {
+                candidate.name = ensureUniqueEntityName(
+                  candidate.name || 'Restored Character',
+                  nextCharacters.map((c) => c.name || 'Untitled'),
+                  'Restored Character'
+                );
+                if (
+                  !candidate.id ||
+                  nextCharacters.some((c) => c.id === candidate.id)
+                ) {
+                  candidate.id = `char-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+                }
+                const uniqueFile = ensureUniqueSavedFileName(
+                  candidate.name,
+                  usedCharFiles,
+                  'character'
+                );
+                candidate.savedFileName = uniqueFile;
+                charDiskFileNamesRef.current.set(candidate.id, uniqueFile);
+                nextCharacters.push(candidate);
+              }
+              restoredChars += 1;
+            } catch {
+              // Skip malformed character entry
+            }
+          }
+
+          // 4. Upsert Lorebooks from `Lorebooks/`
+          const usedLoreFiles = new Set(
+            nextLorebooks
+              .map((l) =>
+                (
+                  l.savedFileName ||
+                  loreDiskFileNamesRef.current.get(l.id || '') ||
+                  ''
+                ).toLowerCase()
+              )
+              .filter(Boolean)
+          );
+
+          for (const entry of bundle.files) {
+            if (!entry || typeof entry !== 'object') continue;
+            const isBook =
+              entry.kind === 'lorebook' || entry.subfolder === 'Lorebooks/';
+            if (!isBook || !entry.data) continue;
+
+            try {
+              const rawStr =
+                typeof entry.data === 'string'
+                  ? entry.data
+                  : JSON.stringify(entry.data);
+              const parsedRes = parseImportedJsonString(
+                rawStr,
+                undefined,
+                entry.fileName || 'Lorebook.json',
+                'lorebook'
+              );
+              if (parsedRes.kind !== 'lorebook') continue;
+
+              const candidate = { ...parsedRes.lorebook };
+              candidate.isNsfw = isLorebookNsfw(candidate, nextTags);
+
+              const existingIdx = candidate.id
+                ? nextLorebooks.findIndex((l) => l.id === candidate.id)
+                : -1;
+
+              if (existingIdx >= 0) {
+                const existing = nextLorebooks[existingIdx];
+                const otherNames = nextLorebooks
+                  .filter((_, idx) => idx !== existingIdx)
+                  .map((l) => l.name || 'Lorebook');
+                candidate.name = ensureUniqueEntityName(
+                  candidate.name || existing.name || 'Lorebook',
+                  otherNames,
+                  'Lorebook'
+                );
+                const preservedFile =
+                  existing.savedFileName ||
+                  (existing.id
+                    ? loreDiskFileNamesRef.current.get(existing.id)
+                    : undefined) ||
+                  ensureUniqueSavedFileName(
+                    candidate.name,
+                    usedLoreFiles,
+                    'lorebook'
+                  );
+                candidate.savedFileName = preservedFile;
+                if (candidate.id) {
+                  loreDiskFileNamesRef.current.set(candidate.id, preservedFile);
+                }
+                usedLoreFiles.add(preservedFile.toLowerCase());
+                nextLorebooks[existingIdx] = candidate;
+              } else {
+                candidate.name = ensureUniqueEntityName(
+                  candidate.name || 'Restored Lorebook',
+                  nextLorebooks.map((l) => l.name || 'Untitled Lorebook'),
+                  'Restored Lorebook'
+                );
+                if (
+                  !candidate.id ||
+                  nextLorebooks.some((l) => l.id === candidate.id)
+                ) {
+                  candidate.id = `lorebook-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+                }
+                const uniqueFile = ensureUniqueSavedFileName(
+                  candidate.name,
+                  usedLoreFiles,
+                  'lorebook'
+                );
+                candidate.savedFileName = uniqueFile;
+                loreDiskFileNamesRef.current.set(candidate.id, uniqueFile);
+                nextLorebooks.push(candidate);
+              }
+              restoredBooks += 1;
+            } catch {
+              // Skip malformed lorebook entry
+            }
+          }
+        }
+
+        // Synchronously commit all restored workspace refs & React states
+        tagsRef.current = nextTags;
+        latestWorkspaceRef.current.tags = nextTags;
+        setTagsState(nextTags);
+
+        themesRef.current = nextThemes;
+        latestWorkspaceRef.current.themes = nextThemes;
+        setThemesState(nextThemes);
+
+        settingsRef.current = nextSettings;
+        latestWorkspaceRef.current.settings = nextSettings;
+        setSettingsState(nextSettings);
+
+        aiConfigRef.current = nextAiConfig;
+        latestWorkspaceRef.current.aiConfig = nextAiConfig;
+        setAiConfigState(nextAiConfig);
+
+        charactersRef.current = nextCharacters;
+        latestWorkspaceRef.current.characters = nextCharacters;
+        setCharactersState(nextCharacters);
+
+        lorebooksRef.current = nextLorebooks;
+        latestWorkspaceRef.current.lorebooks = nextLorebooks;
+        setLorebooksState(nextLorebooks);
+
+        let nextActiveCharId = activeCharacterIdRef.current;
+        if (!nextActiveCharId || !nextCharacters.some((c) => c.id === nextActiveCharId)) {
+          nextActiveCharId =
+            preferredActiveCharId &&
+            nextCharacters.some((c) => c.id === preferredActiveCharId)
+              ? preferredActiveCharId
+              : nextCharacters[0]?.id || '';
+        }
+        activeCharacterIdRef.current = nextActiveCharId;
+        latestWorkspaceRef.current.activeCharacterId = nextActiveCharId;
+        setActiveCharacterIdState(nextActiveCharId);
+
+        let nextActiveBookId = activeLorebookIdRef.current;
+        if (!nextActiveBookId || !nextLorebooks.some((l) => l.id === nextActiveBookId)) {
+          nextActiveBookId =
+            preferredActiveBookId &&
+            nextLorebooks.some((l) => l.id === preferredActiveBookId)
+              ? preferredActiveBookId
+              : nextLorebooks[0]?.id || '';
+        }
+        activeLorebookIdRef.current = nextActiveBookId;
+        latestWorkspaceRef.current.activeLorebookId = nextActiveBookId;
+        setActiveLorebookIdState(nextActiveBookId);
+
+        await executeDiskSaveAndRescan('manual', {
+          characters: nextCharacters,
+          lorebooks: nextLorebooks,
+        });
+      }
+
+      let standaloneSummary = '';
+      let standaloneCount = 0;
+      if (standaloneFiles.length > 0) {
+        const res = await importFromFiles(standaloneFiles);
+        standaloneCount = res.count;
+        standaloneSummary = res.summary;
+      }
+
+      const totalRestored = restoredChars + restoredBooks + standaloneCount;
+      const parts: string[] = [];
+      if (restoredChars > 0) {
+        parts.push(
+          `${restoredChars} character${restoredChars === 1 ? '' : 's'}`
+        );
+      }
+      if (restoredBooks > 0) {
+        parts.push(
+          `${restoredBooks} lorebook${restoredBooks === 1 ? '' : 's'}`
+        );
+      }
+      if (restoredMeta) {
+        parts.push('themes & tags');
+      }
+      if (restoredVault) {
+        parts.push('vault keys');
+      }
+
+      const summary =
+        parts.length > 0
+          ? `Imported backup: ${parts.join(', ')} synced to ./Saves/.${standaloneSummary ? ` ${standaloneSummary}` : ''}`
+          : standaloneSummary ||
+            'No valid TavernSmith backup entries or card files found.';
+
+      return {
+        ok: totalRestored > 0 || restoredMeta || restoredVault,
+        count: totalRestored,
+        summary,
+      };
+    },
+    [executeDiskSaveAndRescan, importFromFiles]
+  );
+
+  const bindLorebookToCharacter = useCallback(
+    (characterId: string, lorebookToBind: Lorebook) => {
+      setCharacters((prev) =>
+        prev.map((c) => {
+          if (c.id !== characterId) return c;
+          return {
+            ...c,
+            character_book: lorebookToBind,
+            modification_date: Math.floor(Date.now() / 1000),
+          };
+        })
+      );
+    },
+    []
+  );
+
   const updateSettings = useCallback((partial: Partial<AppSettings>) => {
     setSettings((prev) => ({ ...prev, ...partial }));
   }, []);
@@ -4928,6 +5437,7 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
       confirmPendingDelete,
       cancelPendingDelete,
       exportSaveFolderBundle,
+      importSaveFolderBundle,
       importFromFiles,
       workspaceDraftCache,
       updateCharacterDraft,
@@ -4995,6 +5505,7 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
       confirmPendingDelete,
       cancelPendingDelete,
       exportSaveFolderBundle,
+      importSaveFolderBundle,
       importFromFiles,
       workspaceDraftCache,
       updateCharacterDraft,

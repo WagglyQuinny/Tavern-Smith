@@ -18,6 +18,7 @@ import {
   HardDrive,
   Trash2,
   Download,
+  Upload,
   FileJson,
   Clock,
   Archive,
@@ -87,6 +88,7 @@ export const OptionsView: React.FC = () => {
     loadSavedFileIntoWorkspace,
     requestDeleteSavedFile,
     exportSaveFolderBundle,
+    importSaveFolderBundle,
   } = useStore();
 
   const [modelSearchQuery, setModelSearchQuery] = useState('');
@@ -108,7 +110,9 @@ export const OptionsView: React.FC = () => {
   const [vaultPassphraseInput, setVaultPassphraseInput] = useState('');
   const [vaultMessage, setVaultMessage] = useState<string | null>(null);
   const [showVaultPassphraseBar, setShowVaultPassphraseBar] = useState(false);
+  const [isImportingBackup, setIsImportingBackup] = useState(false);
 
+  const backupImportInputRef = useRef<HTMLInputElement | null>(null);
   const timersRef = useRef<Set<number>>(new Set());
 
   const scheduleTimer = (fn: () => void, ms: number) => {
@@ -344,6 +348,23 @@ export const OptionsView: React.FC = () => {
     triggerBrowserDownload(file.content, file.fileName);
   };
 
+  const handleImportBackupFiles = async (files: FileList | null) => {
+    if (!files || files.length === 0) return;
+    setIsImportingBackup(true);
+    try {
+      const res = await importSaveFolderBundle(files);
+      setFolderStatusMessage(res.summary);
+      scheduleTimer(() => setFolderStatusMessage(null), 5000);
+    } catch (err: unknown) {
+      setFolderStatusMessage(
+        err instanceof Error ? err.message : 'Failed to import backup file.'
+      );
+      scheduleTimer(() => setFolderStatusMessage(null), 5000);
+    } finally {
+      setIsImportingBackup(false);
+    }
+  };
+
   return (
     <div className="space-y-8 min-w-0 w-full">
       {/* Top Header */}
@@ -443,18 +464,43 @@ export const OptionsView: React.FC = () => {
             </div>
           </div>
 
-          {/* Action Toolbar: Export Folder Backup Bundle */}
+          {/* Action Toolbar: Export & Import Backup */}
           <div className="flex flex-wrap items-center gap-2 shrink-0">
+            <input
+              ref={backupImportInputRef}
+              type="file"
+              accept=".json,.png,application/json,image/png"
+              multiple
+              className="hidden"
+              onChange={(e) => {
+                void handleImportBackupFiles(e.target.files);
+                e.target.value = '';
+              }}
+            />
+            <button
+              type="button"
+              disabled={isImportingBackup}
+              onClick={() => backupImportInputRef.current?.click()}
+              title="Import a backup bundle (.json) or character/lorebook files"
+              className="theme-hover-outline flex items-center gap-1.5 rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-950 px-3 py-1.5 text-xs font-medium text-slate-700 dark:text-slate-200 disabled:opacity-50 cursor-pointer"
+            >
+              <Upload
+                className="h-3.5 w-3.5"
+                style={{ color: 'var(--theme-accent)' }}
+              />
+              <span>{isImportingBackup ? 'Importing...' : 'Import'}</span>
+            </button>
             <button
               type="button"
               onClick={() => exportSaveFolderBundle()}
+              title="Export full ./Saves/ backup bundle (.json)"
               className="theme-hover-outline flex items-center gap-1.5 rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-950 px-3 py-1.5 text-xs font-medium text-slate-700 dark:text-slate-200 cursor-pointer"
             >
               <Archive
                 className="h-3.5 w-3.5"
                 style={{ color: 'var(--theme-accent)' }}
               />
-              <span>Export Backup</span>
+              <span>Export</span>
             </button>
           </div>
         </div>
