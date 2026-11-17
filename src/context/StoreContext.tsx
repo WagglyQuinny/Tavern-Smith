@@ -777,6 +777,352 @@ export const DEFAULT_TAGS: TagDefinition[] = [
     true
   ),
 
+  // Body Types & Skin Traits
+  createBuiltInTag(
+    'tag-chubby-plump',
+    'Chubby / Plump',
+    '#f472b6',
+    'Body & Attire',
+    'Soft, cushioned build with plush cheeks, gentle tummy softness, and warm, huggable curves.',
+    false
+  ),
+  createBuiltInTag(
+    'tag-plus-size-full-figured',
+    'Plus-Size / Full-Figured',
+    '#ec4899',
+    'Body & Attire',
+    'Generously proportioned, full-figured silhouette with soft fullness across waist, hips, and limbs.',
+    false
+  ),
+  createBuiltInTag(
+    'tag-curvy-hourglass',
+    'Curvy / Hourglass',
+    '#db2777',
+    'Body & Attire',
+    'Defined waist tapering smoothly between balanced, shapely bust and hip proportions.',
+    false
+  ),
+  createBuiltInTag(
+    'tag-slim-lean',
+    'Slim / Lean',
+    '#38bdf8',
+    'Body & Attire',
+    'Slender, narrow-framed build with clean lines, light grace, and lithe movement.',
+    false
+  ),
+  createBuiltInTag(
+    'tag-athletic-toned',
+    'Athletic / Toned',
+    '#10b981',
+    'Body & Attire',
+    'Balanced, agile physique with subtle muscle definition, endurance, and graceful posture.',
+    false
+  ),
+  createBuiltInTag(
+    'tag-androgynous-build',
+    'Androgynous / Boyish',
+    '#6366f1',
+    'Body & Attire',
+    'Sleek, gender-neutral silhouette with sharp facial features and understated contours.',
+    false
+  ),
+  createBuiltInTag(
+    'tag-muscular-broad-male',
+    'Muscular / Broad-Shouldered',
+    '#0ea5e9',
+    'Body & Attire',
+    'Powerfully built frame with broad shoulders, defined chest and arms, and commanding physical presence.',
+    false
+  ),
+  createBuiltInTag(
+    'tag-soft-dad-bod',
+    'Soft / Dad Bod',
+    '#f59e0b',
+    'Body & Attire',
+    'Relaxed, sturdy build combining broad shoulders with a comfortable, approachable softness.',
+    false
+  ),
+  createBuiltInTag(
+    'tag-pale-porcelain-skin',
+    'Pale / Porcelain Skin',
+    '#94a3b8',
+    'Body & Attire',
+    'Fair, luminous porcelain complexion where blushes, bruises, and temperature shifts show vividly.',
+    false
+  ),
+  createBuiltInTag(
+    'tag-freckles-sun-kissed',
+    'Freckles / Sun-Kissed',
+    '#fb923c',
+    'Body & Attire',
+    'Light dusting of freckles across nose, cheeks, and shoulders paired with warm skin tones.',
+    false
+  ),
+  createBuiltInTag(
+    'tag-scars-battle-worn',
+    'Scars / Battle-Worn',
+    '#64748b',
+    'Body & Attire',
+    'Visible healed scars across face or torso hinting at past conflicts, resilience, and history.',
+    false
+  ),
+  createBuiltInTag(
+    'tag-tattoos-pierced',
+    'Tattoos / Pierced',
+    '#8b5cf6',
+    'Body & Attire',
+    'Expressive ink sleeves, body art, and visible ear or facial piercings accentuating personal style.',
+    false
+  ),
+
+  // Height
+  createBuiltInTag(
+    'tag-small-short-adult',
+    'Small / Short (Adult)',
+    '#f472b6',
+    'Body & Attire',
+    'Noticeably short adult stature creating natural height contrast, requiring looking up or reaching high.',
+    false
+  ),
+  createBuiltInTag(
+    'tag-average-height',
+    'Average Height',
+    '#64748b',
+    'Body & Attire',
+    'Standard, relatable adult height with balanced, everyday proportions.',
+    false
+  ),
+  createBuiltInTag(
+    'tag-tall-amazonian',
+    'Tall / Amazonian',
+    '#eab308',
+    'Body & Attire',
+    'Strikingly tall, long-legged stature that naturally commands attention and towers over peers.',
+    false
+  ),
+  createBuiltInTag(
+    'tag-towering-giant-7ft',
+    'Towering / Giant (7ft+)',
+    '#d97706',
+    'Body & Attire',
+    'Immense, superhuman adult stature over seven feet tall with dramatic size and reach contrast.',
+    false
+  ),
+
+  // Chest & Bust Sizes
+  createBuiltInTag(
+    'tag-flat-chest',
+    'Flat Chest',
+    '#38bdf8',
+    'Body & Attire',
+    'Completely flat or nearly flat adult chest, emphasizing sleek silhouettes, sensitivity, and confidence or bashfulness.',
+    false
+  ),
+  createBuiltInTag(
+    'tag-small-chest-a-cup',
+    'Small Chest / A-Cup',
+    '#60a5fa',
+    'Body & Attire',
+    'Modest, perky, hand-sized adult bust with delicate, understated contours.',
+    false
+  ),
+  createBuiltInTag(
+    'tag-medium-bust-c-cup',
+    'Medium Bust / C-Cup',
+    '#a855f7',
+    'Body & Attire',
+    'Balanced, shapely medium bust offering natural softness and classic proportions.',
+    false
+  ),
+  createBuiltInTag(
+    'tag-plump-heavy-bust',
+    'Plump / Heavy Bust',
+    '#e879f9',
+    'Body & Attire',
+    'Richly full, soft adult bust with natural weight, gentle sway, and prominent cleavage.',
+    true
+  ),
+
+  // Hip & Rear Sizes
+  createBuiltInTag(
+    'tag-narrow-hips-petite-rear',
+    'Narrow Hips / Petite Rear',
+    '#06b6d4',
+    'Body & Attire',
+    'Slim, compact lower frame with narrow hips and a tight, understated rear.',
+    false
+  ),
+  createBuiltInTag(
+    'tag-firm-athletic-rear',
+    'Firm / Athletic Rear',
+    '#14b8a6',
+    'Body & Attire',
+    'Sculpted, toned glutes and strong thighs shaped by training and active movement.',
+    false
+  ),
+  createBuiltInTag(
+    'tag-pear-shaped',
+    'Pear-Shaped',
+    '#c084fc',
+    'Body & Attire',
+    'Slender upper torso contrasted with noticeably fuller hips, thighs, and lower curves.',
+    false
+  ),
+  createBuiltInTag(
+    'tag-big-ass-plump-rear',
+    'Big Ass / Plump Rear',
+    '#ec4899',
+    'Body & Attire',
+    'Full, plush, generously curved rear and soft hips that draw tactile focus and fill out tight clothing.',
+    true
+  ),
+  createBuiltInTag(
+    'tag-huge-bubble-butt',
+    'Huge / Bubble Butt',
+    '#db2777',
+    'Body & Attire',
+    'Dramatically round, bouncy, heavy adult rear with pronounced sway and eye-catching curves.',
+    true
+  ),
+
+  // Extra Clothing, Accessories & Adult Props
+  createBuiltInTag(
+    'tag-braces-dental',
+    'Braces / Dental Braces',
+    '#38bdf8',
+    'Body & Attire',
+    'Wears metallic or ceramic dental braces, giving a distinct visual quirk to smiles, speech, and self-conscious expressions.',
+    false
+  ),
+  createBuiltInTag(
+    'tag-underwear-panties-bra',
+    'Underwear / Panties & Bra',
+    '#f43f5e',
+    'Body & Attire',
+    'Dressed only in everyday or delicate matching bra and panties, emphasizing casual vulnerability and teasing exposure.',
+    true
+  ),
+  createBuiltInTag(
+    'tag-boxers-briefs',
+    'Boxers / Briefs',
+    '#3b82f6',
+    'Body & Attire',
+    'Lounging in fitted briefs or loose boxers, highlighting relaxed intimacy and masculine contours.',
+    true
+  ),
+  createBuiltInTag(
+    'tag-bikini-swimwear',
+    'Bikini / Swimwear',
+    '#06b6d4',
+    'Body & Attire',
+    'Two-piece bikini or sleek swimsuit highlighting sun-warmed skin, straps, and poolside or beach appeal.',
+    false
+  ),
+  createBuiltInTag(
+    'tag-micro-bikini-slingkini',
+    'Micro-Bikini / Slingkini',
+    '#f43f5e',
+    'Body & Attire',
+    'Minimalist, daring adult swimwear leaving nearly everything bare and straining to cover curves.',
+    true
+  ),
+  createBuiltInTag(
+    'tag-oversized-sweater-hoodie',
+    'Oversized Sweater / Hoodie',
+    '#a855f7',
+    'Body & Attire',
+    'Cozy, baggy knit sweater or hoodie with sleeves hanging past the hands, slipping easily off one shoulder.',
+    false
+  ),
+  createBuiltInTag(
+    'tag-crop-top-shorts',
+    'Crop Top & Shorts',
+    '#fb923c',
+    'Body & Attire',
+    'Casual midriff-baring top paired with short denim or athletic shorts for a breezy, energetic look.',
+    false
+  ),
+  createBuiltInTag(
+    'tag-sundress-skirt',
+    'Sundress / Pleated Skirt',
+    '#facc15',
+    'Body & Attire',
+    'Flowing sundress or fluttering skirt that sways with every step and catches the breeze.',
+    false
+  ),
+  createBuiltInTag(
+    'tag-suit-tie-formal',
+    'Suit & Tie / Formal Wear',
+    '#475569',
+    'Body & Attire',
+    'Crisp tailored suit, vest, and tie projecting sharp professionalism, authority, and buttoned-up poise.',
+    false
+  ),
+  createBuiltInTag(
+    'tag-gothic-punk-attire',
+    'Gothic / Punk Attire',
+    '#7c3aed',
+    'Body & Attire',
+    'Dark layered lace, leather jackets, buckles, and silver chains expressing rebellious or moody style.',
+    false
+  ),
+  createBuiltInTag(
+    'tag-kimono-yukata',
+    'Kimono / Yukata',
+    '#e11d48',
+    'Body & Attire',
+    'Traditional wrapped kimono or summer yukata secured with a wide obi sash that frames the collarbone and nape.',
+    false
+  ),
+  createBuiltInTag(
+    'tag-bunny-suit-leotard',
+    'Bunny Suit / Leotard',
+    '#ec4899',
+    'Body & Attire',
+    'Strapless high-cut satin bunny-girl leotard with cuffs, bow tie, ears, and fluffy tail.',
+    true
+  ),
+  createBuiltInTag(
+    'tag-fishnets-mesh',
+    'Fishnets / Mesh',
+    '#9333ea',
+    'Body & Attire',
+    'Open-weave fishnet stockings or sheer mesh tops framing skin with bold geometric texture.',
+    true
+  ),
+  createBuiltInTag(
+    'tag-choker-accessories',
+    'Choker & Accessories',
+    '#6366f1',
+    'Body & Attire',
+    'Velvet, ribbon, or leather choker drawing eyes to the throat and collarbone.',
+    false
+  ),
+  createBuiltInTag(
+    'tag-high-heels-boots',
+    'High Heels / Boots',
+    '#be123c',
+    'Body & Attire',
+    'Stilettos, thigh-high boots, or platform heels adding height, sharp clicks, and confident posture.',
+    false
+  ),
+  createBuiltInTag(
+    'tag-barefoot',
+    'Barefoot',
+    '#10b981',
+    'Body & Attire',
+    'Unshod bare feet padding quietly across floors, grass, or sand with relaxed natural comfort.',
+    false
+  ),
+  createBuiltInTag(
+    'tag-sex-toys-vibrator',
+    'Sex Toys / Vibrator',
+    '#f43f5e',
+    'NSFW & Kinks',
+    'Consensual adult intimacy incorporating vibrators, remote-controlled toys, or personal pleasure accessories.',
+    true
+  ),
+
   // D. Popular NSFW Kinks, Acts & Dynamics
   createBuiltInTag(
     'tag-femdom',
