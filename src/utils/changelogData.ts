@@ -7,9 +7,32 @@ export interface ChangelogReleaseEntry {
   fileChanges: string[];
 }
 
-export const APP_VERSION = "4.2.0";
+export const APP_VERSION = "4.2.1";
 
 export const CHANGELOG_RELEASES: ChangelogReleaseEntry[] = [
+  {
+    "version": "v4.2.1",
+    "date": "2026-11-17",
+    "title": "Add support for importing save folder backups (851ffa5)",
+    "highlights": [
+      "Add support for importing save folder backups (851ffa5)",
+      "Persist editor UI state in workspace draft (65b4ec0)"
+    ],
+    "fixes": [
+      "Verified TypeScript compilation, zero-crash sandbox storage guards, and cross-platform standalone launcher compatibility."
+    ],
+    "fileChanges": [
+      "public/assets/aistudio/image_6eabd08b.png — Added Project Configuration & Metadata (+0 / -0 lines)",
+      "public/assets/aistudio/image_dad0a584.png — Added Project Configuration & Metadata (+0 / -0 lines)",
+      "src/components/CharacterEditor.tsx — Updated Character Card Workbench & Wizard (+58 / -17 lines)",
+      "src/components/LorebookEditor.tsx — Updated Lorebook / World Info Workbench & Wizard (+70 / -29 lines)",
+      "src/components/SmartEditor.tsx — Updated Synchronized Macro & Ghost-Text SmartEditor (+84 / -28 lines)",
+      "src/context/StoreContext.tsx — Updated Workspace State, Auto-Save & Provider Credential Vault (+843 / -42 lines)",
+      "src/types.ts — Updated Project Configuration & Metadata (+66 / -0 lines)",
+      "src/views/OptionsView.tsx — Updated Options, AI Scanner & Save Folder Manager (+48 / -2 lines)",
+      "src/views/ThemesAndTagsView.tsx — Updated Context Themes & Global Tag/Sub-Tag Manager (+336 / -317 lines)"
+    ]
+  },
   {
     "version": "v4.2.0",
     "date": "2026-11-13",
@@ -279,20 +302,6 @@ export const CHANGELOG_RELEASES: ChangelogReleaseEntry[] = [
     "fileChanges": [
       "src/components/CharacterEditor.tsx & src/components/LorebookEditor.tsx — Roster UX & tag filtering",
       "src/context/StoreContext.tsx — Expanded default tag definitions"
-    ]
-  },
-  {
-    "version": "v1.0.3",
-    "date": "2026-11-11",
-    "title": "Unified Root Save Directory Structure",
-    "highlights": [
-      "Unified storage into a single Root Save Folder with automatic Characters/ and Lorebooks/ subdirectories plus root _tavernsmith_meta.json."
-    ],
-    "fixes": [
-      "Fixed two-way directory synchronization and local storage fallback handling."
-    ],
-    "fileChanges": [
-      "src/context/StoreContext.tsx & src/views/OptionsView.tsx — Unified Save Folder tree & live sync logs"
     ]
   }
 ];
