@@ -7,9 +7,35 @@ export interface ChangelogReleaseEntry {
   fileChanges: string[];
 }
 
-export const APP_VERSION = "4.5.0";
+export const APP_VERSION = "4.5.1";
 
 export const CHANGELOG_RELEASES: ChangelogReleaseEntry[] = [
+  {
+    "version": "v4.5.1",
+    "date": "2026-11-17",
+    "title": "Enhance save path security and state management (2ad644a)",
+    "highlights": [
+      "Enhance save path security and state management (2ad644a)"
+    ],
+    "fixes": [
+      "Verified TypeScript compilation, zero-crash sandbox storage guards, and cross-platform standalone launcher compatibility."
+    ],
+    "fileChanges": [
+      ".github/workflows/release.yml — Updated GitHub Actions CI/CD & Standalone Release Workflow (+672 / -324 lines)",
+      "server.ts — Updated Project Configuration & Metadata (+368 / -178 lines)",
+      "src/App.tsx — Updated Project Configuration & Metadata (+30 / -12 lines)",
+      "src/components/CharacterEditor.tsx — Updated Character Card Workbench & Wizard (+0 / -3 lines)",
+      "src/components/JsonInspector.tsx — Updated UI Workbench Component (+41 / -17 lines)",
+      "src/components/LorebookEditor.tsx — Updated Lorebook / World Info Workbench & Wizard (+0 / -4 lines)",
+      "src/components/PortraitCropperModal.tsx — Updated UI Workbench Component (+10 / -0 lines)",
+      "src/context/StoreContext.tsx — Updated Workspace State, Auto-Save & Provider Credential Vault (+166 / -113 lines)",
+      "src/types.ts — Updated Project Configuration & Metadata (+13 / -2 lines)",
+      "src/utils/cardIO.ts — Updated PNG tEXt Chunk & JSON Import/Export Parser (+66 / -15 lines)",
+      "src/views/OptionsView.tsx — Updated Options, AI Scanner & Save Folder Manager (+162 / -27 lines)",
+      "src/views/ThemesAndTagsView.tsx — Updated Context Themes & Global Tag/Sub-Tag Manager (+14 / -2 lines)",
+      "vite.config.ts — Updated Project Configuration & Metadata (+400 / -192 lines)"
+    ]
+  },
   {
     "version": "v4.5.0",
     "date": "2026-11-17",
@@ -301,20 +327,6 @@ export const CHANGELOG_RELEASES: ChangelogReleaseEntry[] = [
     "title": "Automated release v3.0.0 incorporating 1 updated module(s).",
     "highlights": [
       "Automated release v3.0.0 incorporating 1 updated module(s)."
-    ],
-    "fixes": [
-      "Verified TypeScript compilation, zero-crash sandbox storage guards, and cross-platform standalone launcher compatibility."
-    ],
-    "fileChanges": [
-      "package.json & CHANGELOG.md — Version bump and release metadata sync"
-    ]
-  },
-  {
-    "version": "v2.2.1",
-    "date": "2026-11-12",
-    "title": "Automated release v2.2.1 incorporating 1 updated module(s).",
-    "highlights": [
-      "Automated release v2.2.1 incorporating 1 updated module(s)."
     ],
     "fixes": [
       "Verified TypeScript compilation, zero-crash sandbox storage guards, and cross-platform standalone launcher compatibility."

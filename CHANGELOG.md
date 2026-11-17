@@ -2,6 +2,30 @@
 
 All notable changes to **TavernSmith** are documented in this file. This file is synced with the in-app **About & Changelog** modal (`src/utils/changelogData.ts`) and the automated GitHub Release workflows (`.github/workflows/version-update.yml` & `.github/workflows/release.yml`).
 
+## [v4.5.1] - 2026-11-17
+
+### 🚀 Highlights & Feature Additions
+- Enhance save path security and state management (2ad644a)
+
+### 🛠️ Bug Fixes, AI & Stability Improvements
+- Verified TypeScript compilation, zero-crash sandbox storage guards, and cross-platform standalone launcher compatibility.
+
+### 📂 Detailed Component & File Changes
+- **Repository Diff Summary**: 13 files changed, 1942 insertions(+), 889 deletions(-)
+- `.github/workflows/release.yml — Updated GitHub Actions CI/CD & Standalone Release Workflow (+672 / -324 lines)`
+- `server.ts — Updated Project Configuration & Metadata (+368 / -178 lines)`
+- `src/App.tsx — Updated Project Configuration & Metadata (+30 / -12 lines)`
+- `src/components/CharacterEditor.tsx — Updated Character Card Workbench & Wizard (+0 / -3 lines)`
+- `src/components/JsonInspector.tsx — Updated UI Workbench Component (+41 / -17 lines)`
+- `src/components/LorebookEditor.tsx — Updated Lorebook / World Info Workbench & Wizard (+0 / -4 lines)`
+- `src/components/PortraitCropperModal.tsx — Updated UI Workbench Component (+10 / -0 lines)`
+- `src/context/StoreContext.tsx — Updated Workspace State, Auto-Save & Provider Credential Vault (+166 / -113 lines)`
+- `src/types.ts — Updated Project Configuration & Metadata (+13 / -2 lines)`
+- `src/utils/cardIO.ts — Updated PNG tEXt Chunk & JSON Import/Export Parser (+66 / -15 lines)`
+- `src/views/OptionsView.tsx — Updated Options, AI Scanner & Save Folder Manager (+162 / -27 lines)`
+- `src/views/ThemesAndTagsView.tsx — Updated Context Themes & Global Tag/Sub-Tag Manager (+14 / -2 lines)`
+- `vite.config.ts — Updated Project Configuration & Metadata (+400 / -192 lines)`
+
 ## [v4.5.0] - 2026-11-17
 
 ### 🚀 Highlights & Feature Additions
