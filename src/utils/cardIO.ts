@@ -106,6 +106,11 @@ export async function readImageDimensions(
 
   return new Promise((resolve, reject) => {
     const img = new Image();
+    const cleanupImage = () => {
+      img.onload = null;
+      img.onerror = null;
+      img.src = '';
+    };
     img.onload = () => {
       const width = img.naturalWidth || img.width || 512;
       const height = img.naturalHeight || img.height || 768;
@@ -116,9 +121,17 @@ export async function readImageDimensions(
       canvas.width = width;
       canvas.height = height;
       const ctx = canvas.getContext('2d');
-      const pngDataUrl = ctx
-        ? (ctx.drawImage(img, 0, 0), canvas.toDataURL('image/png'))
-        : rawUrl;
+      let pngDataUrl = rawUrl;
+      try {
+        if (ctx) {
+          ctx.drawImage(img, 0, 0);
+          pngDataUrl = canvas.toDataURL('image/png');
+        }
+      } finally {
+        canvas.width = 0;
+        canvas.height = 0;
+        cleanupImage();
+      }
 
       resolve({
         dataUrl: pngDataUrl,
@@ -127,8 +140,10 @@ export async function readImageDimensions(
         isTwoThreeAspect,
       });
     };
-    img.onerror = () =>
+    img.onerror = () => {
+      cleanupImage();
       reject(new Error('Could not decode image dimensions.'));
+    };
     img.src = rawUrl;
   });
 }
@@ -406,6 +421,8 @@ export async function generateDefaultAvatarPngBuffer(
 
   return new Promise<ArrayBuffer>((resolve, reject) => {
     canvas.toBlob((blob) => {
+      canvas.width = 0;
+      canvas.height = 0;
       if (!blob) {
         reject(new Error('Failed to encode PNG blob'));
         return;
@@ -976,15 +993,15 @@ export async function importCardFromFile(
   if (lowerName.endsWith('.png') || file.type === 'image/png') {
     const buffer = await file.arrayBuffer();
     const chunks = extractPngTextChunks(buffer);
-    const rawBase64 = chunks['ccv3'] || chunks['chara'];
+    const candidateChunks = [chunks['ccv3'], chunks['chara']].filter(
+      (c): c is string => typeof c === 'string' && c.trim().length > 0
+    );
 
-    if (!rawBase64) {
+    if (candidateChunks.length === 0) {
       throw new Error(
         `No SillyTavern character metadata ('chara' or 'ccv3' tEXt chunk) found inside "${file.name}".`
       );
     }
-
-    const decodedJson = decodeUtf8Base64(rawBase64);
 
     // Convert PNG bytes to data URL for character avatar preview and re-export
     const bytes = new Uint8Array(buffer);
@@ -995,11 +1012,25 @@ export async function importCardFromFile(
     }
     const avatarDataUrl = `data:image/png;base64,${window.btoa(binary)}`;
 
-    return parseImportedJsonString(
-      decodedJson,
-      avatarDataUrl,
-      file.name,
-      'character'
+    let lastChunkErr: unknown = null;
+    for (const rawBase64 of candidateChunks) {
+      try {
+        const decodedJson = decodeUtf8Base64(rawBase64);
+        return parseImportedJsonString(
+          decodedJson,
+          avatarDataUrl,
+          file.name,
+          'character'
+        );
+      } catch (err) {
+        lastChunkErr = err;
+      }
+    }
+
+    throw new Error(
+      `Could not decode SillyTavern character metadata in "${file.name}": ${
+        lastChunkErr instanceof Error ? lastChunkErr.message : 'Corrupted Base64 or JSON chunk'
+      }`
     );
   }
 
@@ -1110,8 +1141,14 @@ export async function compressImageForVision(
   return new Promise<string>((resolve, reject) => {
     const img = new Image();
     img.crossOrigin = 'anonymous';
+    const cleanupImage = () => {
+      img.onload = null;
+      img.onerror = null;
+      img.src = '';
+    };
 
     img.onload = () => {
+      const canvas = document.createElement('canvas');
       try {
         const origWidth = img.naturalWidth || img.width || 512;
         const origHeight = img.naturalHeight || img.height || 512;
@@ -1122,7 +1159,6 @@ export async function compressImageForVision(
         const targetWidth = Math.max(1, Math.round(origWidth * scale));
         const targetHeight = Math.max(1, Math.round(origHeight * scale));
 
-        const canvas = document.createElement('canvas');
         canvas.width = targetWidth;
         canvas.height = targetHeight;
 
@@ -1141,10 +1177,15 @@ export async function compressImageForVision(
         resolve(compressedJpeg);
       } catch (err) {
         reject(err);
+      } finally {
+        canvas.width = 0;
+        canvas.height = 0;
+        cleanupImage();
       }
     };
 
     img.onerror = () => {
+      cleanupImage();
       reject(new Error('Failed to load image for vision compression.'));
     };
 
@@ -1185,7 +1226,13 @@ export async function compressImageForReactionAsset(
   return new Promise<{ dataUrl: string; ext: string; nameStem: string }>(
     (resolve, reject) => {
       const img = new Image();
+      const cleanupImage = () => {
+        img.onload = null;
+        img.onerror = null;
+        img.src = '';
+      };
       img.onload = () => {
+        const canvas = document.createElement('canvas');
         try {
           const origWidth = img.naturalWidth || img.width || 512;
           const origHeight = img.naturalHeight || img.height || 512;
@@ -1195,7 +1242,6 @@ export async function compressImageForReactionAsset(
           const targetWidth = Math.max(1, Math.round(origWidth * scale));
           const targetHeight = Math.max(1, Math.round(origHeight * scale));
 
-          const canvas = document.createElement('canvas');
           canvas.width = targetWidth;
           canvas.height = targetHeight;
 
@@ -1219,9 +1265,14 @@ export async function compressImageForReactionAsset(
           resolve({ dataUrl: pngUrl, ext: 'png', nameStem });
         } catch (err) {
           reject(err);
+        } finally {
+          canvas.width = 0;
+          canvas.height = 0;
+          cleanupImage();
         }
       };
       img.onerror = () => {
+        cleanupImage();
         reject(new Error(`Failed to decode reaction image "${file.name}".`));
       };
       img.src = rawDataUrl;

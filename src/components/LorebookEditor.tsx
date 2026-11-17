@@ -17,13 +17,9 @@ import {
   Cpu,
   Upload,
   Download,
-  Sliders,
-  Wand2,
   ChevronLeft,
   ChevronRight,
   GripVertical,
-  RefreshCw,
-  FolderOpen,
   ShieldAlert,
 } from 'lucide-react';
 import {

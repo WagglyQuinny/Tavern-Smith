@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useRef } from 'react';
+import React, { useState, useMemo, useRef, useEffect } from 'react';
 import {
   FileJson,
   Copy,
@@ -16,6 +16,7 @@ import {
   Sparkles,
 } from 'lucide-react';
 import { useStore } from '../context/StoreContext';
+import { InspectorTab } from '../types';
 import { Tooltip } from './Tooltip';
 import {
   serializeCharacterCard,
@@ -24,8 +25,6 @@ import {
   exportLorebookAsJson,
 } from '../utils/cardIO';
 import { calculateCardTokenBreakdown } from '../utils/tokenCounter';
-
-type InspectorTab = 'v2' | 'v3' | 'lorebook';
 
 interface ValidationIssue {
   level: 'ok' | 'warn' | 'error';
@@ -40,22 +39,47 @@ export const JsonInspector: React.FC = () => {
     lorebook,
     setLorebook,
     statBlock,
-    settings,
     updateSettings,
     importFromFiles,
     activeTheme,
+    inspectorDraft,
+    updateInspectorDraft,
   } = useStore();
 
-  const [activeTab, setActiveTab] = useState<InspectorTab>(
-    settings.cardSpecVersion === 'v2' ? 'v2' : 'v3'
-  );
+  const activeTab = inspectorDraft.activeTab;
+  const isRawEditMode = inspectorDraft.isRawEditMode;
+  const rawJsonDraft = inspectorDraft.rawJsonDraft;
+  const rawEditError = inspectorDraft.rawEditError;
+
+  const setActiveTab = (next: InspectorTab) =>
+    updateInspectorDraft({ activeTab: next });
+  const setIsRawEditMode = (next: boolean) =>
+    updateInspectorDraft({ isRawEditMode: next });
+  const setRawJsonDraft = (next: string) =>
+    updateInspectorDraft({ rawJsonDraft: next });
+  const setRawEditError = (next: string | null) =>
+    updateInspectorDraft({ rawEditError: next });
+
   const [copied, setCopied] = useState(false);
-  const [isRawEditMode, setIsRawEditMode] = useState(false);
-  const [rawJsonDraft, setRawJsonDraft] = useState('');
-  const [rawEditError, setRawEditError] = useState<string | null>(null);
   const [statusNotice, setStatusNotice] = useState<string | null>(null);
 
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const timersRef = useRef<Set<number>>(new Set());
+
+  const scheduleTimer = (fn: () => void, ms: number) => {
+    const id = window.setTimeout(() => {
+      timersRef.current.delete(id);
+      fn();
+    }, ms);
+    timersRef.current.add(id);
+  };
+
+  useEffect(() => {
+    return () => {
+      timersRef.current.forEach((id) => window.clearTimeout(id));
+      timersRef.current.clear();
+    };
+  }, []);
 
   const v2JsonString = useMemo(
     () =>
@@ -262,7 +286,7 @@ export const JsonInspector: React.FC = () => {
         }));
         setIsRawEditMode(false);
         setStatusNotice('Applied raw JSON edits to active Lorebook.');
-        window.setTimeout(() => setStatusNotice(null), 3000);
+        scheduleTimer(() => setStatusNotice(null), 3000);
         return;
       }
 
@@ -334,7 +358,7 @@ export const JsonInspector: React.FC = () => {
 
       setIsRawEditMode(false);
       setStatusNotice('Applied raw JSON edits to active Character Card.');
-      window.setTimeout(() => setStatusNotice(null), 3000);
+      scheduleTimer(() => setStatusNotice(null), 3000);
     } catch (err) {
       setRawEditError(
         err instanceof Error ? err.message : 'Invalid JSON syntax.'
@@ -348,7 +372,7 @@ export const JsonInspector: React.FC = () => {
         isRawEditMode ? rawJsonDraft : displayedContent
       );
       setCopied(true);
-      window.setTimeout(() => setCopied(false), 1800);
+      scheduleTimer(() => setCopied(false), 1800);
     } catch {
       // Ignore clipboard failures
     }
@@ -360,12 +384,12 @@ export const JsonInspector: React.FC = () => {
       setStatusNotice(
         `Downloaded ${character.name} (${activeTab.toUpperCase()}) JSON.`
       );
-      window.setTimeout(() => setStatusNotice(null), 3000);
+      scheduleTimer(() => setStatusNotice(null), 3000);
       return;
     }
     exportLorebookAsJson(lorebook);
     setStatusNotice(`Downloaded ${lorebook.name} Lorebook JSON.`);
-    window.setTimeout(() => setStatusNotice(null), 3000);
+    scheduleTimer(() => setStatusNotice(null), 3000);
   };
 
   const handleExportPng = async () => {
@@ -377,14 +401,14 @@ export const JsonInspector: React.FC = () => {
     setStatusNotice(
       `Exported ${character.name}.png with embedded V2 (chara) + V3 (ccv3) tEXt chunks.`
     );
-    window.setTimeout(() => setStatusNotice(null), 3200);
+    scheduleTimer(() => setStatusNotice(null), 3200);
   };
 
   const handleFileImport = async (files: FileList | null) => {
     if (!files || files.length === 0) return;
     const res = await importFromFiles(files);
     setStatusNotice(res.summary);
-    window.setTimeout(() => setStatusNotice(null), 3500);
+    scheduleTimer(() => setStatusNotice(null), 3500);
   };
 
   const breakdownRows = [

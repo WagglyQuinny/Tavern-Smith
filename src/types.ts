@@ -277,6 +277,15 @@ export interface TokenBreakdown {
   totalCardTokens: number;
 }
 
+export type InspectorTab = 'v2' | 'v3' | 'lorebook';
+
+export interface InspectorTabDraft {
+  activeTab: InspectorTab;
+  isRawEditMode: boolean;
+  rawJsonDraft: string;
+  rawEditError: string | null;
+}
+
 export interface SavedFileEntry {
   id: string;
   folderPath: string;
@@ -285,6 +294,8 @@ export interface SavedFileEntry {
   sizeBytes: number;
   updatedAt: string;
   content: string;
+  isCorrupted?: boolean;
+  corruptReason?: string;
 }
 
 export interface SaveLogEntry {
@@ -336,8 +347,8 @@ export interface PendingDeleteTarget {
   displayName: string;
   fileName?: string;
   savedFileName?: string;
-  folder?: 'Characters' | 'Lorebooks' | 'Themes' | 'Tags';
-  fileKind?: 'character' | 'lorebook' | 'theme' | 'tag';
+  folder?: 'Characters' | 'Lorebooks' | 'Themes' | 'Tags' | 'Root';
+  fileKind?: 'character' | 'lorebook' | 'theme' | 'tag' | 'meta' | 'vault';
   entryCount?: number;
   subtitle?: string;
 }

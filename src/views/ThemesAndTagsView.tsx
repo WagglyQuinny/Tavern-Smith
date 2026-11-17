@@ -79,12 +79,24 @@ export const ThemesAndTagsView: React.FC = () => {
   const [themeAiError, setThemeAiError] = useState<string | null>(null);
   const themeNameInputRef = useRef<HTMLInputElement | null>(null);
   const focusTimerRef = useRef<number | null>(null);
+  const timersRef = useRef<Set<number>>(new Set());
+
+  const scheduleTimer = (cb: () => void, ms: number) => {
+    const id = window.setTimeout(() => {
+      timersRef.current.delete(id);
+      cb();
+    }, ms);
+    timersRef.current.add(id);
+    return id;
+  };
 
   useEffect(() => {
     return () => {
       if (focusTimerRef.current !== null) {
         window.clearTimeout(focusTimerRef.current);
       }
+      timersRef.current.forEach((id) => window.clearTimeout(id));
+      timersRef.current.clear();
     };
   }, []);
 
@@ -282,7 +294,7 @@ export const ThemesAndTagsView: React.FC = () => {
     const clean = quickTagName.trim();
     if (!clean) {
       setQuickTagFeedback('Type a Tag Name first to auto-write its AI description.');
-      window.setTimeout(() => setQuickTagFeedback(null), 3500);
+      scheduleTimer(() => setQuickTagFeedback(null), 3500);
       return;
     }
     setGeneratingQuickTagDesc(true);
@@ -338,7 +350,7 @@ export const ThemesAndTagsView: React.FC = () => {
       quickTagName: '',
       quickTagAiDesc: '',
     });
-    window.setTimeout(() => setQuickTagFeedback(null), 3500);
+    scheduleTimer(() => setQuickTagFeedback(null), 3500);
   };
 
   // 1-Click Toggle NSFW Flag directly on any Tag Card

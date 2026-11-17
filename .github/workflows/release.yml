@@ -64,6 +64,7 @@ jobs:
           const META_FILENAME = '_tavernsmith_meta.json';
           const VAULT_FILENAME = '_tavernsmith_vault.enc';
 
+          const MAX_BODY_BYTES = 128 * 1024 * 1024;
           const MIME_TYPES = {
             '.html': 'text/html; charset=utf-8',
             '.js': 'application/javascript; charset=utf-8',
@@ -88,17 +89,63 @@ jobs:
             return `${clean}.json`;
           }
 
+          function getCanonicalWorkspaceRoot() {
+            try {
+              return fs.realpathSync(ROOT_DIR);
+            } catch {
+              return path.resolve(ROOT_DIR);
+            }
+          }
+
+          function isPathInsideWorkspace(rootDir, candidatePath) {
+            const rel = path.relative(rootDir, candidatePath);
+            return rel !== '' && !rel.startsWith('..') && !path.isAbsolute(rel);
+          }
+
+          function hasWorkspaceConfinedAncestor(rootDir, candidatePath) {
+            let probe = candidatePath;
+            while (!fs.existsSync(probe)) {
+              const parent = path.dirname(probe);
+              if (parent === probe) break;
+              probe = parent;
+            }
+            try {
+              const realAncestor = fs.existsSync(probe) ? fs.realpathSync(probe) : probe;
+              const rel = path.relative(rootDir, realAncestor);
+              return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel));
+            } catch {
+              return false;
+            }
+          }
+
           function resolveSavesRoot(customSavePath) {
+            const workspaceRoot = getCanonicalWorkspaceRoot();
+            const defaultPath = path.join(workspaceRoot, 'Saves');
             const trimmed = (customSavePath || '').trim();
             const useCustom =
               trimmed &&
               trimmed !== './Saves' &&
               trimmed !== './Saves/' &&
               trimmed !== '/Saves/';
-            const resolvedPath = useCustom
-              ? (path.isAbsolute(trimmed) ? trimmed : path.resolve(ROOT_DIR, trimmed))
-              : path.resolve(ROOT_DIR, 'Saves');
-            const diskRoot = useCustom ? trimmed : './Saves/';
+
+            let resolvedPath = defaultPath;
+            let diskRoot = './Saves/';
+
+            if (useCustom) {
+              const candidate = path.resolve(workspaceRoot, trimmed);
+              if (
+                isPathInsideWorkspace(workspaceRoot, candidate) &&
+                hasWorkspaceConfinedAncestor(workspaceRoot, candidate)
+              ) {
+                resolvedPath = candidate;
+                const normalizedRel = path
+                  .relative(workspaceRoot, candidate)
+                  .replace(/\\/g, '/')
+                  .replace(/\/+$/, '');
+                diskRoot = `./${normalizedRel}/`;
+              }
+            }
+
             const charsDir = path.join(resolvedPath, 'Characters');
             const loreDir = path.join(resolvedPath, 'Lorebooks');
             const themesDir = path.join(resolvedPath, 'Themes');
@@ -111,6 +158,81 @@ jobs:
             fs.mkdirSync(tagsDir, { recursive: true });
 
             return { diskRoot, resolvedPath, charsDir, loreDir, themesDir, tagsDir };
+          }
+
+          function inspectDiskJsonFile(fullPath) {
+            let sizeBytes = 0;
+            let updatedAt = new Date().toISOString();
+            let content = '';
+            try {
+              const stat = fs.statSync(fullPath);
+              sizeBytes = stat.size;
+              updatedAt = stat.mtime.toISOString();
+              content = fs.readFileSync(fullPath, 'utf8');
+            } catch (err) {
+              return {
+                ok: false,
+                reason: err && err.message ? err.message : 'Unreadable file',
+                content: '',
+                sizeBytes,
+                updatedAt,
+              };
+            }
+
+            if (!content.trim()) {
+              return {
+                ok: false,
+                reason: 'File is empty (0 bytes or whitespace only)',
+                content,
+                sizeBytes,
+                updatedAt,
+              };
+            }
+
+            try {
+              const parsed = JSON.parse(content);
+              if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+                return {
+                  ok: false,
+                  reason: 'JSON root must be an object',
+                  content: content.slice(0, 16384),
+                  sizeBytes,
+                  updatedAt,
+                };
+              }
+              return {
+                ok: true,
+                parsed,
+                content,
+                sizeBytes,
+                updatedAt,
+              };
+            } catch (err) {
+              return {
+                ok: false,
+                reason: err && err.message ? err.message : 'Malformed JSON syntax',
+                content: content.slice(0, 16384),
+                sizeBytes,
+                updatedAt,
+              };
+            }
+          }
+
+          function pruneValidOrphanJsonFiles(targetDir, writtenFilesLower) {
+            try {
+              for (const fileName of fs.readdirSync(targetDir)) {
+                if (!fileName.toLowerCase().endsWith('.json')) continue;
+                if (!writtenFilesLower.has(fileName.toLowerCase())) {
+                  const orphanPath = path.join(targetDir, fileName);
+                  if (fs.existsSync(orphanPath)) {
+                    const inspected = inspectDiskJsonFile(orphanPath);
+                    if (inspected.ok) {
+                      fs.unlinkSync(orphanPath);
+                    }
+                  }
+                }
+              }
+            } catch {}
           }
 
           function extractEntityIdFromJson(parsed) {
@@ -183,28 +305,36 @@ jobs:
 
               for (const entry of charEntries) {
                 const fullPath = path.join(charsDir, entry.name);
-                try {
-                  const stat = fs.statSync(fullPath);
-                  const content = fs.readFileSync(fullPath, 'utf8');
-                  const parsed = JSON.parse(content);
-                  if (parsed._tavernsmithType === 'lorebook') continue;
-                  characters.push({
-                    ...parsed,
-                    _diskFileName: entry.name,
-                    _diskUpdatedAt: stat.mtime.toISOString(),
-                  });
+                const inspected = inspectDiskJsonFile(fullPath);
+                if (!inspected.ok) {
                   files.push({
                     id: `Characters/${entry.name}`,
                     folderPath: 'Characters/',
                     fileName: entry.name,
                     kind: 'character',
-                    sizeBytes: stat.size,
-                    updatedAt: stat.mtime.toISOString(),
-                    content,
+                    sizeBytes: inspected.sizeBytes,
+                    updatedAt: inspected.updatedAt,
+                    content: inspected.content,
+                    isCorrupted: true,
+                    corruptReason: inspected.reason,
                   });
-                } catch {
-                  // Ignore unreadable or corrupted JSON file
+                  continue;
                 }
+                if (inspected.parsed._tavernsmithType === 'lorebook') continue;
+                characters.push({
+                  ...inspected.parsed,
+                  _diskFileName: entry.name,
+                  _diskUpdatedAt: inspected.updatedAt,
+                });
+                files.push({
+                  id: `Characters/${entry.name}`,
+                  folderPath: 'Characters/',
+                  fileName: entry.name,
+                  kind: 'character',
+                  sizeBytes: inspected.sizeBytes,
+                  updatedAt: inspected.updatedAt,
+                  content: inspected.content,
+                });
               }
             }
 
@@ -216,29 +346,37 @@ jobs:
 
               for (const entry of loreEntries) {
                 const fullPath = path.join(loreDir, entry.name);
-                try {
-                  const stat = fs.statSync(fullPath);
-                  const content = fs.readFileSync(fullPath, 'utf8');
-                  const parsed = JSON.parse(content);
-                  if (parsed._tavernsmithType === 'character') continue;
-                  lorebooks.push({
-                    ...parsed,
-                    _tavernsmithType: 'lorebook',
-                    _diskFileName: entry.name,
-                    _diskUpdatedAt: stat.mtime.toISOString(),
-                  });
+                const inspected = inspectDiskJsonFile(fullPath);
+                if (!inspected.ok) {
                   files.push({
                     id: `Lorebooks/${entry.name}`,
                     folderPath: 'Lorebooks/',
                     fileName: entry.name,
                     kind: 'lorebook',
-                    sizeBytes: stat.size,
-                    updatedAt: stat.mtime.toISOString(),
-                    content,
+                    sizeBytes: inspected.sizeBytes,
+                    updatedAt: inspected.updatedAt,
+                    content: inspected.content,
+                    isCorrupted: true,
+                    corruptReason: inspected.reason,
                   });
-                } catch {
-                  // Ignore unreadable or corrupted JSON file
+                  continue;
                 }
+                if (inspected.parsed._tavernsmithType === 'character') continue;
+                lorebooks.push({
+                  ...inspected.parsed,
+                  _tavernsmithType: 'lorebook',
+                  _diskFileName: entry.name,
+                  _diskUpdatedAt: inspected.updatedAt,
+                });
+                files.push({
+                  id: `Lorebooks/${entry.name}`,
+                  folderPath: 'Lorebooks/',
+                  fileName: entry.name,
+                  kind: 'lorebook',
+                  sizeBytes: inspected.sizeBytes,
+                  updatedAt: inspected.updatedAt,
+                  content: inspected.content,
+                });
               }
             }
 
@@ -250,30 +388,36 @@ jobs:
 
               for (const entry of themeEntries) {
                 const fullPath = path.join(themesDir, entry.name);
-                try {
-                  const stat = fs.statSync(fullPath);
-                  const content = fs.readFileSync(fullPath, 'utf8');
-                  const parsed = JSON.parse(content);
-                  if (parsed && typeof parsed === 'object') {
-                    themes.push({
-                      ...parsed,
-                      _tavernsmithType: 'theme',
-                      _diskFileName: entry.name,
-                      _diskUpdatedAt: stat.mtime.toISOString(),
-                    });
-                    files.push({
-                      id: `Themes/${entry.name}`,
-                      folderPath: 'Themes/',
-                      fileName: entry.name,
-                      kind: 'theme',
-                      sizeBytes: stat.size,
-                      updatedAt: stat.mtime.toISOString(),
-                      content,
-                    });
-                  }
-                } catch {
-                  // Ignore unreadable or corrupted JSON file
+                const inspected = inspectDiskJsonFile(fullPath);
+                if (!inspected.ok) {
+                  files.push({
+                    id: `Themes/${entry.name}`,
+                    folderPath: 'Themes/',
+                    fileName: entry.name,
+                    kind: 'theme',
+                    sizeBytes: inspected.sizeBytes,
+                    updatedAt: inspected.updatedAt,
+                    content: inspected.content,
+                    isCorrupted: true,
+                    corruptReason: inspected.reason,
+                  });
+                  continue;
                 }
+                themes.push({
+                  ...inspected.parsed,
+                  _tavernsmithType: 'theme',
+                  _diskFileName: entry.name,
+                  _diskUpdatedAt: inspected.updatedAt,
+                });
+                files.push({
+                  id: `Themes/${entry.name}`,
+                  folderPath: 'Themes/',
+                  fileName: entry.name,
+                  kind: 'theme',
+                  sizeBytes: inspected.sizeBytes,
+                  updatedAt: inspected.updatedAt,
+                  content: inspected.content,
+                });
               }
             }
 
@@ -285,70 +429,94 @@ jobs:
 
               for (const entry of tagEntries) {
                 const fullPath = path.join(tagsDir, entry.name);
-                try {
-                  const stat = fs.statSync(fullPath);
-                  const content = fs.readFileSync(fullPath, 'utf8');
-                  const parsed = JSON.parse(content);
-                  if (parsed && typeof parsed === 'object') {
-                    tags.push({
-                      ...parsed,
-                      _tavernsmithType: 'tag',
-                      _diskFileName: entry.name,
-                      _diskUpdatedAt: stat.mtime.toISOString(),
-                    });
-                    files.push({
-                      id: `Tags/${entry.name}`,
-                      folderPath: 'Tags/',
-                      fileName: entry.name,
-                      kind: 'tag',
-                      sizeBytes: stat.size,
-                      updatedAt: stat.mtime.toISOString(),
-                      content,
-                    });
-                  }
-                } catch {
-                  // Ignore unreadable or corrupted JSON file
+                const inspected = inspectDiskJsonFile(fullPath);
+                if (!inspected.ok) {
+                  files.push({
+                    id: `Tags/${entry.name}`,
+                    folderPath: 'Tags/',
+                    fileName: entry.name,
+                    kind: 'tag',
+                    sizeBytes: inspected.sizeBytes,
+                    updatedAt: inspected.updatedAt,
+                    content: inspected.content,
+                    isCorrupted: true,
+                    corruptReason: inspected.reason,
+                  });
+                  continue;
                 }
+                tags.push({
+                  ...inspected.parsed,
+                  _tavernsmithType: 'tag',
+                  _diskFileName: entry.name,
+                  _diskUpdatedAt: inspected.updatedAt,
+                });
+                files.push({
+                  id: `Tags/${entry.name}`,
+                  folderPath: 'Tags/',
+                  fileName: entry.name,
+                  kind: 'tag',
+                  sizeBytes: inspected.sizeBytes,
+                  updatedAt: inspected.updatedAt,
+                  content: inspected.content,
+                });
               }
             }
 
             const metaPath = path.join(resolvedPath, META_FILENAME);
             if (fs.existsSync(metaPath)) {
-              try {
-                const stat = fs.statSync(metaPath);
-                const content = fs.readFileSync(metaPath, 'utf8');
-                meta = JSON.parse(content);
+              const inspected = inspectDiskJsonFile(metaPath);
+              if (!inspected.ok) {
                 files.push({
                   id: `/${META_FILENAME}`,
                   folderPath: '/',
                   fileName: META_FILENAME,
                   kind: 'meta',
-                  sizeBytes: stat.size,
-                  updatedAt: stat.mtime.toISOString(),
-                  content,
+                  sizeBytes: inspected.sizeBytes,
+                  updatedAt: inspected.updatedAt,
+                  content: inspected.content,
+                  isCorrupted: true,
+                  corruptReason: inspected.reason,
                 });
-              } catch {
-                // Ignore malformed meta
+              } else {
+                meta = inspected.parsed;
+                files.push({
+                  id: `/${META_FILENAME}`,
+                  folderPath: '/',
+                  fileName: META_FILENAME,
+                  kind: 'meta',
+                  sizeBytes: inspected.sizeBytes,
+                  updatedAt: inspected.updatedAt,
+                  content: inspected.content,
+                });
               }
             }
 
             const vaultPath = path.join(resolvedPath, VAULT_FILENAME);
             if (fs.existsSync(vaultPath)) {
-              try {
-                const stat = fs.statSync(vaultPath);
-                const content = fs.readFileSync(vaultPath, 'utf8');
-                vault = JSON.parse(content);
+              const inspected = inspectDiskJsonFile(vaultPath);
+              if (!inspected.ok) {
                 files.push({
                   id: `/${VAULT_FILENAME}`,
                   folderPath: '/',
                   fileName: VAULT_FILENAME,
                   kind: 'vault',
-                  sizeBytes: stat.size,
-                  updatedAt: stat.mtime.toISOString(),
-                  content,
+                  sizeBytes: inspected.sizeBytes,
+                  updatedAt: inspected.updatedAt,
+                  content: inspected.content,
+                  isCorrupted: true,
+                  corruptReason: inspected.reason,
                 });
-              } catch {
-                // Ignore malformed vault
+              } else {
+                vault = inspected.parsed;
+                files.push({
+                  id: `/${VAULT_FILENAME}`,
+                  folderPath: '/',
+                  fileName: VAULT_FILENAME,
+                  kind: 'vault',
+                  sizeBytes: inspected.sizeBytes,
+                  updatedAt: inspected.updatedAt,
+                  content: inspected.content,
+                });
               }
             }
 
@@ -411,15 +579,7 @@ jobs:
                 writtenCharFiles.add(targetFileName.toLowerCase());
               }
 
-              try {
-                for (const fileName of fs.readdirSync(charsDir)) {
-                  if (!fileName.toLowerCase().endsWith('.json')) continue;
-                  if (!writtenCharFiles.has(fileName.toLowerCase())) {
-                    const orphanPath = path.join(charsDir, fileName);
-                    if (fs.existsSync(orphanPath)) fs.unlinkSync(orphanPath);
-                  }
-                }
-              } catch {}
+              pruneValidOrphanJsonFiles(charsDir, writtenCharFiles);
             }
 
             if (Array.isArray(body.lorebooks)) {
@@ -450,15 +610,7 @@ jobs:
                 writtenBookFiles.add(targetFileName.toLowerCase());
               }
 
-              try {
-                for (const fileName of fs.readdirSync(loreDir)) {
-                  if (!fileName.toLowerCase().endsWith('.json')) continue;
-                  if (!writtenBookFiles.has(fileName.toLowerCase())) {
-                    const orphanPath = path.join(loreDir, fileName);
-                    if (fs.existsSync(orphanPath)) fs.unlinkSync(orphanPath);
-                  }
-                }
-              } catch {}
+              pruneValidOrphanJsonFiles(loreDir, writtenBookFiles);
             }
 
             if (Array.isArray(body.themes)) {
@@ -484,15 +636,7 @@ jobs:
                 writtenThemeFiles.add(targetFileName.toLowerCase());
               }
 
-              try {
-                for (const fileName of fs.readdirSync(themesDir)) {
-                  if (!fileName.toLowerCase().endsWith('.json')) continue;
-                  if (!writtenThemeFiles.has(fileName.toLowerCase())) {
-                    const orphanPath = path.join(themesDir, fileName);
-                    if (fs.existsSync(orphanPath)) fs.unlinkSync(orphanPath);
-                  }
-                }
-              } catch {}
+              pruneValidOrphanJsonFiles(themesDir, writtenThemeFiles);
             }
 
             if (Array.isArray(body.tags)) {
@@ -518,15 +662,7 @@ jobs:
                 writtenTagFiles.add(targetFileName.toLowerCase());
               }
 
-              try {
-                for (const fileName of fs.readdirSync(tagsDir)) {
-                  if (!fileName.toLowerCase().endsWith('.json')) continue;
-                  if (!writtenTagFiles.has(fileName.toLowerCase())) {
-                    const orphanPath = path.join(tagsDir, fileName);
-                    if (fs.existsSync(orphanPath)) fs.unlinkSync(orphanPath);
-                  }
-                }
-              } catch {}
+              pruneValidOrphanJsonFiles(tagsDir, writtenTagFiles);
             }
 
             if (body.meta && typeof body.meta === 'object') {
@@ -555,18 +691,10 @@ jobs:
                 : typeof body.savesDir === 'string'
                   ? body.savesDir
                   : undefined;
-            const { charsDir, loreDir, themesDir, tagsDir } =
+            const { resolvedPath, charsDir, loreDir, themesDir, tagsDir } =
               resolveSavesRoot(customSavePath);
 
             const rawFolder = String(body.folder || body.kind || '').toLowerCase();
-            const targetDir =
-              rawFolder === 'lorebooks' || rawFolder === 'lorebook'
-                ? loreDir
-                : rawFolder === 'themes' || rawFolder === 'theme'
-                  ? themesDir
-                  : rawFolder === 'tags' || rawFolder === 'tag'
-                    ? tagsDir
-                    : charsDir;
 
             const candidateNames = new Set();
             const rawFileName =
@@ -579,9 +707,35 @@ jobs:
             if (rawFileName) candidateNames.add(path.basename(rawFileName));
             if (rawSavedFileName) candidateNames.add(path.basename(rawSavedFileName));
 
+            if (rawFolder === 'root' || rawFolder === 'meta' || rawFolder === 'vault') {
+              const allowedRootFiles = new Set([META_FILENAME, VAULT_FILENAME]);
+              for (const name of candidateNames) {
+                if (!allowedRootFiles.has(name)) continue;
+                const targetPath = path.join(resolvedPath, name);
+                if (fs.existsSync(targetPath)) {
+                  try {
+                    fs.unlinkSync(targetPath);
+                  } catch {}
+                }
+              }
+              return scanSavesDirectoryOnDisk(customSavePath);
+            }
+
+            const targetDir =
+              rawFolder === 'lorebooks' || rawFolder === 'lorebook'
+                ? loreDir
+                : rawFolder === 'themes' || rawFolder === 'theme'
+                  ? themesDir
+                  : rawFolder === 'tags' || rawFolder === 'tag'
+                    ? tagsDir
+                    : charsDir;
+
             let deletedAny = false;
             for (const name of candidateNames) {
+              if (!name || name === '.' || name === '..') continue;
               const targetPath = path.join(targetDir, name);
+              const rel = path.relative(targetDir, targetPath);
+              if (!rel || rel.startsWith('..') || path.isAbsolute(rel)) continue;
               if (fs.existsSync(targetPath)) {
                 try {
                   fs.unlinkSync(targetPath);
@@ -618,12 +772,45 @@ jobs:
             return scanSavesDirectoryOnDisk(customSavePath);
           }
 
-          function readRequestBody(req) {
+          function createHttpError(message, statusCode) {
+            const err = new Error(message);
+            err.statusCode = statusCode;
+            return err;
+          }
+
+          function readJsonRequestBody(req) {
             return new Promise((resolve, reject) => {
               const chunks = [];
-              req.on('data', (c) => chunks.push(Buffer.isBuffer(c) ? c : Buffer.from(c)));
-              req.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')));
-              req.on('error', reject);
+              let totalBytes = 0;
+              let settled = false;
+
+              req.on('data', (chunk) => {
+                if (settled) return;
+                const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+                totalBytes += buf.length;
+                if (totalBytes > MAX_BODY_BYTES) {
+                  settled = true;
+                  req.destroy();
+                  reject(createHttpError('Request body exceeds 128 MB limit', 413));
+                  return;
+                }
+                chunks.push(buf);
+              });
+              req.on('end', () => {
+                if (settled) return;
+                settled = true;
+                try {
+                  const raw = Buffer.concat(chunks).toString('utf8');
+                  resolve(raw ? JSON.parse(raw) : {});
+                } catch {
+                  reject(createHttpError('Invalid JSON request body', 400));
+                }
+              });
+              req.on('error', (err) => {
+                if (settled) return;
+                settled = true;
+                reject(err);
+              });
             });
           }
 
@@ -653,25 +840,35 @@ jobs:
               }
 
               if (req.method === 'POST' && pathname === '/api/disk/save') {
-                const rawBody = await readRequestBody(req);
-                const body = rawBody ? JSON.parse(rawBody) : {};
+                const body = await readJsonRequestBody(req);
                 sendJson(res, 200, saveToSavesDirectoryOnDisk(body));
                 return;
               }
 
               if (req.method === 'POST' && pathname === '/api/disk/delete') {
-                const rawBody = await readRequestBody(req);
-                const body = rawBody ? JSON.parse(rawBody) : {};
+                const body = await readJsonRequestBody(req);
                 sendJson(res, 200, deleteFromSavesDirectoryOnDisk(body));
                 return;
               }
 
-              // Static file serving from dist/
-              let relPath = decodeURIComponent(pathname === '/' ? '/index.html' : pathname);
-              relPath = relPath.replace(/^\/+/, '');
-              let fullStaticPath = path.resolve(ROOT_DIR, relPath);
-              if (!fullStaticPath.startsWith(ROOT_DIR) || !fs.existsSync(fullStaticPath) || fs.statSync(fullStaticPath).isDirectory()) {
-                fullStaticPath = path.join(ROOT_DIR, 'index.html');
+              // Static file serving strictly inside ROOT_DIR (using separator-safe path.relative)
+              let decodedPath = '/index.html';
+              try {
+                decodedPath = decodeURIComponent(pathname === '/' ? '/index.html' : pathname);
+              } catch {
+                decodedPath = '/index.html';
+              }
+              const relPath = decodedPath.replace(/^\/+/, '');
+              const rootReal = getCanonicalWorkspaceRoot();
+              let fullStaticPath = path.resolve(rootReal, relPath);
+              const relToRoot = path.relative(rootReal, fullStaticPath);
+              const isInsideRoot =
+                relToRoot !== '' &&
+                !relToRoot.startsWith('..') &&
+                !path.isAbsolute(relToRoot) &&
+                !relToRoot.split(path.sep).includes('Saves');
+              if (!isInsideRoot || !fs.existsSync(fullStaticPath) || fs.statSync(fullStaticPath).isDirectory()) {
+                fullStaticPath = path.join(rootReal, 'index.html');
               }
 
               const ext = path.extname(fullStaticPath).toLowerCase();
@@ -680,7 +877,12 @@ jobs:
               res.setHeader('Cache-Control', 'no-store');
               fs.createReadStream(fullStaticPath).pipe(res);
             } catch (err) {
-              sendJson(res, 500, { ok: false, error: err && err.message ? err.message : 'Server error' });
+              const statusCode =
+                err && typeof err.statusCode === 'number' ? err.statusCode : 500;
+              sendJson(res, statusCode, {
+                ok: false,
+                error: err && err.message ? err.message : 'Server error',
+              });
             }
           });
 
@@ -704,6 +906,7 @@ jobs:
           ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
           META_FILENAME = "_tavernsmith_meta.json"
           VAULT_FILENAME = "_tavernsmith_vault.enc"
+          MAX_BODY_BYTES = 128 * 1024 * 1024
 
           def sanitize_disk_file_name(raw):
               base = os.path.basename(str(raw or "untitled"))
@@ -711,15 +914,48 @@ jobs:
               clean = re.sub(r"[^a-zA-Z0-9_-]+", "_", base).strip("_") or "untitled"
               return f"{clean}.json"
 
+          def get_canonical_workspace_root():
+              try:
+                  return os.path.realpath(ROOT_DIR)
+              except Exception:
+                  return os.path.abspath(ROOT_DIR)
+
+          def is_path_inside_workspace(root_dir, candidate_path):
+              try:
+                  rel = os.path.relpath(candidate_path, root_dir)
+                  return rel != "." and not rel.startswith("..") and not os.path.isabs(rel)
+              except Exception:
+                  return False
+
+          def has_workspace_confined_ancestor(root_dir, candidate_path):
+              probe = candidate_path
+              while not os.path.exists(probe):
+                  parent = os.path.dirname(probe)
+                  if parent == probe:
+                      break
+                  probe = parent
+              try:
+                  real_ancestor = os.path.realpath(probe) if os.path.exists(probe) else probe
+                  rel = os.path.relpath(real_ancestor, root_dir)
+                  return rel == "." or (not rel.startswith("..") and not os.path.isabs(rel))
+              except Exception:
+                  return False
+
           def resolve_saves_root(custom_save_path=None):
+              workspace_root = get_canonical_workspace_root()
+              default_path = os.path.join(workspace_root, "Saves")
               trimmed = (custom_save_path or "").strip()
               use_custom = bool(trimmed and trimmed not in ("./Saves", "./Saves/", "/Saves/"))
+
+              resolved_path = default_path
+              disk_root = "./Saves/"
+
               if use_custom:
-                  resolved_path = trimmed if os.path.isabs(trimmed) else os.path.abspath(os.path.join(ROOT_DIR, trimmed))
-                  disk_root = trimmed
-              else:
-                  resolved_path = os.path.abspath(os.path.join(ROOT_DIR, "Saves"))
-                  disk_root = "./Saves/"
+                  candidate = os.path.abspath(os.path.join(workspace_root, trimmed))
+                  if is_path_inside_workspace(workspace_root, candidate) and has_workspace_confined_ancestor(workspace_root, candidate):
+                      resolved_path = candidate
+                      normalized_rel = os.path.relpath(candidate, workspace_root).replace("\\", "/").strip("/")
+                      disk_root = f"./{normalized_rel}/"
 
               chars_dir = os.path.join(resolved_path, "Characters")
               lore_dir = os.path.join(resolved_path, "Lorebooks")
@@ -740,6 +976,77 @@ jobs:
                   "themesDir": themes_dir,
                   "tagsDir": tags_dir,
               }
+
+          def iso_from_mtime(mtime_ts):
+              return datetime.fromtimestamp(mtime_ts, tz=timezone.utc).isoformat().replace("+00:00", "Z")
+
+          def inspect_disk_json_file(full_path):
+              size_bytes = 0
+              updated_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+              content = ""
+              try:
+                  stat = os.stat(full_path)
+                  size_bytes = stat.st_size
+                  updated_at = iso_from_mtime(stat.st_mtime)
+                  with open(full_path, "r", encoding="utf-8") as f:
+                      content = f.read()
+              except Exception as exc:
+                  return {
+                      "ok": False,
+                      "reason": str(exc) or "Unreadable file",
+                      "content": "",
+                      "sizeBytes": size_bytes,
+                      "updatedAt": updated_at,
+                  }
+
+              if not content.strip():
+                  return {
+                      "ok": False,
+                      "reason": "File is empty (0 bytes or whitespace only)",
+                      "content": content,
+                      "sizeBytes": size_bytes,
+                      "updatedAt": updated_at,
+                  }
+
+              try:
+                  parsed = json.loads(content)
+                  if not isinstance(parsed, dict):
+                      return {
+                          "ok": False,
+                          "reason": "JSON root must be an object",
+                          "content": content[:16384],
+                          "sizeBytes": size_bytes,
+                          "updatedAt": updated_at,
+                      }
+                  return {
+                      "ok": True,
+                      "parsed": parsed,
+                      "content": content,
+                      "sizeBytes": size_bytes,
+                      "updatedAt": updated_at,
+                  }
+              except Exception as exc:
+                  return {
+                      "ok": False,
+                      "reason": str(exc) or "Malformed JSON syntax",
+                      "content": content[:16384],
+                      "sizeBytes": size_bytes,
+                      "updatedAt": updated_at,
+                  }
+
+          def prune_valid_orphan_json_files(target_dir, written_files_lower):
+              try:
+                  for file_name in os.listdir(target_dir):
+                      if not file_name.lower().endswith(".json"):
+                          continue
+                      if file_name.lower() not in written_files_lower:
+                          orphan_path = os.path.join(target_dir, file_name)
+                          if os.path.isfile(orphan_path):
+                              inspected = inspect_disk_json_file(orphan_path)
+                              if inspected["ok"]:
+                                  os.unlink(orphan_path)
+              except Exception:
+                  pass
 
           def extract_entity_id_from_json(parsed):
               if not isinstance(parsed, dict):
@@ -774,9 +1081,6 @@ jobs:
               used_names_lower.add(candidate.lower())
               return candidate
 
-          def iso_from_mtime(mtime_ts):
-              return datetime.fromtimestamp(mtime_ts, tz=timezone.utc).isoformat().replace("+00:00", "Z")
-
           def scan_saves_directory_on_disk(custom_save_path=None):
               dirs = resolve_saves_root(custom_save_path)
               characters = []
@@ -794,29 +1098,36 @@ jobs:
                       full_path = os.path.join(dirs["charsDir"], name)
                       if not os.path.isfile(full_path):
                           continue
-                      try:
-                          stat = os.stat(full_path)
-                          with open(full_path, "r", encoding="utf-8") as f:
-                              content = f.read()
-                          parsed = json.loads(content)
-                          if not isinstance(parsed, dict) or parsed.get("_tavernsmithType") == "lorebook":
-                              continue
-                          updated_iso = iso_from_mtime(stat.st_mtime)
-                          obj = dict(parsed)
-                          obj["_diskFileName"] = name
-                          obj["_diskUpdatedAt"] = updated_iso
-                          characters.append(obj)
+                      inspected = inspect_disk_json_file(full_path)
+                      if not inspected["ok"]:
                           files.append({
                               "id": f"Characters/{name}",
                               "folderPath": "Characters/",
                               "fileName": name,
                               "kind": "character",
-                              "sizeBytes": stat.st_size,
-                              "updatedAt": updated_iso,
-                              "content": content,
+                              "sizeBytes": inspected["sizeBytes"],
+                              "updatedAt": inspected["updatedAt"],
+                              "content": inspected["content"],
+                              "isCorrupted": True,
+                              "corruptReason": inspected["reason"],
                           })
-                      except Exception:
-                          pass
+                          continue
+                      parsed = inspected["parsed"]
+                      if parsed.get("_tavernsmithType") == "lorebook":
+                          continue
+                      obj = dict(parsed)
+                      obj["_diskFileName"] = name
+                      obj["_diskUpdatedAt"] = inspected["updatedAt"]
+                      characters.append(obj)
+                      files.append({
+                          "id": f"Characters/{name}",
+                          "folderPath": "Characters/",
+                          "fileName": name,
+                          "kind": "character",
+                          "sizeBytes": inspected["sizeBytes"],
+                          "updatedAt": inspected["updatedAt"],
+                          "content": inspected["content"],
+                      })
 
               if os.path.isdir(dirs["loreDir"]):
                   for name in sorted(os.listdir(dirs["loreDir"])):
@@ -825,30 +1136,37 @@ jobs:
                       full_path = os.path.join(dirs["loreDir"], name)
                       if not os.path.isfile(full_path):
                           continue
-                      try:
-                          stat = os.stat(full_path)
-                          with open(full_path, "r", encoding="utf-8") as f:
-                              content = f.read()
-                          parsed = json.loads(content)
-                          if not isinstance(parsed, dict) or parsed.get("_tavernsmithType") == "character":
-                              continue
-                          updated_iso = iso_from_mtime(stat.st_mtime)
-                          obj = dict(parsed)
-                          obj["_tavernsmithType"] = "lorebook"
-                          obj["_diskFileName"] = name
-                          obj["_diskUpdatedAt"] = updated_iso
-                          lorebooks.append(obj)
+                      inspected = inspect_disk_json_file(full_path)
+                      if not inspected["ok"]:
                           files.append({
                               "id": f"Lorebooks/{name}",
                               "folderPath": "Lorebooks/",
                               "fileName": name,
                               "kind": "lorebook",
-                              "sizeBytes": stat.st_size,
-                              "updatedAt": updated_iso,
-                              "content": content,
+                              "sizeBytes": inspected["sizeBytes"],
+                              "updatedAt": inspected["updatedAt"],
+                              "content": inspected["content"],
+                              "isCorrupted": True,
+                              "corruptReason": inspected["reason"],
                           })
-                      except Exception:
-                          pass
+                          continue
+                      parsed = inspected["parsed"]
+                      if parsed.get("_tavernsmithType") == "character":
+                          continue
+                      obj = dict(parsed)
+                      obj["_tavernsmithType"] = "lorebook"
+                      obj["_diskFileName"] = name
+                      obj["_diskUpdatedAt"] = inspected["updatedAt"]
+                      lorebooks.append(obj)
+                      files.append({
+                          "id": f"Lorebooks/{name}",
+                          "folderPath": "Lorebooks/",
+                          "fileName": name,
+                          "kind": "lorebook",
+                          "sizeBytes": inspected["sizeBytes"],
+                          "updatedAt": inspected["updatedAt"],
+                          "content": inspected["content"],
+                      })
 
               if os.path.isdir(dirs["themesDir"]):
                   for name in sorted(os.listdir(dirs["themesDir"])):
@@ -857,29 +1175,34 @@ jobs:
                       full_path = os.path.join(dirs["themesDir"], name)
                       if not os.path.isfile(full_path):
                           continue
-                      try:
-                          stat = os.stat(full_path)
-                          with open(full_path, "r", encoding="utf-8") as f:
-                              content = f.read()
-                          parsed = json.loads(content)
-                          if isinstance(parsed, dict):
-                              updated_iso = iso_from_mtime(stat.st_mtime)
-                              obj = dict(parsed)
-                              obj["_tavernsmithType"] = "theme"
-                              obj["_diskFileName"] = name
-                              obj["_diskUpdatedAt"] = updated_iso
-                              themes.append(obj)
-                              files.append({
-                                  "id": f"Themes/{name}",
-                                  "folderPath": "Themes/",
-                                  "fileName": name,
-                                  "kind": "theme",
-                                  "sizeBytes": stat.st_size,
-                                  "updatedAt": updated_iso,
-                                  "content": content,
-                              })
-                      except Exception:
-                          pass
+                      inspected = inspect_disk_json_file(full_path)
+                      if not inspected["ok"]:
+                          files.append({
+                              "id": f"Themes/{name}",
+                              "folderPath": "Themes/",
+                              "fileName": name,
+                              "kind": "theme",
+                              "sizeBytes": inspected["sizeBytes"],
+                              "updatedAt": inspected["updatedAt"],
+                              "content": inspected["content"],
+                              "isCorrupted": True,
+                              "corruptReason": inspected["reason"],
+                          })
+                          continue
+                      obj = dict(inspected["parsed"])
+                      obj["_tavernsmithType"] = "theme"
+                      obj["_diskFileName"] = name
+                      obj["_diskUpdatedAt"] = inspected["updatedAt"]
+                      themes.append(obj)
+                      files.append({
+                          "id": f"Themes/{name}",
+                          "folderPath": "Themes/",
+                          "fileName": name,
+                          "kind": "theme",
+                          "sizeBytes": inspected["sizeBytes"],
+                          "updatedAt": inspected["updatedAt"],
+                          "content": inspected["content"],
+                      })
 
               if os.path.isdir(dirs["tagsDir"]):
                   for name in sorted(os.listdir(dirs["tagsDir"])):
@@ -888,67 +1211,90 @@ jobs:
                       full_path = os.path.join(dirs["tagsDir"], name)
                       if not os.path.isfile(full_path):
                           continue
-                      try:
-                          stat = os.stat(full_path)
-                          with open(full_path, "r", encoding="utf-8") as f:
-                              content = f.read()
-                          parsed = json.loads(content)
-                          if isinstance(parsed, dict):
-                              updated_iso = iso_from_mtime(stat.st_mtime)
-                              obj = dict(parsed)
-                              obj["_tavernsmithType"] = "tag"
-                              obj["_diskFileName"] = name
-                              obj["_diskUpdatedAt"] = updated_iso
-                              tags.append(obj)
-                              files.append({
-                                  "id": f"Tags/{name}",
-                                  "folderPath": "Tags/",
-                                  "fileName": name,
-                                  "kind": "tag",
-                                  "sizeBytes": stat.st_size,
-                                  "updatedAt": updated_iso,
-                                  "content": content,
-                              })
-                      except Exception:
-                          pass
+                      inspected = inspect_disk_json_file(full_path)
+                      if not inspected["ok"]:
+                          files.append({
+                              "id": f"Tags/{name}",
+                              "folderPath": "Tags/",
+                              "fileName": name,
+                              "kind": "tag",
+                              "sizeBytes": inspected["sizeBytes"],
+                              "updatedAt": inspected["updatedAt"],
+                              "content": inspected["content"],
+                              "isCorrupted": True,
+                              "corruptReason": inspected["reason"],
+                          })
+                          continue
+                      obj = dict(inspected["parsed"])
+                      obj["_tavernsmithType"] = "tag"
+                      obj["_diskFileName"] = name
+                      obj["_diskUpdatedAt"] = inspected["updatedAt"]
+                      tags.append(obj)
+                      files.append({
+                          "id": f"Tags/{name}",
+                          "folderPath": "Tags/",
+                          "fileName": name,
+                          "kind": "tag",
+                          "sizeBytes": inspected["sizeBytes"],
+                          "updatedAt": inspected["updatedAt"],
+                          "content": inspected["content"],
+                      })
 
               meta_path = os.path.join(dirs["resolvedPath"], META_FILENAME)
               if os.path.isfile(meta_path):
-                  try:
-                      stat = os.stat(meta_path)
-                      with open(meta_path, "r", encoding="utf-8") as f:
-                          content = f.read()
-                      meta = json.loads(content)
+                  inspected = inspect_disk_json_file(meta_path)
+                  if not inspected["ok"]:
+                      meta = None
                       files.append({
                           "id": f"/{META_FILENAME}",
                           "folderPath": "/",
                           "fileName": META_FILENAME,
                           "kind": "meta",
-                          "sizeBytes": stat.st_size,
-                          "updatedAt": iso_from_mtime(stat.st_mtime),
-                          "content": content,
+                          "sizeBytes": inspected["sizeBytes"],
+                          "updatedAt": inspected["updatedAt"],
+                          "content": inspected["content"],
+                          "isCorrupted": True,
+                          "corruptReason": inspected["reason"],
                       })
-                  except Exception:
-                      meta = None
+                  else:
+                      meta = inspected["parsed"]
+                      files.append({
+                          "id": f"/{META_FILENAME}",
+                          "folderPath": "/",
+                          "fileName": META_FILENAME,
+                          "kind": "meta",
+                          "sizeBytes": inspected["sizeBytes"],
+                          "updatedAt": inspected["updatedAt"],
+                          "content": inspected["content"],
+                      })
 
               vault_path = os.path.join(dirs["resolvedPath"], VAULT_FILENAME)
               if os.path.isfile(vault_path):
-                  try:
-                      stat = os.stat(vault_path)
-                      with open(vault_path, "r", encoding="utf-8") as f:
-                          content = f.read()
-                      vault = json.loads(content)
+                  inspected = inspect_disk_json_file(vault_path)
+                  if not inspected["ok"]:
+                      vault = None
                       files.append({
                           "id": f"/{VAULT_FILENAME}",
                           "folderPath": "/",
                           "fileName": VAULT_FILENAME,
                           "kind": "vault",
-                          "sizeBytes": stat.st_size,
-                          "updatedAt": iso_from_mtime(stat.st_mtime),
-                          "content": content,
+                          "sizeBytes": inspected["sizeBytes"],
+                          "updatedAt": inspected["updatedAt"],
+                          "content": inspected["content"],
+                          "isCorrupted": True,
+                          "corruptReason": inspected["reason"],
                       })
-                  except Exception:
-                      vault = None
+                  else:
+                      vault = inspected["parsed"]
+                      files.append({
+                          "id": f"/{VAULT_FILENAME}",
+                          "folderPath": "/",
+                          "fileName": VAULT_FILENAME,
+                          "kind": "vault",
+                          "sizeBytes": inspected["sizeBytes"],
+                          "updatedAt": inspected["updatedAt"],
+                          "content": inspected["content"],
+                      })
 
               return {
                   "ok": True,
@@ -989,16 +1335,7 @@ jobs:
                       with open(os.path.join(dirs["charsDir"], target_file), "w", encoding="utf-8") as f:
                           f.write(out_content)
                       written_char_files.add(target_file.lower())
-                  try:
-                      for file_name in os.listdir(dirs["charsDir"]):
-                          if not file_name.lower().endswith(".json"):
-                              continue
-                          if file_name.lower() not in written_char_files:
-                              orphan_path = os.path.join(dirs["charsDir"], file_name)
-                              if os.path.isfile(orphan_path):
-                                  os.unlink(orphan_path)
-                  except Exception:
-                      pass
+                  prune_valid_orphan_json_files(dirs["charsDir"], written_char_files)
 
               if isinstance(body.get("lorebooks"), list):
                   used_lore_targets = set()
@@ -1020,16 +1357,7 @@ jobs:
                       with open(os.path.join(dirs["loreDir"], target_file), "w", encoding="utf-8") as f:
                           f.write(out_content)
                       written_book_files.add(target_file.lower())
-                  try:
-                      for file_name in os.listdir(dirs["loreDir"]):
-                          if not file_name.lower().endswith(".json"):
-                              continue
-                          if file_name.lower() not in written_book_files:
-                              orphan_path = os.path.join(dirs["loreDir"], file_name)
-                              if os.path.isfile(orphan_path):
-                                  os.unlink(orphan_path)
-                  except Exception:
-                      pass
+                  prune_valid_orphan_json_files(dirs["loreDir"], written_book_files)
 
               if isinstance(body.get("themes"), list):
                   used_theme_targets = set()
@@ -1049,16 +1377,7 @@ jobs:
                       with open(os.path.join(dirs["themesDir"], target_file), "w", encoding="utf-8") as f:
                           f.write(out_content)
                       written_theme_files.add(target_file.lower())
-                  try:
-                      for file_name in os.listdir(dirs["themesDir"]):
-                          if not file_name.lower().endswith(".json"):
-                              continue
-                          if file_name.lower() not in written_theme_files:
-                              orphan_path = os.path.join(dirs["themesDir"], file_name)
-                              if os.path.isfile(orphan_path):
-                                  os.unlink(orphan_path)
-                  except Exception:
-                      pass
+                  prune_valid_orphan_json_files(dirs["themesDir"], written_theme_files)
 
               if isinstance(body.get("tags"), list):
                   used_tag_targets = set()
@@ -1078,16 +1397,7 @@ jobs:
                       with open(os.path.join(dirs["tagsDir"], target_file), "w", encoding="utf-8") as f:
                           f.write(out_content)
                       written_tag_files.add(target_file.lower())
-                  try:
-                      for file_name in os.listdir(dirs["tagsDir"]):
-                          if not file_name.lower().endswith(".json"):
-                              continue
-                          if file_name.lower() not in written_tag_files:
-                              orphan_path = os.path.join(dirs["tagsDir"], file_name)
-                              if os.path.isfile(orphan_path):
-                                  os.unlink(orphan_path)
-                  except Exception:
-                      pass
+                  prune_valid_orphan_json_files(dirs["tagsDir"], written_tag_files)
 
               if isinstance(body.get("meta"), dict):
                   with open(os.path.join(dirs["resolvedPath"], META_FILENAME), "w", encoding="utf-8") as f:
@@ -1104,14 +1414,6 @@ jobs:
               dirs = resolve_saves_root(custom_save_path)
 
               raw_folder = str(body.get("folder") or body.get("kind") or "").lower()
-              if raw_folder in ("lorebooks", "lorebook"):
-                  target_dir = dirs["loreDir"]
-              elif raw_folder in ("themes", "theme"):
-                  target_dir = dirs["themesDir"]
-              elif raw_folder in ("tags", "tag"):
-                  target_dir = dirs["tagsDir"]
-              else:
-                  target_dir = dirs["charsDir"]
 
               candidate_names = set()
               raw_file_name = body.get("fileName").strip() if isinstance(body.get("fileName"), str) else ""
@@ -1124,9 +1426,36 @@ jobs:
               if raw_saved_file_name:
                   candidate_names.add(os.path.basename(raw_saved_file_name))
 
+              if raw_folder in ("root", "meta", "vault"):
+                  allowed_root = {META_FILENAME, VAULT_FILENAME}
+                  for name in candidate_names:
+                      if name not in allowed_root:
+                          continue
+                      target_path = os.path.join(dirs["resolvedPath"], name)
+                      if os.path.isfile(target_path):
+                          try:
+                              os.unlink(target_path)
+                          except Exception:
+                              pass
+                  return scan_saves_directory_on_disk(custom_save_path)
+
+              if raw_folder in ("lorebooks", "lorebook"):
+                  target_dir = dirs["loreDir"]
+              elif raw_folder in ("themes", "theme"):
+                  target_dir = dirs["themesDir"]
+              elif raw_folder in ("tags", "tag"):
+                  target_dir = dirs["tagsDir"]
+              else:
+                  target_dir = dirs["charsDir"]
+
               deleted_any = False
               for name in candidate_names:
+                  if not name or name in (".", ".."):
+                      continue
                   target_path = os.path.join(target_dir, name)
+                  rel = os.path.relpath(target_path, target_dir)
+                  if not rel or rel == "." or rel.startswith("..") or os.path.isabs(rel):
+                      continue
                   if os.path.isfile(target_path):
                       try:
                           os.unlink(target_path)
@@ -1189,19 +1518,38 @@ jobs:
 
               def do_POST(self):
                   parsed_url = urllib.parse.urlparse(self.path)
-                  length = int(self.headers.get("Content-Length", "0"))
-                  raw_body = self.rfile.read(length).decode("utf-8") if length > 0 else "{}"
-                  body = json.loads(raw_body or "{}")
-
-                  if parsed_url.path == "/api/disk/save":
-                      self.send_json(200, save_to_saves_directory_on_disk(body))
+                  try:
+                      length = int(self.headers.get("Content-Length", "0"))
+                  except ValueError:
+                      self.send_json(400, {"ok": False, "error": "Invalid Content-Length header"})
                       return
 
-                  if parsed_url.path == "/api/disk/delete":
-                      self.send_json(200, delete_from_saves_directory_on_disk(body))
+                  if length < 0 or length > MAX_BODY_BYTES:
+                      self.send_json(413, {"ok": False, "error": "Request body exceeds 128 MB limit"})
                       return
 
-                  self.send_json(404, {"ok": False, "error": "Not found"})
+                  try:
+                      raw_body = self.rfile.read(length).decode("utf-8") if length > 0 else "{}"
+                      body = json.loads(raw_body or "{}")
+                      if not isinstance(body, dict):
+                          self.send_json(400, {"ok": False, "error": "JSON body must be an object"})
+                          return
+                  except (UnicodeDecodeError, json.JSONDecodeError):
+                      self.send_json(400, {"ok": False, "error": "Invalid JSON request body"})
+                      return
+
+                  try:
+                      if parsed_url.path == "/api/disk/save":
+                          self.send_json(200, save_to_saves_directory_on_disk(body))
+                          return
+
+                      if parsed_url.path == "/api/disk/delete":
+                          self.send_json(200, delete_from_saves_directory_on_disk(body))
+                          return
+
+                      self.send_json(404, {"ok": False, "error": "Not found"})
+                  except Exception as exc:
+                      self.send_json(500, {"ok": False, "error": str(exc) or "Server error"})
 
           if __name__ == "__main__":
               print(f"TavernSmith local disk server running at http://{HOST}:{PORT}")

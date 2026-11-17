@@ -15,12 +15,12 @@ import {
   CharacterTabDraft,
   ContextTheme,
   DiskStateResponse,
+  InspectorTabDraft,
   Lorebook,
   LorebookTabDraft,
   NameConflictRequest,
   PendingDeleteTarget,
   SavedFileEntry,
-  SaveLogEntry,
   SmartEditorFieldDraft,
   StatBlockConfig,
   TagCategory,
@@ -3256,6 +3256,8 @@ interface StoreContextValue {
     scopeKey: string,
     partial: Partial<SmartEditorFieldDraft>
   ) => void;
+  inspectorDraft: InspectorTabDraft;
+  updateInspectorDraft: (partial: Partial<InspectorTabDraft>) => void;
 }
 
 const StoreContext = createContext<StoreContextValue | undefined>(undefined);
@@ -3368,6 +3370,19 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
     useState<PendingDeleteTarget | null>(null);
   const [workspaceDraftCache, setWorkspaceDraftCache] =
     useState<WorkspaceDraftCache>(() => loadWorkspaceDraftCacheFromSession());
+  const [inspectorDraft, setInspectorDraft] = useState<InspectorTabDraft>({
+    activeTab: DEFAULT_SETTINGS.cardSpecVersion === 'v2' ? 'v2' : 'v3',
+    isRawEditMode: false,
+    rawJsonDraft: '',
+    rawEditError: null,
+  });
+
+  const updateInspectorDraft = useCallback(
+    (partial: Partial<InspectorTabDraft>) => {
+      setInspectorDraft((prev) => ({ ...prev, ...partial }));
+    },
+    []
+  );
 
   useEffect(() => {
     saveWorkspaceDraftCacheToSession(workspaceDraftCache);
@@ -5775,6 +5790,12 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
 
   const loadSavedFileIntoWorkspace = useCallback(
     (file: SavedFileEntry): { ok: boolean; message: string } => {
+      if (file.isCorrupted) {
+        return {
+          ok: false,
+          message: `"${file.fileName}" is corrupted (${file.corruptReason || 'invalid JSON'}). Download it to recover data or delete it from Saved Files.`,
+        };
+      }
       try {
         if (file.kind === 'meta' || file.fileName === META_FILENAME) {
           const parsedMeta = JSON.parse(
@@ -5972,122 +5993,128 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
           latestWorkspaceRef.current.settings.cardSpecVersion
         ).find((f) => f.id === fileId);
       if (!target) return;
+      const isCorruptedRoot =
+        Boolean(target.isCorrupted) &&
+        (target.kind === 'meta' || target.kind === 'vault');
       if (
         target.kind !== 'character' &&
         target.kind !== 'lorebook' &&
         target.kind !== 'theme' &&
-        target.kind !== 'tag'
+        target.kind !== 'tag' &&
+        !isCorruptedRoot
       ) {
         return;
       }
 
-      let embeddedId: string | undefined;
-      let embeddedName: string | undefined;
-      try {
-        const parsedJson = JSON.parse(target.content) as Record<string, unknown>;
-        const dataNode =
-          parsedJson.data && typeof parsedJson.data === 'object'
-            ? (parsedJson.data as Record<string, unknown>)
-            : undefined;
-        const rawId =
-          parsedJson.id ??
-          dataNode?.id ??
-          (parsedJson.extensions &&
-          typeof parsedJson.extensions === 'object'
-            ? (parsedJson.extensions as Record<string, unknown>).tavernsmith_id
-            : undefined);
-        if (typeof rawId === 'string' && rawId.trim()) {
-          embeddedId = rawId.trim();
+      if (!target.isCorrupted) {
+        let embeddedId: string | undefined;
+        let embeddedName: string | undefined;
+        try {
+          const parsedJson = JSON.parse(target.content) as Record<string, unknown>;
+          const dataNode =
+            parsedJson.data && typeof parsedJson.data === 'object'
+              ? (parsedJson.data as Record<string, unknown>)
+              : undefined;
+          const rawId =
+            parsedJson.id ??
+            dataNode?.id ??
+            (parsedJson.extensions &&
+            typeof parsedJson.extensions === 'object'
+              ? (parsedJson.extensions as Record<string, unknown>).tavernsmith_id
+              : undefined);
+          if (typeof rawId === 'string' && rawId.trim()) {
+            embeddedId = rawId.trim();
+          }
+          const rawName = parsedJson.name ?? dataNode?.name;
+          if (typeof rawName === 'string' && rawName.trim()) {
+            embeddedName = rawName.trim();
+          }
+        } catch {
+          // Ignore non-JSON preview
         }
-        const rawName = parsedJson.name ?? dataNode?.name;
-        if (typeof rawName === 'string' && rawName.trim()) {
-          embeddedName = rawName.trim();
+
+        if (target.kind === 'character') {
+          const matchingChar = charactersRef.current.find((c) => {
+            const mappedFile =
+              c.savedFileName ||
+              (c.id ? charDiskFileNamesRef.current.get(c.id) : undefined);
+            if (mappedFile && mappedFile === target.fileName) return true;
+            if (embeddedId && c.id === embeddedId) return true;
+            if (
+              embeddedName &&
+              (c.name || '').trim().toLowerCase() === embeddedName.toLowerCase()
+            ) {
+              return true;
+            }
+            return false;
+          });
+
+          if (matchingChar?.id) {
+            deleteCharacter(matchingChar.id);
+            return;
+          }
+        } else if (target.kind === 'lorebook') {
+          const matchingBook = lorebooksRef.current.find((l) => {
+            const mappedFile =
+              l.savedFileName ||
+              (l.id ? loreDiskFileNamesRef.current.get(l.id) : undefined);
+            if (mappedFile && mappedFile === target.fileName) return true;
+            if (embeddedId && l.id === embeddedId) return true;
+            if (
+              embeddedName &&
+              (l.name || '').trim().toLowerCase() === embeddedName.toLowerCase()
+            ) {
+              return true;
+            }
+            return false;
+          });
+
+          if (matchingBook?.id) {
+            deleteLorebook(matchingBook.id);
+            return;
+          }
+        } else if (target.kind === 'theme') {
+          const matchingTheme = themesRef.current.find((th) => {
+            const mappedFile =
+              th.savedFileName || themeDiskFileNamesRef.current.get(th.id);
+            if (mappedFile && mappedFile === target.fileName) return true;
+            if (embeddedId && th.id === embeddedId) return true;
+            if (
+              embeddedName &&
+              th.name.trim().toLowerCase() === embeddedName.toLowerCase()
+            ) {
+              return true;
+            }
+            return false;
+          });
+
+          if (matchingTheme?.id) {
+            deleteTheme(matchingTheme.id);
+            return;
+          }
+        } else if (target.kind === 'tag') {
+          const matchingTag = tagsRef.current.find((tg) => {
+            const mappedFile =
+              tg.savedFileName || tagDiskFileNamesRef.current.get(tg.id);
+            if (mappedFile && mappedFile === target.fileName) return true;
+            if (embeddedId && tg.id === embeddedId) return true;
+            if (
+              embeddedName &&
+              tg.name.trim().toLowerCase() === embeddedName.toLowerCase()
+            ) {
+              return true;
+            }
+            return false;
+          });
+
+          if (matchingTag?.id) {
+            deleteTag(matchingTag.id);
+            return;
+          }
         }
-      } catch {
-        // Ignore non-JSON preview
       }
 
-      if (target.kind === 'character') {
-        const matchingChar = charactersRef.current.find((c) => {
-          const mappedFile =
-            c.savedFileName ||
-            (c.id ? charDiskFileNamesRef.current.get(c.id) : undefined);
-          if (mappedFile && mappedFile === target.fileName) return true;
-          if (embeddedId && c.id === embeddedId) return true;
-          if (
-            embeddedName &&
-            (c.name || '').trim().toLowerCase() === embeddedName.toLowerCase()
-          ) {
-            return true;
-          }
-          return false;
-        });
-
-        if (matchingChar?.id) {
-          deleteCharacter(matchingChar.id);
-          return;
-        }
-      } else if (target.kind === 'lorebook') {
-        const matchingBook = lorebooksRef.current.find((l) => {
-          const mappedFile =
-            l.savedFileName ||
-            (l.id ? loreDiskFileNamesRef.current.get(l.id) : undefined);
-          if (mappedFile && mappedFile === target.fileName) return true;
-          if (embeddedId && l.id === embeddedId) return true;
-          if (
-            embeddedName &&
-            (l.name || '').trim().toLowerCase() === embeddedName.toLowerCase()
-          ) {
-            return true;
-          }
-          return false;
-        });
-
-        if (matchingBook?.id) {
-          deleteLorebook(matchingBook.id);
-          return;
-        }
-      } else if (target.kind === 'theme') {
-        const matchingTheme = themesRef.current.find((th) => {
-          const mappedFile =
-            th.savedFileName || themeDiskFileNamesRef.current.get(th.id);
-          if (mappedFile && mappedFile === target.fileName) return true;
-          if (embeddedId && th.id === embeddedId) return true;
-          if (
-            embeddedName &&
-            th.name.trim().toLowerCase() === embeddedName.toLowerCase()
-          ) {
-            return true;
-          }
-          return false;
-        });
-
-        if (matchingTheme?.id) {
-          deleteTheme(matchingTheme.id);
-          return;
-        }
-      } else if (target.kind === 'tag') {
-        const matchingTag = tagsRef.current.find((tg) => {
-          const mappedFile =
-            tg.savedFileName || tagDiskFileNamesRef.current.get(tg.id);
-          if (mappedFile && mappedFile === target.fileName) return true;
-          if (embeddedId && tg.id === embeddedId) return true;
-          if (
-            embeddedName &&
-            tg.name.trim().toLowerCase() === embeddedName.toLowerCase()
-          ) {
-            return true;
-          }
-          return false;
-        });
-
-        if (matchingTag?.id) {
-          deleteTag(matchingTag.id);
-          return;
-        }
-      }
-
-      // Unattached on-disk file not currently loaded into React state
+      // Unattached or corrupted on-disk file not currently loaded into React state
       diskMutationVersionRef.current += 1;
       const opVersion = diskMutationVersionRef.current;
       setDiskFiles((prev) => prev.filter((f) => f.id !== fileId));
@@ -6099,34 +6126,47 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
             ? 'Themes'
             : target.kind === 'tag'
               ? 'Tags'
-              : 'Characters';
+              : target.kind === 'meta' || target.kind === 'vault'
+                ? 'Root'
+                : 'Characters';
       void enqueueDiskOperation(async () => {
         try {
-          await fetch('/api/disk/delete', {
+          const delRes = await fetch('/api/disk/delete', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
               folder,
+              kind: target.kind,
               fileName: target.fileName,
               savedFileName: target.fileName,
-              name: embeddedName,
-              id: embeddedId,
               customSavePath: latestWorkspaceRef.current.settings.activeSaveFolder,
             }),
           });
+          if (delRes.ok) {
+            const delState = (await delRes.json()) as DiskStateResponse;
+            if (
+              delState?.ok &&
+              Array.isArray(delState.files) &&
+              diskMutationVersionRef.current === opVersion
+            ) {
+              setDiskFiles(delState.files);
+            }
+          }
         } catch {
           // Ignore transient network error
         }
-        await runDiskSaveRequest(
-          'autosave',
-          {
-            characters: charactersRef.current,
-            lorebooks: lorebooksRef.current,
-            themes: themesRef.current,
-            tags: tagsRef.current,
-          },
-          opVersion
-        );
+        if (!target.isCorrupted) {
+          await runDiskSaveRequest(
+            'autosave',
+            {
+              characters: charactersRef.current,
+              lorebooks: lorebooksRef.current,
+              themes: themesRef.current,
+              tags: tagsRef.current,
+            },
+            opVersion
+          );
+        }
       });
     },
     [
@@ -6166,11 +6206,15 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
   }, []);
 
   const requestDeleteSavedFile = useCallback((file: SavedFileEntry) => {
+    const isCorruptedRoot =
+      Boolean(file.isCorrupted) &&
+      (file.kind === 'meta' || file.kind === 'vault');
     if (
       file.kind !== 'character' &&
       file.kind !== 'lorebook' &&
       file.kind !== 'theme' &&
-      file.kind !== 'tag'
+      file.kind !== 'tag' &&
+      !isCorruptedRoot
     ) {
       return;
     }
@@ -6186,8 +6230,13 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
             ? 'Themes'
             : file.kind === 'tag'
               ? 'Tags'
-              : 'Characters',
+              : file.kind === 'meta' || file.kind === 'vault'
+                ? 'Root'
+                : 'Characters',
       fileKind: file.kind,
+      subtitle: file.isCorrupted
+        ? `Corrupted JSON file (${file.corruptReason || 'unparseable'})`
+        : undefined,
     });
   }, []);
 
@@ -7316,6 +7365,8 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
       updateLorebookDraft,
       updateThemesTagsDraft,
       updateSmartEditorDraft,
+      inspectorDraft,
+      updateInspectorDraft,
     }),
     [
       activeTab,
@@ -7390,6 +7441,8 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
       updateLorebookDraft,
       updateThemesTagsDraft,
       updateSmartEditorDraft,
+      inspectorDraft,
+      updateInspectorDraft,
     ]
   );
 

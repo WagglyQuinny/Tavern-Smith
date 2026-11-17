@@ -65,9 +65,17 @@ export const PortraitCropperModal: React.FC<PortraitCropperModalProps> = ({
       imageObjRef.current = img;
       setImageLoaded(true);
     };
+    img.onerror = () => {
+      if (!active) return;
+      imageObjRef.current = null;
+    };
     img.src = imageSrc;
     return () => {
       active = false;
+      img.onload = null;
+      img.onerror = null;
+      img.src = '';
+      imageObjRef.current = null;
     };
   }, [imageSrc]);
 
@@ -237,6 +245,8 @@ export const PortraitCropperModal: React.FC<PortraitCropperModalProps> = ({
     );
 
     const pngDataUrl = outCanvas.toDataURL('image/png');
+    outCanvas.width = 0;
+    outCanvas.height = 0;
     onApplyCrop(pngDataUrl, targetW, targetH);
   };
 

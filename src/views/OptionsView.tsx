@@ -6,6 +6,7 @@ import {
   RefreshCw,
   CheckCircle2,
   AlertCircle,
+  AlertTriangle,
   Info,
   RotateCcw,
   X,
@@ -20,7 +21,6 @@ import {
   Download,
   Upload,
   FileJson,
-  Clock,
   Archive,
   Zap,
   ChevronDown,
@@ -28,7 +28,6 @@ import {
   ExternalLink,
   User,
   BookOpen,
-  Database,
   Eye,
   EyeOff,
   Lock,
@@ -68,8 +67,6 @@ import { APP_VERSION, CHANGELOG_RELEASES } from '../utils/changelogData';
 
 export const OptionsView: React.FC = () => {
   const {
-    characters,
-    lorebooks,
     themes,
     tags,
     settings,
@@ -201,6 +198,11 @@ export const OptionsView: React.FC = () => {
           f.fileName === META_FILENAME ||
           f.fileName === VAULT_FILENAME
       ),
+    [savedFiles]
+  );
+
+  const corruptedSavedFiles = useMemo(
+    () => savedFiles.filter((f) => f.isCorrupted),
     [savedFiles]
   );
 
@@ -556,10 +558,28 @@ export const OptionsView: React.FC = () => {
                 <code className="font-mono">{UNIFIED_INTERNAL_ROOT}</code>
               </span>
             </div>
-            <span className="font-mono text-[11px] font-semibold text-slate-600 dark:text-slate-300">
-              {savedFiles.length} file{savedFiles.length === 1 ? '' : 's'}
-            </span>
+            <div className="flex items-center gap-2">
+              {corruptedSavedFiles.length > 0 && (
+                <span className="inline-flex items-center gap-1 rounded bg-rose-500/15 border border-rose-500/40 px-1.5 py-0.5 font-mono text-[10px] font-semibold text-rose-600 dark:text-rose-400">
+                  <AlertTriangle className="h-3 w-3" />
+                  {corruptedSavedFiles.length} corrupted
+                </span>
+              )}
+              <span className="font-mono text-[11px] font-semibold text-slate-600 dark:text-slate-300">
+                {savedFiles.length} file{savedFiles.length === 1 ? '' : 's'}
+              </span>
+            </div>
           </div>
+
+          {corruptedSavedFiles.length > 0 && (
+            <div className="flex items-start gap-2 rounded-lg border border-rose-500/40 bg-rose-500/10 px-3 py-2 text-[11px] text-rose-700 dark:text-rose-300">
+              <AlertTriangle className="h-4 w-4 shrink-0 mt-0.5 text-rose-500" />
+              <span>
+                Detected {corruptedSavedFiles.length} corrupted or empty JSON file
+                {corruptedSavedFiles.length === 1 ? '' : 's'} in <code className="font-mono">{UNIFIED_INTERNAL_ROOT}</code>. Marked entries cannot be loaded into the editor—download to inspect or delete them below.
+              </span>
+            </div>
+          )}
 
           <div className="space-y-2.5 max-h-[420px] overflow-y-auto pr-1">
             {/* SUBFOLDER 1: Characters/ */}
@@ -594,26 +614,47 @@ export const OptionsView: React.FC = () => {
                   {characterSavedFiles.map((file) => (
                     <div
                       key={file.id}
-                      className="flex items-center justify-between gap-2 px-3 py-2 text-xs hover:bg-slate-50/70 dark:hover:bg-slate-950/40"
+                      className={`flex items-center justify-between gap-2 px-3 py-2 text-xs ${
+                        file.isCorrupted
+                          ? 'bg-rose-50/70 dark:bg-rose-950/20'
+                          : 'hover:bg-slate-50/70 dark:hover:bg-slate-950/40'
+                      }`}
                     >
                       <div className="min-w-0 flex-1">
                         <div className="flex items-center gap-1.5">
                           <span className="font-mono font-semibold text-slate-900 dark:text-white truncate">
                             ./Saves/Characters/{file.fileName}
                           </span>
+                          {file.isCorrupted && (
+                            <span
+                              title={file.corruptReason || 'Corrupted or invalid JSON'}
+                              className="inline-flex items-center gap-1 rounded bg-rose-500/15 border border-rose-500/40 px-1.5 py-0.5 font-mono text-[10px] font-semibold uppercase text-rose-600 dark:text-rose-400 shrink-0"
+                            >
+                              <AlertTriangle className="h-2.5 w-2.5" />
+                              Corrupted
+                            </span>
+                          )}
                         </div>
-                        <div className="font-mono text-[10px] text-slate-400">
+                        <div className="font-mono text-[10px] text-slate-400 truncate">
                           {(file.sizeBytes / 1024).toFixed(2)} KB · Updated{' '}
                           {formatSafeTimestamp(file.updatedAt)}
+                          {file.isCorrupted && file.corruptReason
+                            ? ` · ${file.corruptReason}`
+                            : ''}
                         </div>
                       </div>
 
                       <div className="flex items-center gap-1.5 shrink-0">
                         <button
                           type="button"
+                          disabled={Boolean(file.isCorrupted)}
                           onClick={() => handleLoadFile(file)}
-                          title="Load Character into Workbench"
-                          className="theme-hover-outline flex items-center gap-1 rounded-md border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800 px-2 py-1 text-[11px] font-semibold text-slate-700 dark:text-slate-200 cursor-pointer"
+                          title={
+                            file.isCorrupted
+                              ? 'Cannot load corrupted JSON file'
+                              : 'Load Character into Workbench'
+                          }
+                          className="theme-hover-outline flex items-center gap-1 rounded-md border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800 px-2 py-1 text-[11px] font-semibold text-slate-700 dark:text-slate-200 disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer"
                         >
                           <ExternalLink className="h-3 w-3" />
                           <span>Load</span>
@@ -673,26 +714,47 @@ export const OptionsView: React.FC = () => {
                   {lorebookSavedFiles.map((file) => (
                     <div
                       key={file.id}
-                      className="flex items-center justify-between gap-2 px-3 py-2 text-xs hover:bg-slate-50/70 dark:hover:bg-slate-950/40"
+                      className={`flex items-center justify-between gap-2 px-3 py-2 text-xs ${
+                        file.isCorrupted
+                          ? 'bg-rose-50/70 dark:bg-rose-950/20'
+                          : 'hover:bg-slate-50/70 dark:hover:bg-slate-950/40'
+                      }`}
                     >
                       <div className="min-w-0 flex-1">
                         <div className="flex items-center gap-1.5">
                           <span className="font-mono font-semibold text-slate-900 dark:text-white truncate">
                             ./Saves/Lorebooks/{file.fileName}
                           </span>
+                          {file.isCorrupted && (
+                            <span
+                              title={file.corruptReason || 'Corrupted or invalid JSON'}
+                              className="inline-flex items-center gap-1 rounded bg-rose-500/15 border border-rose-500/40 px-1.5 py-0.5 font-mono text-[10px] font-semibold uppercase text-rose-600 dark:text-rose-400 shrink-0"
+                            >
+                              <AlertTriangle className="h-2.5 w-2.5" />
+                              Corrupted
+                            </span>
+                          )}
                         </div>
-                        <div className="font-mono text-[10px] text-slate-400">
+                        <div className="font-mono text-[10px] text-slate-400 truncate">
                           {(file.sizeBytes / 1024).toFixed(2)} KB · Updated{' '}
                           {formatSafeTimestamp(file.updatedAt)}
+                          {file.isCorrupted && file.corruptReason
+                            ? ` · ${file.corruptReason}`
+                            : ''}
                         </div>
                       </div>
 
                       <div className="flex items-center gap-1.5 shrink-0">
                         <button
                           type="button"
+                          disabled={Boolean(file.isCorrupted)}
                           onClick={() => handleLoadFile(file)}
-                          title="Load Lorebook into Workbench"
-                          className="theme-hover-outline flex items-center gap-1 rounded-md border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800 px-2 py-1 text-[11px] font-semibold text-slate-700 dark:text-slate-200 cursor-pointer"
+                          title={
+                            file.isCorrupted
+                              ? 'Cannot load corrupted JSON file'
+                              : 'Load Lorebook into Workbench'
+                          }
+                          className="theme-hover-outline flex items-center gap-1 rounded-md border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800 px-2 py-1 text-[11px] font-semibold text-slate-700 dark:text-slate-200 disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer"
                         >
                           <ExternalLink className="h-3 w-3" />
                           <span>Load</span>
@@ -757,26 +819,47 @@ export const OptionsView: React.FC = () => {
                     themeSavedFiles.map((file) => (
                       <div
                         key={file.id}
-                        className="flex items-center justify-between gap-2 px-3 py-2 text-xs hover:bg-slate-50/70 dark:hover:bg-slate-950/40"
+                        className={`flex items-center justify-between gap-2 px-3 py-2 text-xs ${
+                          file.isCorrupted
+                            ? 'bg-rose-50/70 dark:bg-rose-950/20'
+                            : 'hover:bg-slate-50/70 dark:hover:bg-slate-950/40'
+                        }`}
                       >
                         <div className="min-w-0 flex-1">
                           <div className="flex items-center gap-1.5">
                             <span className="font-mono font-semibold text-slate-900 dark:text-white truncate">
                               ./Saves/Themes/{file.fileName}
                             </span>
+                            {file.isCorrupted && (
+                              <span
+                                title={file.corruptReason || 'Corrupted or invalid JSON'}
+                                className="inline-flex items-center gap-1 rounded bg-rose-500/15 border border-rose-500/40 px-1.5 py-0.5 font-mono text-[10px] font-semibold uppercase text-rose-600 dark:text-rose-400 shrink-0"
+                              >
+                                <AlertTriangle className="h-2.5 w-2.5" />
+                                Corrupted
+                              </span>
+                            )}
                           </div>
-                          <div className="font-mono text-[10px] text-slate-400">
+                          <div className="font-mono text-[10px] text-slate-400 truncate">
                             {file.sizeBytes} B · Updated{' '}
                             {formatSafeTimestamp(file.updatedAt)}
+                            {file.isCorrupted && file.corruptReason
+                              ? ` · ${file.corruptReason}`
+                              : ''}
                           </div>
                         </div>
 
                         <div className="flex items-center gap-1.5 shrink-0">
                           <button
                             type="button"
+                            disabled={Boolean(file.isCorrupted)}
                             onClick={() => handleLoadFile(file)}
-                            title="Activate & open Theme in Themes & Tags"
-                            className="theme-hover-outline flex items-center gap-1 rounded-md border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800 px-2 py-1 text-[11px] font-semibold text-slate-700 dark:text-slate-200 cursor-pointer"
+                            title={
+                              file.isCorrupted
+                                ? 'Cannot load corrupted JSON file'
+                                : 'Activate & open Theme in Themes & Tags'
+                            }
+                            className="theme-hover-outline flex items-center gap-1 rounded-md border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800 px-2 py-1 text-[11px] font-semibold text-slate-700 dark:text-slate-200 disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer"
                           >
                             <ExternalLink className="h-3 w-3" />
                             <span>Load</span>
@@ -842,26 +925,47 @@ export const OptionsView: React.FC = () => {
                     tagSavedFiles.map((file) => (
                       <div
                         key={file.id}
-                        className="flex items-center justify-between gap-2 px-3 py-2 text-xs hover:bg-slate-50/70 dark:hover:bg-slate-950/40"
+                        className={`flex items-center justify-between gap-2 px-3 py-2 text-xs ${
+                          file.isCorrupted
+                            ? 'bg-rose-50/70 dark:bg-rose-950/20'
+                            : 'hover:bg-slate-50/70 dark:hover:bg-slate-950/40'
+                        }`}
                       >
                         <div className="min-w-0 flex-1">
                           <div className="flex items-center gap-1.5">
                             <span className="font-mono font-semibold text-slate-900 dark:text-white truncate">
                               ./Saves/Tags/{file.fileName}
                             </span>
+                            {file.isCorrupted && (
+                              <span
+                                title={file.corruptReason || 'Corrupted or invalid JSON'}
+                                className="inline-flex items-center gap-1 rounded bg-rose-500/15 border border-rose-500/40 px-1.5 py-0.5 font-mono text-[10px] font-semibold uppercase text-rose-600 dark:text-rose-400 shrink-0"
+                              >
+                                <AlertTriangle className="h-2.5 w-2.5" />
+                                Corrupted
+                              </span>
+                            )}
                           </div>
-                          <div className="font-mono text-[10px] text-slate-400">
+                          <div className="font-mono text-[10px] text-slate-400 truncate">
                             {file.sizeBytes} B · Updated{' '}
                             {formatSafeTimestamp(file.updatedAt)}
+                            {file.isCorrupted && file.corruptReason
+                              ? ` · ${file.corruptReason}`
+                              : ''}
                           </div>
                         </div>
 
                         <div className="flex items-center gap-1.5 shrink-0">
                           <button
                             type="button"
+                            disabled={Boolean(file.isCorrupted)}
                             onClick={() => handleLoadFile(file)}
-                            title="Open Tag in Themes & Tags"
-                            className="theme-hover-outline flex items-center gap-1 rounded-md border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800 px-2 py-1 text-[11px] font-semibold text-slate-700 dark:text-slate-200 cursor-pointer"
+                            title={
+                              file.isCorrupted
+                                ? 'Cannot load corrupted JSON file'
+                                : 'Open Tag in Themes & Tags'
+                            }
+                            className="theme-hover-outline flex items-center gap-1 rounded-md border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800 px-2 py-1 text-[11px] font-semibold text-slate-700 dark:text-slate-200 disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer"
                           >
                             <ExternalLink className="h-3 w-3" />
                             <span>Load</span>
@@ -921,7 +1025,11 @@ export const OptionsView: React.FC = () => {
                   {metaSavedFiles.map((file) => (
                     <div
                       key={file.id}
-                      className="flex items-center justify-between gap-2 px-3 py-2 text-xs hover:bg-slate-50/70 dark:hover:bg-slate-950/40"
+                      className={`flex items-center justify-between gap-2 px-3 py-2 text-xs ${
+                        file.isCorrupted
+                          ? 'bg-rose-50/70 dark:bg-rose-950/20'
+                          : 'hover:bg-slate-50/70 dark:hover:bg-slate-950/40'
+                      }`}
                     >
                       <div className="min-w-0 flex-1">
                         <div className="flex items-center gap-1.5">
@@ -931,10 +1039,22 @@ export const OptionsView: React.FC = () => {
                           <span className="rounded bg-slate-100 dark:bg-slate-800 px-1.5 py-0.5 font-mono text-[10px] uppercase text-slate-600 dark:text-slate-300">
                             {file.kind === 'vault' ? 'encrypted vault' : 'root meta'}
                           </span>
+                          {file.isCorrupted && (
+                            <span
+                              title={file.corruptReason || 'Corrupted or invalid JSON'}
+                              className="inline-flex items-center gap-1 rounded bg-rose-500/15 border border-rose-500/40 px-1.5 py-0.5 font-mono text-[10px] font-semibold uppercase text-rose-600 dark:text-rose-400 shrink-0"
+                            >
+                              <AlertTriangle className="h-2.5 w-2.5" />
+                              Corrupted
+                            </span>
+                          )}
                         </div>
-                        <div className="font-mono text-[10px] text-slate-400">
+                        <div className="font-mono text-[10px] text-slate-400 truncate">
                           {(file.sizeBytes / 1024).toFixed(2)} KB · Synced{' '}
                           {formatSafeTimestamp(file.updatedAt)}
+                          {file.isCorrupted && file.corruptReason
+                            ? ` · ${file.corruptReason}`
+                            : ''}
                         </div>
                       </div>
 
@@ -942,9 +1062,14 @@ export const OptionsView: React.FC = () => {
                         {file.kind === 'meta' && (
                           <button
                             type="button"
+                            disabled={Boolean(file.isCorrupted)}
                             onClick={() => handleLoadFile(file)}
-                            title="Reload Tags & Context Themes from metadata file"
-                            className="theme-hover-outline flex items-center gap-1 rounded-md border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800 px-2 py-1 text-[11px] font-semibold text-slate-700 dark:text-slate-200 cursor-pointer"
+                            title={
+                              file.isCorrupted
+                                ? 'Cannot load corrupted metadata file'
+                                : 'Reload Tags & Context Themes from metadata file'
+                            }
+                            className="theme-hover-outline flex items-center gap-1 rounded-md border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800 px-2 py-1 text-[11px] font-semibold text-slate-700 dark:text-slate-200 disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer"
                           >
                             <ExternalLink className="h-3 w-3" />
                             <span>Load</span>
@@ -958,6 +1083,16 @@ export const OptionsView: React.FC = () => {
                         >
                           <Download className="h-3.5 w-3.5" />
                         </button>
+                        {file.isCorrupted && (
+                          <button
+                            type="button"
+                            onClick={() => requestDeleteSavedFile(file)}
+                            title={`Delete corrupted ${file.fileName} from ./Saves/`}
+                            className="rounded-md border border-rose-200 dark:border-rose-900/40 p-1.5 text-rose-600 dark:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/40 cursor-pointer"
+                          >
+                            <Trash2 className="h-3.5 w-3.5" />
+                          </button>
+                        )}
                       </div>
                     </div>
                   ))}

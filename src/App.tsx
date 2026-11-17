@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   AlertTriangle,
   RotateCcw,
@@ -133,6 +133,15 @@ const NameConflictResolutionModal: React.FC = () => {
   } = useStore();
 
   const [customName, setCustomName] = useState('');
+  const saveTimerRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (saveTimerRef.current !== null) {
+        window.clearTimeout(saveTimerRef.current);
+      }
+    };
+  }, []);
 
   useEffect(() => {
     if (nameConflictRequest) {
@@ -164,7 +173,13 @@ const NameConflictResolutionModal: React.FC = () => {
     if (!clean) return;
     resolveNameConflict(clean);
     if (nameConflictRequest.sourceAction === 'save') {
-      window.setTimeout(() => saveNow('manual'), 25);
+      if (saveTimerRef.current !== null) {
+        window.clearTimeout(saveTimerRef.current);
+      }
+      saveTimerRef.current = window.setTimeout(() => {
+        saveTimerRef.current = null;
+        saveNow('manual');
+      }, 25);
     }
   };
 
@@ -297,7 +312,11 @@ const DeleteConfirmationModal: React.FC = () => {
         ? 'Theme'
         : fileKind === 'tag'
           ? 'Tag'
-          : 'Lorebook';
+          : fileKind === 'meta'
+            ? 'Metadata File'
+            : fileKind === 'vault'
+              ? 'Encrypted Vault'
+              : 'Lorebook';
   const folderHint =
     fileKind === 'character'
       ? './Saves/Characters/'
@@ -305,7 +324,9 @@ const DeleteConfirmationModal: React.FC = () => {
         ? './Saves/Themes/'
         : fileKind === 'tag'
           ? './Saves/Tags/'
-          : './Saves/Lorebooks/';
+          : fileKind === 'meta' || fileKind === 'vault'
+            ? './Saves/'
+            : './Saves/Lorebooks/';
 
   return (
     <div
@@ -350,6 +371,9 @@ const DeleteConfirmationModal: React.FC = () => {
           {typeof pendingDeleteTarget.entryCount === 'number'
             ? ` (${pendingDeleteTarget.entryCount} entries)`
             : ''}{' '}
+          {pendingDeleteTarget.subtitle
+            ? `— ${pendingDeleteTarget.subtitle} — `
+            : ''}
           from your roster and saved files? This cannot be undone.
         </p>
 
@@ -408,15 +432,9 @@ const WorkspaceShell: React.FC = () => {
           >
             <ThemesAndTagsView />
           </div>
-          <div
-            className={
-              activeTab === 'inspector' || activeTab === 'json_inspector'
-                ? 'block'
-                : 'hidden'
-            }
-          >
+          {(activeTab === 'inspector' || activeTab === 'json_inspector') && (
             <JsonInspectorView />
-          </div>
+          )}
           <div className={activeTab === 'options' ? 'block' : 'hidden'}>
             <OptionsView />
           </div>
