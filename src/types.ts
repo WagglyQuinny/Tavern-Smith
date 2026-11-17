@@ -130,6 +130,21 @@ export interface Lorebook {
   isNsfw?: boolean;
 }
 
+export interface CharacterAssetEntry {
+  type: 'icon' | 'emotion' | 'background' | 'user_icon' | string;
+  uri: string;
+  name: string;
+  ext: string;
+}
+
+export interface ReactionImageItem {
+  id: string;
+  name: string;
+  uri: string;
+  ext: string;
+  triggerRule: string;
+}
+
 export interface CharacterCardData {
   id?: string;
   savedFileName?: string;
@@ -149,6 +164,8 @@ export interface CharacterCardData {
   character_version: string;
   character_book?: Lorebook;
   avatar?: string;
+  assets?: CharacterAssetEntry[];
+  reactionImages?: ReactionImageItem[];
   creation_date?: number;
   modification_date?: number;
   isNsfw?: boolean;
@@ -347,6 +364,7 @@ export interface CharacterTabDraft {
   rosterSort: RosterSortOption;
   newCustomTagInput: string;
   statBlockExpanded: boolean;
+  reactionsExpanded?: boolean;
   wizardStep: number;
   conceptPrompt: string;
   activeGreetingIdx: number;

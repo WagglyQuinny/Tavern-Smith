@@ -1,7 +1,9 @@
 import {
+  CharacterAssetEntry,
   CharacterCardData,
   Lorebook,
   LorebookEntry,
+  ReactionImageItem,
   SillyTavernV2Wrapper,
   SillyTavernV3Wrapper,
 } from '../types';
@@ -431,6 +433,26 @@ export function serializeCharacterCard(
   const resolvedIsNsfw = Boolean(
     character.isNsfw || character.extensions?.isNsfw
   );
+  const reactionImages: ReactionImageItem[] = Array.isArray(
+    character.reactionImages
+  )
+    ? character.reactionImages
+    : [];
+
+  const v3Assets: CharacterAssetEntry[] = [
+    { type: 'icon', uri: 'ccdefault:', name: 'main', ext: 'png' },
+    ...reactionImages
+      .filter(
+        (item) =>
+          item && typeof item.uri === 'string' && item.uri.trim().length > 0
+      )
+      .map((item) => ({
+        type: 'emotion',
+        uri: item.uri,
+        name: (item.name || 'neutral').trim() || 'neutral',
+        ext: (item.ext || 'webp').trim() || 'webp',
+      })),
+  ];
 
   const losslessSnapshot: CharacterCardData = {
     id: character.id,
@@ -452,6 +474,7 @@ export function serializeCharacterCard(
     character_version: character.character_version || '1.0.0',
     character_book: cleanBook,
     avatar: character.avatar,
+    reactionImages,
     creation_date: character.creation_date || Math.floor(Date.now() / 1000),
     modification_date:
       character.modification_date || Math.floor(Date.now() / 1000),
@@ -467,6 +490,7 @@ export function serializeCharacterCard(
 
   const cleanData: CharacterCardData = {
     ...losslessSnapshot,
+    ...(spec === 'v3' ? { assets: v3Assets } : {}),
     extensions: {
       ...losslessSnapshot.extensions,
       tavernsmith: losslessSnapshot,
@@ -731,6 +755,62 @@ export function parseImportedJsonString(
       ? (inner.extensions as Record<string, unknown>)
       : innerExtensions || {};
 
+  const inferExtFromAssetUri = (uri: string): string => {
+    const dataMatch = uri.match(/^data:image\/([a-zA-Z0-9+.-]+);/i);
+    if (dataMatch && dataMatch[1]) {
+      const sub = dataMatch[1].toLowerCase();
+      if (sub === 'jpeg') return 'jpg';
+      return sub.split('+')[0];
+    }
+    const urlPathMatch = uri.split('?')[0].match(/\.([a-zA-Z0-9]+)$/);
+    if (urlPathMatch && urlPathMatch[1]) {
+      return urlPathMatch[1].toLowerCase();
+    }
+    return 'webp';
+  };
+
+  const rawAssets = Array.isArray(inner.assets)
+    ? (inner.assets as CharacterAssetEntry[])
+    : Array.isArray(rawInner.assets)
+      ? (rawInner.assets as CharacterAssetEntry[])
+      : undefined;
+
+  let restoredReactionImages: ReactionImageItem[] = [];
+  if (charTsSnapshot && Array.isArray(charTsSnapshot.reactionImages)) {
+    restoredReactionImages = (
+      charTsSnapshot.reactionImages as Array<Partial<ReactionImageItem>>
+    )
+      .filter((r) => r && typeof r.uri === 'string' && r.uri.trim().length > 0)
+      .map((r, idx) => ({
+        id:
+          typeof r.id === 'string' && r.id
+            ? r.id
+            : `react-${Date.now()}-${idx}`,
+        name: String(r.name || 'neutral'),
+        uri: String(r.uri || ''),
+        ext: String(r.ext || inferExtFromAssetUri(String(r.uri || ''))),
+        triggerRule: String(r.triggerRule || ''),
+      }));
+  } else if (Array.isArray(rawAssets)) {
+    restoredReactionImages = rawAssets
+      .filter((asset) => {
+        if (!asset || typeof asset !== 'object') return false;
+        const uri = typeof asset.uri === 'string' ? asset.uri.trim() : '';
+        if (!uri || uri === 'ccdefault:') return false;
+        return (
+          asset.type === 'emotion' ||
+          (asset.name !== 'main' && uri !== 'ccdefault:')
+        );
+      })
+      .map((asset, idx) => ({
+        id: `react-${Date.now()}-${idx}-${Math.random().toString(36).slice(2, 6)}`,
+        name: String(asset.name || 'neutral'),
+        uri: String(asset.uri || ''),
+        ext: String(asset.ext || inferExtFromAssetUri(String(asset.uri || ''))),
+        triggerRule: '',
+      }));
+  }
+
   const character = createBlankCharacter({
     id: typeof inner.id === 'string' && inner.id ? inner.id : undefined,
     name: String(inner.name || parsed.name || cleanFallbackName || 'Imported Character'),
@@ -762,6 +842,8 @@ export function parseImportedJsonString(
     avatar:
       avatarDataUrl ||
       (typeof inner.avatar === 'string' ? inner.avatar : undefined),
+    assets: rawAssets,
+    reactionImages: restoredReactionImages,
     character_book: embeddedLorebook,
     isNsfw: importedIsNsfw,
     extensions: {
@@ -986,5 +1068,64 @@ export function readImageFileAsDataUrl(file: File): Promise<string> {
     reader.onerror = () => reject(new Error('Error reading image file.'));
     reader.readAsDataURL(file);
   });
+}
+
+/**
+ * Scales an uploaded reaction sprite down so its longest edge is at most `maxDim` (default 640px)
+ * and encodes it as compact `image/webp` (0.85 quality, with `image/png` fallback) while preserving alpha transparency.
+ */
+export async function compressImageForReactionAsset(
+  file: File,
+  maxDim = 640
+): Promise<{ dataUrl: string; ext: string; nameStem: string }> {
+  const rawStem = file.name.replace(/\.[^/.]+$/, '').trim();
+  const nameStem = rawStem.replace(/\s+/g, '_').toLowerCase() || 'reaction';
+  const rawDataUrl = await readImageFileAsDataUrl(file);
+
+  return new Promise<{ dataUrl: string; ext: string; nameStem: string }>(
+    (resolve, reject) => {
+      const img = new Image();
+      img.onload = () => {
+        try {
+          const origWidth = img.naturalWidth || img.width || 512;
+          const origHeight = img.naturalHeight || img.height || 512;
+          const longestEdge = Math.max(origWidth, origHeight);
+          const scale = longestEdge > maxDim ? maxDim / longestEdge : 1;
+
+          const targetWidth = Math.max(1, Math.round(origWidth * scale));
+          const targetHeight = Math.max(1, Math.round(origHeight * scale));
+
+          const canvas = document.createElement('canvas');
+          canvas.width = targetWidth;
+          canvas.height = targetHeight;
+
+          const ctx = canvas.getContext('2d');
+          if (!ctx) {
+            const fallbackExt = file.type === 'image/png' ? 'png' : 'webp';
+            resolve({ dataUrl: rawDataUrl, ext: fallbackExt, nameStem });
+            return;
+          }
+
+          ctx.clearRect(0, 0, targetWidth, targetHeight);
+          ctx.drawImage(img, 0, 0, targetWidth, targetHeight);
+
+          const webpUrl = canvas.toDataURL('image/webp', 0.85);
+          if (webpUrl.startsWith('data:image/webp')) {
+            resolve({ dataUrl: webpUrl, ext: 'webp', nameStem });
+            return;
+          }
+
+          const pngUrl = canvas.toDataURL('image/png');
+          resolve({ dataUrl: pngUrl, ext: 'png', nameStem });
+        } catch (err) {
+          reject(err);
+        }
+      };
+      img.onerror = () => {
+        reject(new Error(`Failed to decode reaction image "${file.name}".`));
+      };
+      img.src = rawDataUrl;
+    }
+  );
 }
 

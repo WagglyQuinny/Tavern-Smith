@@ -74,6 +74,7 @@ export const DEFAULT_CHARACTER_TAB_DRAFT: CharacterTabDraft = {
   rosterSort: 'modified_desc',
   newCustomTagInput: '',
   statBlockExpanded: false,
+  reactionsExpanded: false,
   wizardStep: 1,
   conceptPrompt: '',
   activeGreetingIdx: 0,
@@ -2008,6 +2009,112 @@ export const DEFAULT_TAGS: TagDefinition[] = [
     'Extreme fantasy hentai physics involving engulfing or drawing entire massive entities deep inside the body for internal gestation or stimulation.',
     true
   ),
+
+  // J. Deep Toy Insertion, Anal Expulsion, Anal Jelly & Personality Excretion (Fantasy)
+  createBuiltInTag(
+    'tag-deeply-inserted-toys',
+    'Deeply Inserted Toys / Full-Depth Plugs',
+    '#e11d48',
+    'NSFW & Kinks',
+    'Extra-long silicone toys, dildos, or plugs seated completely past the rim until swallowed deep inside, creating persistent internal pressure.',
+    true
+  ),
+  createBuiltInTag(
+    'tag-concealed-deep-toy-public',
+    'Concealed Deep Toy / Remote Vibe',
+    '#f43f5e',
+    'NSFW & Kinks',
+    'Secretly holding a deeply seated plug or vibrating egg under everyday attire, enduring constant humming internal stimulation in public.',
+    true
+  ),
+  createBuiltInTag(
+    'tag-oversized-hyper-toy-insertion',
+    'Oversized / Hyper Toy Insertion',
+    '#be123c',
+    'Extreme & Hentai Physics',
+    'Hentai-scale dildos, massive flared plugs, or oversized smooth toys pushed deep inside until visibly contouring the lower abdomen.',
+    true
+  ),
+  createBuiltInTag(
+    'tag-stacked-multi-bead-insertion',
+    'Stacked / Multi-Bead Insertion',
+    '#db2777',
+    'Extreme & Hentai Physics',
+    'Long chains of graduating beads, spheres, or stacked smooth toys inserted deeply one by one for overwhelming internal fullness.',
+    true
+  ),
+  createBuiltInTag(
+    'tag-anal-object-expulsion',
+    'Anal Object Expulsion / Pushing Out',
+    '#9f1239',
+    'Extreme & Hentai Physics',
+    'Rhythmic internal clenching and bearing down to slowly push deeply seated beads, eggs, or smooth toys back out of the rear.',
+    true
+  ),
+  createBuiltInTag(
+    'tag-rapid-bead-popping-ejection',
+    'Rapid Popping / Bead Ejection',
+    '#ec4899',
+    'Extreme & Hentai Physics',
+    'Sensual, rhythmic popping expulsion of slick bead chains, marbles, or smooth spheres one by one under mounting climax and spasms.',
+    true
+  ),
+  createBuiltInTag(
+    'tag-anal-egg-capsule-expulsion',
+    'Anal Egg / Capsule Expulsion',
+    '#10b981',
+    'Extreme & Hentai Physics',
+    'Fantasy or sci-fi scenario involving laying or expelling smooth, translucent gel eggs or glowing capsules from the rear.',
+    true
+  ),
+  createBuiltInTag(
+    'tag-anal-jelly-gel-filling',
+    'Anal Jelly / Gel Filling',
+    '#06b6d4',
+    'Extreme & Hentai Physics',
+    'Warm, thick, translucent lubricant jelly or slick alchemical gel pumped deep inside the rear for heightened squishiness and slippery fullness.',
+    true
+  ),
+  createBuiltInTag(
+    'tag-dissolving-gel-capsules',
+    'Dissolving Gel Capsules / Warming Gel',
+    '#38bdf8',
+    'Extreme & Hentai Physics',
+    'Slowly melting erotic gel capsules or warming jelly pods that dissolve internally, flooding sensitive walls with tingling, slick warmth.',
+    true
+  ),
+  createBuiltInTag(
+    'tag-gelatinous-slime-fill-fantasy',
+    'Gelatinous Slime Fill (Fantasy)',
+    '#14b8a6',
+    'Extreme & Hentai Physics',
+    'Playful fantasy slime or clear viscous jelly filling the backdoor, squelching softly and oozing around deeply seated toys.',
+    true
+  ),
+  createBuiltInTag(
+    'tag-personality-excretion-trait-drain',
+    'Personality Excretion / Trait Extraction',
+    '#9333ea',
+    'Extreme & Hentai Physics',
+    "Surreal fantasy trope where {{char}}'s inner traits—such as pride, restraint, or inhibitions—physically condense and are expelled as glowing orbs, slick jelly, or warm nectar.",
+    true
+  ),
+  createBuiltInTag(
+    'tag-ego-pride-expulsion-fantasy',
+    'Ego & Pride Expulsion (Fantasy)',
+    '#c026d3',
+    'Extreme & Hentai Physics',
+    "Overwhelming stimulation causes {{char}}'s haughty composure and willpower to liquefy and pass out of her body, leaving her blissed-out and pliant.",
+    true
+  ),
+  createBuiltInTag(
+    'tag-essence-emotion-pearls',
+    'Essence / Emotion Pearls (Excretion)',
+    '#a855f7',
+    'Extreme & Hentai Physics',
+    'Fantasy anatomy that crystallizes intense emotions, memories, or personality shards into smooth, warm pearls or gel pods expelled during climax.',
+    true
+  ),
 ];
 
 export const DEFAULT_TAG_LIBRARY: TagDefinition[] = DEFAULT_TAGS;
@@ -2638,6 +2745,7 @@ export const DEFAULT_CHARACTER: CharacterCardData = {
   tags: [],
   creator: '',
   character_version: '1.0.0',
+  reactionImages: [],
   creation_date: Math.floor(Date.now() / 1000),
   modification_date: Math.floor(Date.now() / 1000),
   extensions: {
@@ -3199,6 +3307,7 @@ export function createBlankCharacter(
     tags: [],
     creator: 'TavernSmith Creator',
     character_version: '1.0.0',
+    reactionImages: [],
     creation_date: nowSec,
     modification_date: nowSec,
     extensions: {

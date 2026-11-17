@@ -33,6 +33,8 @@ import {
   FolderOpen,
   ShieldAlert,
   CornerDownRight,
+  Smile,
+  Link,
 } from 'lucide-react';
 import {
   ensureUniqueEntityName,
@@ -42,6 +44,7 @@ import {
 import {
   CharacterCardData,
   ContextReferenceImage,
+  ReactionImageItem,
   RosterSortOption,
   StatBlockConfig,
   StatItem,
@@ -64,10 +67,13 @@ import {
   renderInitialStatBlockInstance,
 } from '../utils/tokenCounter';
 import {
+  compressImageForReactionAsset,
   exportCharacterAsJson,
   exportCharacterAsPng,
   extractPngTextChunks,
   readImageDimensions,
+  sanitizeFilename,
+  triggerBrowserDownload,
 } from '../utils/cardIO';
 import {
   AIServiceError,
@@ -75,6 +81,30 @@ import {
   generateCompletionDetailed,
   parseAiJsonResponse,
 } from '../services/aiService';
+
+const REACTION_EXPRESSION_PRESETS: readonly string[] = [
+  'neutral',
+  'joy',
+  'amusement',
+  'love',
+  'embarrassment',
+  'desire',
+  'anger',
+  'sadness',
+  'surprise',
+  'fear',
+  'excitement',
+  'pride',
+  'caring',
+  'nervousness',
+  'smug',
+  'flustered',
+  'teasing',
+  'ahegao',
+  'climax',
+  'overstimulated',
+  'battle_damaged',
+];
 
 const WIZARD_STEPS = [
   {
@@ -156,6 +186,14 @@ export const CharacterEditor: React.FC = () => {
       statBlockExpanded:
         typeof next === 'function' ? next(charDraft.statBlockExpanded) : next,
     });
+  const reactionsExpanded = Boolean(charDraft.reactionsExpanded);
+  const setReactionsExpanded = (next: React.SetStateAction<boolean>) =>
+    updateCharacterDraft({
+      reactionsExpanded:
+        typeof next === 'function'
+          ? next(Boolean(charDraft.reactionsExpanded))
+          : next,
+    });
   const wizardStep = charDraft.wizardStep;
   const setWizardStep = (next: React.SetStateAction<number>) =>
     updateCharacterDraft({
@@ -215,6 +253,17 @@ export const CharacterEditor: React.FC = () => {
   const [generatingStatRuleId, setGeneratingStatRuleId] = useState<string | null>(
     null
   );
+
+  // Character Reaction Images & Expressions Studio transient state
+  const reactionFileInputRef = useRef<HTMLInputElement | null>(null);
+  const [isDraggingReactionFiles, setIsDraggingReactionFiles] = useState(false);
+  const [isUploadingReactions, setIsUploadingReactions] = useState(false);
+  const [reactionUrlName, setReactionUrlName] = useState('');
+  const [reactionUrlInput, setReactionUrlInput] = useState('');
+  const [generatingReactionId, setGeneratingReactionId] = useState<string | null>(
+    null
+  );
+  const [reactionBanner, setReactionBanner] = useState<string | null>(null);
 
   // Wizard transient generation state
   const [isGeneratingConcept, setIsGeneratingConcept] = useState<boolean>(false);
@@ -1151,9 +1200,12 @@ export const CharacterEditor: React.FC = () => {
     const compiledInstructions = compileStatBlockPrompt(enabledStatBlock);
     const initialRenderedBlock = renderInitialStatBlockInstance(enabledStatBlock);
 
-    // Strip any previously compiled [System Directive: Dynamic DM/GM Stat Tracker] block before appending
+    // Strip any previously compiled [System Directive: Dynamic DM/GM Stat Tracker] block cleanly without touching other directives
     const cleanPostHistory = (character.post_history_instructions || '')
-      .replace(/\n*\[System Directive: Dynamic DM\/GM Stat Tracker\][\s\S]*$/i, '')
+      .replace(
+        /\n*\[System Directive: Dynamic DM\/GM Stat Tracker\][\s\S]*?(?=\n*\[System Directive:|$)/i,
+        ''
+      )
       .trim();
 
     const updatedPostHistory = [cleanPostHistory, compiledInstructions]
@@ -1201,6 +1253,287 @@ export const CharacterEditor: React.FC = () => {
     () => renderInitialStatBlockInstance(statBlock),
     [statBlock]
   );
+
+  // Character Reaction Images & Expressions Studio Handlers
+  const reactionImages = useMemo<ReactionImageItem[]>(
+    () => (Array.isArray(character.reactionImages) ? character.reactionImages : []),
+    [character.reactionImages]
+  );
+
+  const handleUploadReactionFiles = async (files: FileList | File[] | null) => {
+    if (!files || files.length === 0) return;
+    const validFiles = Array.from(files).filter((file) => {
+      const lower = file.name.toLowerCase();
+      return (
+        file.type === 'image/png' ||
+        file.type === 'image/jpeg' ||
+        file.type === 'image/webp' ||
+        lower.endsWith('.png') ||
+        lower.endsWith('.jpg') ||
+        lower.endsWith('.jpeg') ||
+        lower.endsWith('.webp')
+      );
+    });
+
+    if (validFiles.length === 0) {
+      setConceptError({
+        message: 'Please select valid .png, .jpg, or .webp reaction images.',
+      });
+      return;
+    }
+
+    setIsUploadingReactions(true);
+    setReactionsExpanded(true);
+    setConceptError(null);
+
+    try {
+      const addedItems: ReactionImageItem[] = [];
+      for (let i = 0; i < validFiles.length; i++) {
+        const compressed = await compressImageForReactionAsset(validFiles[i], 640);
+        addedItems.push({
+          id: `react-${Date.now()}-${i}-${Math.random().toString(36).slice(2, 6)}`,
+          name: compressed.nameStem,
+          uri: compressed.dataUrl,
+          ext: compressed.ext,
+          triggerRule: '',
+        });
+      }
+
+      if (addedItems.length > 0) {
+        setCharacter((prev) => ({
+          ...prev,
+          reactionImages: [...(prev.reactionImages || []), ...addedItems],
+        }));
+        setReactionBanner(
+          `Added ${addedItems.length} reaction sprite${addedItems.length === 1 ? '' : 's'} (compressed to ≤640px WebP/PNG for V3 embedding).`
+        );
+        scheduleTimer(() => setReactionBanner(null), 4000);
+      }
+    } catch (err: unknown) {
+      setConceptError({
+        message:
+          err instanceof Error
+            ? err.message
+            : 'Failed to process reaction image(s).',
+      });
+    } finally {
+      setIsUploadingReactions(false);
+    }
+  };
+
+  const handleAddReactionUrl = (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    const cleanUrl = reactionUrlInput.trim();
+    if (!cleanUrl) return;
+    if (!/^(https?:\/\/|data:image\/)/i.test(cleanUrl)) {
+      setConceptError({
+        message: 'Reaction image URL must start with https://, http://, or data:image/.',
+      });
+      return;
+    }
+
+    const cleanName =
+      reactionUrlName.trim().replace(/\s+/g, '_').toLowerCase() || 'neutral';
+    const pathMatch = cleanUrl.split('?')[0].match(/\.([a-zA-Z0-9]+)$/);
+    const ext = pathMatch && pathMatch[1] ? pathMatch[1].toLowerCase() : 'png';
+
+    const newItem: ReactionImageItem = {
+      id: `react-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      name: cleanName,
+      uri: cleanUrl,
+      ext,
+      triggerRule: '',
+    };
+
+    setReactionsExpanded(true);
+    setCharacter((prev) => ({
+      ...prev,
+      reactionImages: [...(prev.reactionImages || []), newItem],
+    }));
+    setReactionUrlName('');
+    setReactionUrlInput('');
+    setReactionBanner(`Added "${cleanName}" reaction image URL.`);
+    scheduleTimer(() => setReactionBanner(null), 3500);
+  };
+
+  const handleUpdateReactionItem = (
+    id: string,
+    patch: Partial<ReactionImageItem>
+  ) => {
+    setCharacter((prev) => ({
+      ...prev,
+      reactionImages: (prev.reactionImages || []).map((item) =>
+        item.id === id ? { ...item, ...patch } : item
+      ),
+    }));
+  };
+
+  const handleDeleteReactionItem = (id: string) => {
+    setCharacter((prev) => ({
+      ...prev,
+      reactionImages: (prev.reactionImages || []).filter(
+        (item) => item.id !== id
+      ),
+    }));
+  };
+
+  const handleDownloadReactionSprite = async (item: ReactionImageItem) => {
+    const filename = `${sanitizeFilename(character.name || 'character')}_${sanitizeFilename(item.name || 'reaction')}.${item.ext || 'webp'}`;
+    try {
+      const response = await fetch(item.uri);
+      const blob = await response.blob();
+      triggerBrowserDownload(blob, filename);
+    } catch {
+      const anchor = document.createElement('a');
+      anchor.href = item.uri;
+      anchor.download = filename;
+      anchor.target = '_blank';
+      anchor.rel = 'noopener noreferrer';
+      document.body.appendChild(anchor);
+      anchor.click();
+      document.body.removeChild(anchor);
+    }
+  };
+
+  const handleGenerateReactionRuleWithAI = async (item: ReactionImageItem) => {
+    if (abortRef.current) abortRef.current.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
+    setGeneratingReactionId(item.id);
+    setConceptError(null);
+
+    const otherReactionsSummary = reactionImages
+      .filter((r) => r.id !== item.id)
+      .map(
+        (r) =>
+          `- ${r.name || 'neutral'}: ${r.triggerRule || 'no trigger defined yet'}`
+      )
+      .join('\n');
+
+    const characterFullContext = [
+      `Character Name: ${character.name || '{{char}}'}`,
+      character.nickname ? `Nickname: ${character.nickname}` : '',
+      character.tags.length > 0
+        ? `Character Tags: ${character.tags.join(', ')}`
+        : '',
+      character.description ? `Description:\n${character.description}` : '',
+      character.personality ? `Personality:\n${character.personality}` : '',
+      character.scenario ? `Scenario:\n${character.scenario}` : '',
+      otherReactionsSummary
+        ? `Other Configured Reactions:\n${otherReactionsSummary}`
+        : '',
+    ]
+      .filter(Boolean)
+      .join('\n\n');
+
+    const visionImagesForCall = visionSupported
+      ? Array.from(
+          new Set([
+            ...activeCharacterVisionUrls,
+            ...(item.uri.startsWith('data:image/') ? [item.uri] : []),
+          ])
+        )
+      : undefined;
+
+    const prompt = [
+      `Write a concise, vivid 1-sentence trigger condition specifying when ${character.name || '{{char}}'} should display the "${item.name || 'neutral'}" reaction/expression image during roleplay.`,
+      item.triggerRule.trim()
+        ? `Current Draft / Hint: "${item.triggerRule.trim()}"`
+        : '',
+      `Base it directly on {{char}}'s personality, emotional quirks, and attached tags. Output ONLY the 1-sentence trigger rule without quotes.`,
+    ]
+      .filter(Boolean)
+      .join('\n');
+
+    try {
+      const detailed = await generateCompletionDetailed(
+        prompt,
+        characterFullContext,
+        aiConfig,
+        controller.signal,
+        {
+          maxTokens: Math.max(4096, aiConfig.maxTokens || 4096),
+          temperature: 0.65,
+          activeTheme,
+          allTags: tags,
+          characterTags: character.tags,
+          imageDataUrls:
+            visionImagesForCall && visionImagesForCall.length > 0
+              ? visionImagesForCall
+              : undefined,
+          onVisionFallback: (warning) => setVisionFallbackBanner(warning),
+        }
+      );
+
+      if (!controller.signal.aborted && detailed.content.trim()) {
+        handleUpdateReactionItem(item.id, {
+          triggerRule: detailed.content.trim().replace(/^["']|["']$/g, ''),
+        });
+      }
+    } catch (err: unknown) {
+      if (err instanceof DOMException && err.name === 'AbortError') return;
+      if (err instanceof AIServiceError) {
+        setConceptError({
+          message: err.message,
+          corsHint: err.isCorsOrNetworkError ? err.corsHint : undefined,
+        });
+      } else {
+        setConceptError({
+          message: 'Failed to generate reaction trigger rule with AI.',
+        });
+      }
+    } finally {
+      if (!controller.signal.aborted) {
+        setGeneratingReactionId(null);
+      }
+    }
+  };
+
+  const handleCompileReactionRulesToCard = () => {
+    const cleanPostHistory = (character.post_history_instructions || '')
+      .replace(
+        /\n*\[System Directive: Character Reaction & Expression Triggers\][\s\S]*?(?=\n*\[System Directive:|$)/i,
+        ''
+      )
+      .trim();
+
+    if (reactionImages.length === 0) {
+      updateCharacterField('post_history_instructions', cleanPostHistory);
+      setReactionBanner(
+        'Cleared previous Reaction & Expression Triggers block from Post-History Instructions.'
+      );
+      scheduleTimer(() => setReactionBanner(null), 3500);
+      return;
+    }
+
+    const ruleLines = reactionImages.map((item) => {
+      const cleanName = (item.name || 'neutral').trim() || 'neutral';
+      const cleanRule =
+        (item.triggerRule || '').trim() ||
+        `Shows when ${character.name || '{{char}}'} expresses ${cleanName}.`;
+      const isExternalUrl = /^https?:\/\//i.test(item.uri);
+      const cue = isExternalUrl
+        ? `![${cleanName}](${item.uri})`
+        : `[${cleanName}] / ![${cleanName}](${cleanName}.${item.ext || 'webp'})`;
+      return `- ${cleanName} | Trigger: ${cleanRule} | Cue: ${cue}`;
+    });
+
+    const compiledBlock = [
+      '[System Directive: Character Reaction & Expression Triggers]',
+      'Match {{char}}\'s emotional state to the closest reaction below and include its expression cue when the trigger condition occurs:',
+      ...ruleLines,
+    ].join('\n');
+
+    const updatedPostHistory = [cleanPostHistory, compiledBlock]
+      .filter(Boolean)
+      .join('\n\n');
+
+    updateCharacterField('post_history_instructions', updatedPostHistory);
+    setReactionBanner(
+      `Compiled ${reactionImages.length} reaction trigger rule${reactionImages.length === 1 ? '' : 's'} into Post-History Instructions (Stat Tracker preserved).`
+    );
+    scheduleTimer(() => setReactionBanner(null), 4000);
+  };
 
   // Reusable SillyTavern 2:3 Portrait Slot Component
   const renderPortraitUploaderSlot = () => {
@@ -2088,6 +2421,360 @@ export const CharacterEditor: React.FC = () => {
                 style={{ color: 'var(--theme-accent)' }}
               />
               <span>Apply Stat Tracker to Character</span>
+            </button>
+          </div>
+        </div>
+      )}
+    </section>
+  );
+
+  // Full-Width Collapsible SillyTavern V3 Character Reaction Images & Expressions Studio (Collapsed by Default)
+  const renderReactionImagesPanel = () => (
+    <section
+      style={{
+        borderColor: 'color-mix(in srgb, var(--theme-accent) 45%, transparent)',
+      }}
+      className="w-full rounded-xl border bg-white dark:bg-slate-900 p-4 sm:p-5 space-y-4 shadow-2xs"
+    >
+      <input
+        ref={reactionFileInputRef}
+        type="file"
+        multiple
+        accept="image/png,image/jpeg,image/webp,.png,.jpg,.jpeg,.webp"
+        className="hidden"
+        onChange={(e) => {
+          void handleUploadReactionFiles(e.target.files);
+          e.target.value = '';
+        }}
+      />
+
+      {/* Expandable Section Header */}
+      <div
+        className={`flex flex-wrap items-center justify-between gap-3 ${
+          reactionsExpanded
+            ? 'border-b border-slate-200 dark:border-slate-800 pb-3.5'
+            : ''
+        }`}
+      >
+        <div className="flex items-center gap-2.5 min-w-0">
+          <button
+            type="button"
+            onClick={() => setReactionsExpanded((prev) => !prev)}
+            className="flex items-center gap-2 text-left cursor-pointer group"
+          >
+            <Smile
+              className="h-4 w-4 shrink-0"
+              style={{ color: 'var(--theme-accent)' }}
+            />
+            <h2 className="text-sm font-bold text-slate-900 dark:text-white group-hover:underline">
+              Character Reaction Images
+            </h2>
+            <span className="inline-flex items-center gap-1 rounded-md border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 px-2 py-0.5 text-[11px] font-medium text-slate-600 dark:text-slate-300">
+              {reactionsExpanded ? (
+                <>
+                  <ChevronUp className="h-3 w-3" />
+                  <span>Collapse</span>
+                </>
+              ) : (
+                <>
+                  <ChevronDown className="h-3 w-3" />
+                  <span>
+                    Expand ({reactionImages.length} Reaction
+                    {reactionImages.length === 1 ? '' : 's'})
+                  </span>
+                </>
+              )}
+            </span>
+          </button>
+          <Tooltip
+            title="SillyTavern V3 Reaction Assets"
+            content="Embed expression sprites into V3 .PNG (ccv3) & .JSON data.assets, or link hosted reaction URLs, and compile AI trigger rules into Post-History Instructions."
+          />
+        </div>
+
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            onClick={() => reactionFileInputRef.current?.click()}
+            style={{ borderColor: 'var(--theme-accent)' }}
+            className="theme-hover-outline flex items-center gap-1.5 rounded-lg border bg-slate-900 dark:bg-white px-3 py-1.5 text-xs font-semibold text-white dark:text-slate-900 cursor-pointer"
+          >
+            {isUploadingReactions ? (
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            ) : (
+              <Upload className="h-3.5 w-3.5" />
+            )}
+            <span>Upload / Drop Reaction Images</span>
+          </button>
+        </div>
+      </div>
+
+      {reactionBanner && (
+        <div className="flex items-center justify-between gap-2 rounded-lg border border-emerald-500/40 bg-emerald-500/10 px-3.5 py-2.5 text-xs text-emerald-800 dark:text-emerald-200">
+          <div className="flex items-center gap-2">
+            <Check className="h-4 w-4 text-emerald-500 shrink-0" />
+            <span>{reactionBanner}</span>
+          </div>
+          <button
+            type="button"
+            onClick={() => setReactionBanner(null)}
+            className="text-emerald-600 dark:text-emerald-300 cursor-pointer"
+          >
+            <X className="h-3.5 w-3.5" />
+          </button>
+        </div>
+      )}
+
+      {reactionsExpanded && (
+        <div className="space-y-4">
+          {/* 1. Add Reactions Toolbar: Dropzone + External URL Form */}
+          <div
+            style={{
+              gridTemplateColumns:
+                'repeat(auto-fit, minmax(min(100%, 300px), 1fr))',
+            }}
+            className="grid gap-3"
+          >
+            <div
+              onDragOver={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                setIsDraggingReactionFiles(true);
+              }}
+              onDragLeave={(e) => {
+                e.stopPropagation();
+                setIsDraggingReactionFiles(false);
+              }}
+              onDrop={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                setIsDraggingReactionFiles(false);
+                if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+                  void handleUploadReactionFiles(e.dataTransfer.files);
+                }
+              }}
+              onClick={() => reactionFileInputRef.current?.click()}
+              style={
+                isDraggingReactionFiles
+                  ? { borderColor: 'var(--theme-accent)' }
+                  : undefined
+              }
+              className={`flex flex-col items-center justify-center rounded-xl border border-dashed p-4 text-center transition-colors cursor-pointer ${
+                isDraggingReactionFiles
+                  ? 'bg-slate-100 dark:bg-slate-800/80 text-slate-900 dark:text-white'
+                  : 'border-slate-300 dark:border-slate-800 bg-slate-50/60 dark:bg-slate-950/60 text-slate-500 dark:text-slate-400 hover:border-slate-400'
+              }`}
+            >
+              <Upload
+                className="h-4 w-4 mb-1.5"
+                style={{ color: 'var(--theme-accent)' }}
+              />
+              <span className="text-xs font-semibold text-slate-800 dark:text-slate-200">
+                Upload / Drop Reaction Images (.png, .jpg, .webp)
+              </span>
+              <span className="mt-0.5 text-[11px] text-slate-500">
+                Multi-select supported · Auto-named from filename &amp; compressed to ≤640px WebP
+              </span>
+            </div>
+
+            <form
+              onSubmit={handleAddReactionUrl}
+              className="flex flex-col justify-between gap-2.5 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50/60 dark:bg-slate-950/60 p-3.5"
+            >
+              <div className="flex items-center gap-1.5 text-xs font-semibold text-slate-800 dark:text-slate-200">
+                <Link
+                  className="h-3.5 w-3.5"
+                  style={{ color: 'var(--theme-accent)' }}
+                />
+                <span>Add Image URL</span>
+              </div>
+              <div className="flex flex-col sm:flex-row gap-2">
+                <input
+                  type="text"
+                  value={reactionUrlName}
+                  onChange={(e) => setReactionUrlName(e.target.value)}
+                  placeholder="Name (e.g., blush)"
+                  className="theme-focus-ring sm:w-32 rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-2.5 py-1.5 text-xs text-slate-900 dark:text-white"
+                />
+                <input
+                  type="url"
+                  value={reactionUrlInput}
+                  onChange={(e) => setReactionUrlInput(e.target.value)}
+                  placeholder="https://example.com/sprites/blush.webp"
+                  className="theme-focus-ring flex-1 rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-2.5 py-1.5 text-xs text-slate-900 dark:text-white"
+                />
+                <button
+                  type="submit"
+                  disabled={!reactionUrlInput.trim()}
+                  style={{ borderColor: 'var(--theme-accent)' }}
+                  className="theme-hover-outline rounded-lg border bg-white dark:bg-slate-900 px-3 py-1.5 text-xs font-semibold text-slate-900 dark:text-white disabled:opacity-45 cursor-pointer whitespace-nowrap"
+                >
+                  Add URL
+                </button>
+              </div>
+            </form>
+          </div>
+
+          {/* 2. Reaction Cards Grid */}
+          {reactionImages.length > 0 ? (
+            <div
+              style={{
+                gridTemplateColumns:
+                  'repeat(auto-fill, minmax(min(100%, 260px), 1fr))',
+              }}
+              className="grid gap-4"
+            >
+              {reactionImages.map((item) => {
+                const isGeneratingThis = generatingReactionId === item.id;
+                return (
+                  <div
+                    key={item.id}
+                    style={{
+                      borderColor:
+                        'color-mix(in srgb, var(--theme-accent) 28%, transparent)',
+                    }}
+                    className="rounded-xl border bg-slate-50/70 dark:bg-slate-950/70 p-3 space-y-3 flex flex-col"
+                  >
+                    {/* Thumbnail Preview */}
+                    <div className="relative aspect-[2/3] w-full overflow-hidden rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-900/90 flex items-center justify-center">
+                      <img
+                        src={item.uri}
+                        alt={item.name || 'reaction'}
+                        className="h-full w-full object-contain"
+                      />
+                      <span className="absolute top-2 left-2 rounded bg-black/70 px-1.5 py-0.5 font-mono text-[10px] font-semibold uppercase text-slate-200">
+                        .{item.ext || 'webp'}
+                      </span>
+                      <div className="absolute top-2 right-2 flex items-center gap-1">
+                        <button
+                          type="button"
+                          onClick={() => void handleDownloadReactionSprite(item)}
+                          title="Download reaction sprite"
+                          className="rounded-md bg-black/70 p-1.5 text-slate-200 hover:text-white cursor-pointer"
+                        >
+                          <Download className="h-3.5 w-3.5" />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleDeleteReactionItem(item.id)}
+                          title="Delete reaction sprite"
+                          className="rounded-md bg-black/70 p-1.5 text-rose-300 hover:text-rose-200 cursor-pointer"
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* Reaction / Emotion Name + Preset Dropdown */}
+                    <div className="space-y-1">
+                      <label className="block text-[10px] font-semibold uppercase tracking-wider text-slate-500">
+                        Reaction / Emotion Name
+                      </label>
+                      <div className="flex items-center gap-1.5">
+                        <input
+                          type="text"
+                          value={item.name}
+                          onChange={(e) =>
+                            handleUpdateReactionItem(item.id, {
+                              name: e.target.value,
+                            })
+                          }
+                          placeholder="e.g., blush, smug, desire"
+                          className="theme-focus-ring flex-1 min-w-0 rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-2.5 py-1.5 font-mono text-xs font-semibold text-slate-900 dark:text-white"
+                        />
+                        <select
+                          value={
+                            REACTION_EXPRESSION_PRESETS.includes(item.name)
+                              ? item.name
+                              : ''
+                          }
+                          onChange={(e) => {
+                            if (e.target.value) {
+                              handleUpdateReactionItem(item.id, {
+                                name: e.target.value,
+                              });
+                            }
+                          }}
+                          title="Quick-select SillyTavern expression preset"
+                          className="theme-focus-ring w-28 shrink-0 rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-2 py-1.5 text-[11px] font-medium text-slate-700 dark:text-slate-200 cursor-pointer"
+                        >
+                          <option value="">Presets...</option>
+                          {REACTION_EXPRESSION_PRESETS.map((preset) => (
+                            <option key={preset} value={preset}>
+                              {preset}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                    </div>
+
+                    {/* Trigger Rule + AI Generate */}
+                    <div className="space-y-1.5 mt-auto">
+                      <div className="flex items-center justify-between gap-2">
+                        <label className="text-[11px] font-medium text-slate-600 dark:text-slate-300">
+                          When Should This Reaction Show?
+                        </label>
+                        <button
+                          type="button"
+                          disabled={isGeneratingThis}
+                          onClick={() =>
+                            void handleGenerateReactionRuleWithAI(item)
+                          }
+                          style={{ borderColor: 'var(--theme-accent)' }}
+                          className="theme-hover-outline inline-flex items-center gap-1 rounded-md border bg-white dark:bg-slate-900 px-2 py-0.5 text-[10px] font-semibold text-slate-900 dark:text-white disabled:opacity-50 cursor-pointer shrink-0"
+                        >
+                          {isGeneratingThis ? (
+                            <Loader2
+                              className="h-3 w-3 animate-spin"
+                              style={{ color: 'var(--theme-accent)' }}
+                            />
+                          ) : (
+                            <Sparkles
+                              className="h-3 w-3"
+                              style={{ color: 'var(--theme-accent)' }}
+                            />
+                          )}
+                          <span>✨ AI Generate</span>
+                        </button>
+                      </div>
+                      <textarea
+                        rows={2}
+                        value={item.triggerRule}
+                        onChange={(e) =>
+                          handleUpdateReactionItem(item.id, {
+                            triggerRule: e.target.value,
+                          })
+                        }
+                        placeholder="Describe when {{char}} shows this reaction..."
+                        className="theme-focus-ring w-full rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-2.5 py-1.5 text-xs text-slate-800 dark:text-slate-200 resize-y"
+                      />
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          ) : (
+            <div className="rounded-xl border border-dashed border-slate-300 dark:border-slate-800 p-6 text-center text-xs text-slate-400">
+              No reaction sprites added yet. Upload/drop expression images above or paste an image URL to embed V3 <code className="font-mono">data.assets</code> and compile AI reaction triggers.
+            </div>
+          )}
+
+          {/* 3. Compiler CTA */}
+          <div className="flex flex-wrap items-center justify-between gap-3 pt-1">
+            <span className="text-[11px] text-slate-500">
+              Compiles triggers into <code className="font-mono">post_history_instructions</code> without overwriting your Stat Tracker block.
+            </span>
+            <button
+              type="button"
+              onClick={handleCompileReactionRulesToCard}
+              style={{ borderColor: 'var(--theme-accent)' }}
+              className="theme-hover-outline flex items-center justify-center gap-2 rounded-lg border bg-slate-900 dark:bg-white px-4 py-2 text-xs font-semibold text-white dark:text-slate-900 cursor-pointer"
+            >
+              <Zap
+                className="h-4 w-4 shrink-0"
+                style={{ color: 'var(--theme-accent)' }}
+              />
+              <span>Apply Reaction Rules to Character</span>
             </button>
           </div>
         </div>
@@ -3138,10 +3825,11 @@ export const CharacterEditor: React.FC = () => {
               </div>
             )}
 
-            {/* Step 5: Full-Width Stat Tracker & Final Review */}
+            {/* Step 5: Full-Width Stat Tracker, Reaction Images & Final Review */}
             {wizardStep === 5 && (
               <div className="space-y-6">
                 {renderStatBlockBuilderPanel()}
+                {renderReactionImagesPanel()}
 
                 <div
                   style={{
@@ -3391,6 +4079,9 @@ export const CharacterEditor: React.FC = () => {
 
             {/* Full-Width Character Stat Tracker Section */}
             {renderStatBlockBuilderPanel()}
+
+            {/* Full-Width Character Reaction Images & Expressions Studio */}
+            {renderReactionImagesPanel()}
 
             {/* Full-Width Character Definition Editors */}
             <div className="space-y-5">
