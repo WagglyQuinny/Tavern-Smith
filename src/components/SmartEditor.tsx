@@ -18,7 +18,6 @@ import {
   ChevronDown,
   ChevronRight,
   Brain,
-  PlusCircle,
   Image as ImageIcon,
   Upload,
 } from 'lucide-react';
@@ -39,6 +38,7 @@ import {
 } from '../services/aiService';
 import { readImageFileAsDataUrl } from '../utils/cardIO';
 import { estimateTokens } from '../utils/tokenCounter';
+import { ContextReferenceImage } from '../types';
 import { Tooltip } from './Tooltip';
 
 export interface MacroDefinition {
@@ -103,8 +103,7 @@ export interface SmartEditorProps {
   extraContextSummary?: string;
   additionalTags?: string[];
   enablePortraitVision?: boolean;
-  usePortraitVisionContext?: boolean;
-  onTogglePortraitVisionContext?: (enabled: boolean) => void;
+  extraContextImages?: ContextReferenceImage[];
 }
 
 /**
@@ -154,8 +153,7 @@ export const SmartEditor: React.FC<SmartEditorProps> = ({
   extraContextSummary,
   additionalTags = [],
   enablePortraitVision = true,
-  usePortraitVisionContext,
-  onTogglePortraitVisionContext,
+  extraContextImages = [],
 }) => {
   const {
     character,
@@ -174,7 +172,6 @@ export const SmartEditor: React.FC<SmartEditorProps> = ({
   const ghostText = fieldDraft.ghostText;
   const showGenerateBar = fieldDraft.showGenerateBar;
   const customInstruction = fieldDraft.customInstruction;
-  const assistMode = fieldDraft.assistMode;
   const tempReferenceImageUrl = fieldDraft.tempReferenceImageUrl ?? null;
   const tempReferenceImageName = fieldDraft.tempReferenceImageName ?? '';
 
@@ -196,11 +193,6 @@ export const SmartEditor: React.FC<SmartEditorProps> = ({
   const setCustomInstruction = useCallback(
     (next: string) =>
       updateSmartEditorDraft(resolvedScopeKey, { customInstruction: next }),
-    [resolvedScopeKey, updateSmartEditorDraft]
-  );
-  const setAssistMode = useCallback(
-    (next: 'replace' | 'append') =>
-      updateSmartEditorDraft(resolvedScopeKey, { assistMode: next }),
     [resolvedScopeKey, updateSmartEditorDraft]
   );
   const setTempReferenceImageUrl = useCallback(
@@ -240,30 +232,10 @@ export const SmartEditor: React.FC<SmartEditorProps> = ({
   } | null>(null);
 
   // On-Demand Multimodal Vision Context state (NEVER used by Ghost-Text)
-  const [localUsePortraitVision, setLocalUsePortraitVision] = useState<boolean>(
-    Boolean(usePortraitVisionContext)
-  );
   const [isDraggingRefImage, setIsDraggingRefImage] = useState(false);
   const [visionFallbackToast, setVisionFallbackToast] = useState<string | null>(
     null
   );
-
-  useEffect(() => {
-    if (typeof usePortraitVisionContext === 'boolean') {
-      setLocalUsePortraitVision(usePortraitVisionContext);
-    }
-  }, [usePortraitVisionContext]);
-
-  const isPortraitVisionEnabled =
-    typeof usePortraitVisionContext === 'boolean'
-      ? usePortraitVisionContext
-      : localUsePortraitVision;
-
-  const handleTogglePortraitVision = () => {
-    const next = !isPortraitVisionEnabled;
-    setLocalUsePortraitVision(next);
-    onTogglePortraitVisionContext?.(next);
-  };
 
   const visionSupported = useMemo(
     () => doesBackendSupportVision(aiConfig),
@@ -274,6 +246,31 @@ export const SmartEditor: React.FC<SmartEditorProps> = ({
     enablePortraitVision && character.avatar && character.avatar.startsWith('data:image/')
   );
 
+  const extraContextUrls = useMemo(
+    () => extraContextImages.map((img) => img.dataUrl).filter(Boolean),
+    [extraContextImages]
+  );
+
+  const providedImageUrls = useMemo(
+    () =>
+      Array.from(
+        new Set(
+          [
+            ...(hasCharacterPortrait && character.avatar ? [character.avatar] : []),
+            ...extraContextUrls,
+            ...(tempReferenceImageUrl ? [tempReferenceImageUrl] : []),
+          ].filter(Boolean)
+        )
+      ),
+    [hasCharacterPortrait, character.avatar, extraContextUrls, tempReferenceImageUrl]
+  );
+
+  // Images are automatically added to context ONLY when the selected model supports images
+  const activeVisionImageUrls = useMemo(
+    () => (visionSupported ? providedImageUrls : []),
+    [visionSupported, providedImageUrls]
+  );
+
   // Timers and AbortControllers for strict memory & race-condition hygiene
   const ghostDebounceTimerRef = useRef<number | null>(null);
   const blurMacroTimerRef = useRef<number | null>(null);
@@ -282,10 +279,15 @@ export const SmartEditor: React.FC<SmartEditorProps> = ({
 
   const tokenCount = useMemo(() => estimateTokens(value), [value]);
 
-  const combinedActiveTagNames = useMemo(
-    () => Array.from(new Set([...(character.tags || []), ...additionalTags])),
-    [character.tags, additionalTags]
-  );
+  const combinedActiveTagNames = useMemo(() => {
+    if (
+      fieldKey.startsWith('lorebook_') ||
+      fieldKey === 'theme_ai_context_prompt'
+    ) {
+      return Array.from(new Set(additionalTags));
+    }
+    return Array.from(new Set([...(character.tags || []), ...additionalTags]));
+  }, [fieldKey, character.tags, additionalTags]);
 
   const effectiveFormatLabel = useMemo(() => {
     const fmt = resolveEffectiveFormat(aiConfig);
@@ -500,12 +502,45 @@ export const SmartEditor: React.FC<SmartEditorProps> = ({
   ]);
 
   const previewSentContextText = useMemo(() => {
-    return buildFullSystemPromptForRequest(cardContextSnapshot, {
-      activeTheme,
-      allTags: tags,
-      characterTags: combinedActiveTagNames,
-    });
-  }, [cardContextSnapshot, activeTheme, tags, combinedActiveTagNames]);
+    const baseSystemPrompt = buildFullSystemPromptForRequest(
+      cardContextSnapshot,
+      {
+        activeTheme,
+        allTags: tags,
+        characterTags: combinedActiveTagNames,
+      }
+    );
+    const notes: string[] = [];
+    if (value.trim()) {
+      notes.push(`[Current "${label}" Draft Included: ${value.trim().length} chars]`);
+    }
+    if (customInstruction.trim()) {
+      notes.push(`[User Prompt Instruction: "${customInstruction.trim()}"]`);
+    }
+    if (activeVisionImageUrls.length > 0) {
+      notes.push(
+        `[Visual Context Attached: ${activeVisionImageUrls.length} image(s)]`
+      );
+    } else if (!visionSupported && providedImageUrls.length > 0) {
+      notes.push(
+        `[Visual Context Skipped: selected model does not support images]`
+      );
+    }
+    return notes.length > 0
+      ? `${baseSystemPrompt}\n\n${notes.join('\n')}`
+      : baseSystemPrompt;
+  }, [
+    cardContextSnapshot,
+    activeTheme,
+    tags,
+    combinedActiveTagNames,
+    value,
+    label,
+    customInstruction,
+    activeVisionImageUrls.length,
+    visionSupported,
+    providedImageUrls.length,
+  ]);
 
   // Keep latest ambient context in a ref so background auto-save or tag re-renders
   // never cancel an active paused-typing AI suggestion request.
@@ -624,9 +659,10 @@ export const SmartEditor: React.FC<SmartEditorProps> = ({
     setGhostText,
   ]);
 
-  // 1-Click "✨ Describe Appearance from Portrait" action for the Description field
-  const handleDescribeAppearanceFromPortrait = async () => {
-    if (!character.avatar) return;
+  // Handle per-field "AI Generate" action (automatically includes all provided images when selected model supports vision)
+  const handleGenerateField = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+
     if (generateAbortControllerRef.current) {
       generateAbortControllerRef.current.abort();
     }
@@ -639,13 +675,29 @@ export const SmartEditor: React.FC<SmartEditorProps> = ({
     generateAbortControllerRef.current = controller;
     setIsGeneratingField(true);
 
+    const visionContextDirective =
+      activeVisionImageUrls.length > 0
+        ? `Visual Reference Context: ${activeVisionImageUrls.length} image(s) attached (~260 tokens each). Inspect the attached visual details carefully (appearance, attire, expression, setting, objects, or mood) and incorporate them naturally into the generated "${label}" field.`
+        : '';
+
+    const userDirective = customInstruction.trim()
+      ? `Custom Instruction from Creator: "${customInstruction.trim()}"`
+      : 'Write vivid, high-craft SillyTavern content tailored to the active Context Theme, semantic tags, and all provided text/visual context.';
+
+    const targetLabel = fieldKey.startsWith('lorebook_')
+      ? label
+      : fieldKey === 'theme_ai_context_prompt'
+        ? `Context Theme Style Prompt`
+        : `"${label}" (${fieldKey}) field for "${character.name || '{{char}}'}"`;
+
     const promptText = [
-      `Inspect the attached Character Portrait image carefully and write a vivid, high-craft SillyTavern physical appearance & attire description for "${character.name || '{{char}}'}".`,
-      `Include facial features, eye/hair details, physique/build, clothing/armor/accessories, posture, and visual aura.`,
+      `Write or refine ${targetLabel}.`,
+      userDirective,
+      visionContextDirective,
       value.trim()
-        ? `\nExisting Description Draft (integrate or enrich with visual details from the portrait):\n${value}`
-        : '',
-      `\nOutput ONLY the raw Markdown description content using {{char}} where appropriate, without conversational filler.`,
+        ? `\nCurrent "${label}" Draft (improve, expand, or update according to the instructions and context):\n${value}`
+        : `\nThe "${label}" field is currently empty. Generate a complete, compelling entry.`,
+      `\nOutput ONLY the raw content for the "${label}" field without conversational filler or markdown code fences.`,
     ]
       .filter(Boolean)
       .join('\n');
@@ -662,7 +714,10 @@ export const SmartEditor: React.FC<SmartEditorProps> = ({
           activeTheme,
           allTags: tags,
           characterTags: combinedActiveTagNames,
-          imageDataUrl: character.avatar,
+          imageDataUrls:
+            activeVisionImageUrls.length > 0
+              ? activeVisionImageUrls
+              : undefined,
           onVisionFallback: (warning) => setVisionFallbackToast(warning),
         }
       );
@@ -675,138 +730,7 @@ export const SmartEditor: React.FC<SmartEditorProps> = ({
           if (detailed.reasoning) {
             setLastReasoning(detailed.reasoning);
           }
-          if (value.trim()) {
-            const separator = value.endsWith('\n') ? '\n' : '\n\n';
-            onChange(`${value}${separator}${detailed.content.trim()}`);
-          } else {
-            onChange(detailed.content.trim());
-          }
-        } else {
-          setAiError({
-            message:
-              'Model returned an empty appearance description. Verify your model and max tokens.',
-          });
-        }
-      }
-    } catch (err: unknown) {
-      if (err instanceof DOMException && err.name === 'AbortError') {
-        return;
-      }
-      if (err instanceof AIServiceError) {
-        setAiError({
-          message: err.message,
-          corsHint: err.isCorsOrNetworkError ? err.corsHint : undefined,
-        });
-      } else {
-        setAiError({
-          message:
-            err instanceof Error
-              ? err.message
-              : 'Portrait vision description failed.',
-        });
-      }
-    } finally {
-      if (!controller.signal.aborted) {
-        setIsGeneratingField(false);
-      }
-    }
-  };
-
-  // Handle per-field "AI Assist" generation (Rewrite Field or Append to Field)
-  const handleGenerateField = async (
-    modeOverride?: 'replace' | 'append',
-    e?: React.FormEvent
-  ) => {
-    if (e) e.preventDefault();
-    const targetMode = modeOverride || assistMode;
-
-    if (generateAbortControllerRef.current) {
-      generateAbortControllerRef.current.abort();
-    }
-    cancelPendingGhostRequest();
-    setGhostText('');
-    setAiError(null);
-    setVisionFallbackToast(null);
-
-    const controller = new AbortController();
-    generateAbortControllerRef.current = controller;
-    setIsGeneratingField(true);
-
-    // Resolve active visual context image (Temporary Reference Image takes precedence, otherwise Portrait if toggled on)
-    const activeVisionImageUrl = visionSupported
-      ? tempReferenceImageUrl ||
-        (hasCharacterPortrait && isPortraitVisionEnabled
-          ? character.avatar
-          : undefined)
-      : undefined;
-
-    const visionContextDirective = activeVisionImageUrl
-      ? tempReferenceImageUrl
-        ? 'An optional Reference Image is attached (~260 tokens). Inspect the visual details in the attached image (setting, attire, item, or appearance) and weave them naturally into the generated field.'
-        : 'The Character Portrait image is attached (~260 tokens). Ensure all visual, attire, and physical details match the attached portrait.'
-      : '';
-
-    const userDirective = customInstruction.trim()
-      ? `Custom Instruction from Creator: "${customInstruction.trim()}"`
-      : 'Write vivid, high-craft SillyTavern roleplay content tailored to the active Context Theme and semantic tags.';
-
-    const targetLabel = fieldKey.startsWith('lorebook_')
-      ? label
-      : `"${label}" (${fieldKey}) field for "${character.name || '{{char}}'}"`;
-
-    const promptText =
-      targetMode === 'append' && value.trim()
-        ? [
-            `Continue and append a new paragraph or section to ${targetLabel}.`,
-            userDirective,
-            visionContextDirective,
-            `\nExisting "${label}" Content (do NOT repeat this; write only the new continuation to append):\n${value}`,
-          ]
-            .filter(Boolean)
-            .join('\n')
-        : [
-            `Write or refine ${targetLabel}.`,
-            userDirective,
-            visionContextDirective,
-            value.trim()
-              ? `\nCurrent "${label}" Draft (improve, expand, or rewrite according to the instructions):\n${value}`
-              : `\nThe "${label}" field is currently empty. Generate a complete, compelling entry.`,
-            `\nOutput ONLY the raw content for the "${label}" field without conversational filler or markdown code fences.`,
-          ]
-            .filter(Boolean)
-            .join('\n');
-
-    try {
-      const detailed = await generateCompletionDetailed(
-        promptText,
-        cardContextSnapshot,
-        aiConfig,
-        controller.signal,
-        {
-          maxTokens: resolveEffectiveMaxTokens(aiConfig, aiConfig.maxTokens),
-          temperature: aiConfig.temperature,
-          activeTheme,
-          allTags: tags,
-          characterTags: combinedActiveTagNames,
-          imageDataUrl: activeVisionImageUrl,
-          onVisionFallback: (warning) => setVisionFallbackToast(warning),
-        }
-      );
-
-      if (!controller.signal.aborted) {
-        if (detailed.content.trim()) {
-          if (detailed.visionFallbackWarning) {
-            setVisionFallbackToast(detailed.visionFallbackWarning);
-          }
-          if (detailed.reasoning) {
-            setLastReasoning(detailed.reasoning);
-          }
-          if (targetMode === 'append' && value.trim()) {
-            const separator = value.endsWith('\n') ? '\n' : '\n\n';
-            onChange(`${value}${separator}${detailed.content.trim()}`);
-          } else {
-            onChange(detailed.content.trim());
-          }
+          onChange(detailed.content.trim());
           setCustomInstruction('');
         } else {
           setAiError({
@@ -914,37 +838,8 @@ export const SmartEditor: React.FC<SmartEditorProps> = ({
           </span>
         </div>
 
-        {/* Right Header Controls: 1-Click Describe Appearance from Portrait (on Description field) + Macro Quick-Insert + AI Assist */}
+        {/* Right Header Controls: Macro Quick-Insert + AI Assist Drawer Toggle */}
         <div className="flex flex-wrap items-center gap-2">
-          {visionSupported &&
-            hasCharacterPortrait &&
-            fieldKey === 'description' && (
-              <button
-                type="button"
-                disabled={isGeneratingField}
-                onClick={handleDescribeAppearanceFromPortrait}
-                style={{
-                  borderColor:
-                    'color-mix(in srgb, var(--theme-accent) 55%, transparent)',
-                }}
-                title="Have the AI look at your portrait and write or expand the appearance description"
-                className="theme-hover-outline flex items-center gap-1.5 rounded-md border bg-slate-50 dark:bg-slate-950 px-2.5 py-1 text-[11px] font-semibold text-slate-800 dark:text-slate-200 disabled:opacity-50 cursor-pointer whitespace-nowrap"
-              >
-                {isGeneratingField ? (
-                  <Loader2
-                    className="h-3 w-3 animate-spin"
-                    style={{ color: 'var(--theme-accent)' }}
-                  />
-                ) : (
-                  <Sparkles
-                    className="h-3 w-3"
-                    style={{ color: 'var(--theme-accent)' }}
-                  />
-                )}
-                <span>✨ Describe from Portrait</span>
-              </button>
-            )}
-
           <button
             type="button"
             onClick={() => {
@@ -983,25 +878,23 @@ export const SmartEditor: React.FC<SmartEditorProps> = ({
               />
             )}
             <span>AI Assist</span>
-            {visionSupported &&
-              (tempReferenceImageUrl ||
-                (hasCharacterPortrait && isPortraitVisionEnabled)) && (
-                <span
-                  title="Visual Context Active (~260 tokens)"
-                  className="ml-0.5 rounded bg-emerald-500/15 px-1 py-0.2 font-mono text-[9px] font-bold text-emerald-700 dark:text-emerald-300"
-                >
-                  👁️
-                </span>
-              )}
+            {activeVisionImageUrls.length > 0 && (
+              <span
+                title={`Auto-including ${activeVisionImageUrls.length} image(s) in AI context`}
+                className="ml-0.5 rounded bg-emerald-500/15 px-1 py-0.2 font-mono text-[9px] font-bold text-emerald-700 dark:text-emerald-300"
+              >
+                👁️ {activeVisionImageUrls.length}
+              </span>
+            )}
           </button>
         </div>
       </div>
 
-      {/* Expandable Per-Field "AI Assist" Drawer */}
+      {/* Expandable Per-Field "AI Generate" Drawer */}
       {showGenerateBar && (
         <div className="border-b border-slate-200 dark:border-slate-800 bg-slate-50/95 dark:bg-slate-950/95 px-3.5 py-3 space-y-2.5">
           <form
-            onSubmit={(e) => handleGenerateField(assistMode, e)}
+            onSubmit={handleGenerateField}
             className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2"
           >
             <input
@@ -1013,44 +906,18 @@ export const SmartEditor: React.FC<SmartEditorProps> = ({
             />
             <div className="flex items-center gap-1.5 shrink-0">
               <button
-                type="button"
+                type="submit"
                 disabled={isGeneratingField}
-                onClick={() => {
-                  setAssistMode('replace');
-                  handleGenerateField('replace');
-                }}
                 style={{ borderColor: 'var(--theme-accent)' }}
                 className="theme-hover-outline flex items-center gap-1.5 rounded-md border bg-slate-900 dark:bg-white px-3 py-1.5 text-xs font-semibold text-white dark:text-slate-900 disabled:opacity-50 cursor-pointer whitespace-nowrap"
               >
-                {isGeneratingField && assistMode === 'replace' ? (
+                {isGeneratingField ? (
                   <Loader2 className="h-3.5 w-3.5 animate-spin" />
                 ) : (
                   <Sparkles className="h-3.5 w-3.5" />
                 )}
-                <span>{value.trim() ? 'Rewrite Field' : 'Generate Field'}</span>
+                <span>AI Generate</span>
               </button>
-
-              {value.trim() && (
-                <button
-                  type="button"
-                  disabled={isGeneratingField}
-                  onClick={() => {
-                    setAssistMode('append');
-                    handleGenerateField('append');
-                  }}
-                  className="theme-hover-outline flex items-center gap-1 rounded-md border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-2.5 py-1.5 text-xs font-medium text-slate-700 dark:text-slate-200 disabled:opacity-50 cursor-pointer whitespace-nowrap"
-                >
-                  {isGeneratingField && assistMode === 'append' ? (
-                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                  ) : (
-                    <PlusCircle
-                      className="h-3.5 w-3.5"
-                      style={{ color: 'var(--theme-accent)' }}
-                    />
-                  )}
-                  <span>Append to Field</span>
-                </button>
-              )}
 
               {isGeneratingField ? (
                 <button
@@ -1070,7 +937,7 @@ export const SmartEditor: React.FC<SmartEditorProps> = ({
                   type="button"
                   onClick={() => setShowGenerateBar(false)}
                   className="rounded-md p-1 text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 cursor-pointer"
-                  title="Close AI Assist drawer"
+                  title="Close AI drawer"
                 >
                   <X className="h-4 w-4" />
                 </button>
@@ -1078,55 +945,26 @@ export const SmartEditor: React.FC<SmartEditorProps> = ({
             </div>
           </form>
 
-          {/* On-Demand Multimodal Vision Context Bar (Only shown when Vision is supported by active model) */}
-          {visionSupported && (
-            <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-slate-200/90 dark:border-slate-800/90 bg-white/80 dark:bg-slate-900/80 px-2.5 py-2">
-              <div className="flex flex-wrap items-center gap-2">
-                {hasCharacterPortrait && (
-                  <button
-                    type="button"
-                    onClick={handleTogglePortraitVision}
-                    style={
-                      isPortraitVisionEnabled
-                        ? {
-                            borderColor: 'var(--theme-accent)',
-                            backgroundColor:
-                              'color-mix(in srgb, var(--theme-accent) 14%, transparent)',
-                          }
-                        : undefined
-                    }
-                    className={`theme-hover-outline inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-[11px] font-semibold transition-colors cursor-pointer ${
-                      isPortraitVisionEnabled
-                        ? 'text-slate-900 dark:text-white'
-                        : 'border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 text-slate-600 dark:text-slate-400'
-                    }`}
-                  >
-                    <span>👁️ Include Portrait Image (~260 tok)</span>
-                    {isPortraitVisionEnabled && (
-                      <Check
-                        className="h-3 w-3 shrink-0"
-                        style={{ color: 'var(--theme-accent)' }}
-                      />
-                    )}
-                  </button>
-                )}
-
-                {hasCharacterPortrait && fieldKey === 'description' && (
-                  <button
-                    type="button"
-                    disabled={isGeneratingField}
-                    onClick={handleDescribeAppearanceFromPortrait}
-                    style={{ borderColor: 'var(--theme-accent)' }}
-                    className="theme-hover-outline inline-flex items-center gap-1 rounded-md border bg-slate-50 dark:bg-slate-950 px-2.5 py-1 text-[11px] font-semibold text-slate-800 dark:text-slate-200 disabled:opacity-50 cursor-pointer"
-                  >
-                    <Sparkles
-                      className="h-3 w-3"
-                      style={{ color: 'var(--theme-accent)' }}
-                    />
-                    <span>✨ Describe from Portrait</span>
-                  </button>
-                )}
-              </div>
+          {/* Automatic Vision Context Status & Per-Field Image Attachment */}
+          <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-slate-200/90 dark:border-slate-800/90 bg-white/80 dark:bg-slate-900/80 px-2.5 py-2">
+            <div className="flex flex-wrap items-center gap-2">
+              {visionSupported ? (
+                activeVisionImageUrls.length > 0 ? (
+                  <span className="inline-flex items-center gap-1 rounded-md border border-emerald-500/30 bg-emerald-500/10 px-2 py-1 font-mono text-[10px] font-semibold text-emerald-700 dark:text-emerald-300">
+                    👁️ Auto-including {activeVisionImageUrls.length} image
+                    {activeVisionImageUrls.length > 1 ? 's' : ''} in AI context
+                  </span>
+                ) : (
+                  <span className="text-[11px] text-slate-500 dark:text-slate-400">
+                    Attached images are automatically included in AI context
+                  </span>
+                )
+              ) : (
+                <span className="font-mono text-[10px] text-amber-600 dark:text-amber-400">
+                  Selected model doesn&apos;t support images (text-only context)
+                </span>
+              )}
+            </div>
 
               {/* Temporary Reference Image Slot (Never saved into final JSON/PNG card) */}
               <div
@@ -1212,7 +1050,6 @@ export const SmartEditor: React.FC<SmartEditorProps> = ({
                 )}
               </div>
             </div>
-          )}
 
           {/* AI Assist Sub-bar: Format indicator + Preview Prompt toggle + Thinking Notes toggle */}
           <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] text-slate-500 dark:text-slate-400">

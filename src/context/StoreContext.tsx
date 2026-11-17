@@ -64,7 +64,7 @@ import {
 export { VAULT_FILENAME };
 export const META_FILENAME = '_tavernsmith_meta.json';
 export const UNIFIED_INTERNAL_ROOT = './Saves/';
-const TAB_DRAFT_SESSION_KEY = 'tavernsmith_tab_draft_cache_v1';
+const TAB_DRAFT_SESSION_KEY = 'tavernsmith_tab_draft_cache_v2';
 
 export const DEFAULT_CHARACTER_TAB_DRAFT: CharacterTabDraft = {
   rosterOpen: true,
@@ -72,12 +72,12 @@ export const DEFAULT_CHARACTER_TAB_DRAFT: CharacterTabDraft = {
   rosterTagFilter: 'all',
   rosterSort: 'modified_desc',
   newCustomTagInput: '',
-  statBlockExpanded: true,
+  statBlockExpanded: false,
   wizardStep: 1,
   conceptPrompt: '',
   activeGreetingIdx: 0,
   altGreetingTwist: '',
-  usePortraitAsVisionContext: true,
+  extraContextImages: [],
 };
 
 export const DEFAULT_LOREBOOK_TAB_DRAFT: LorebookTabDraft = {
@@ -94,6 +94,7 @@ export const DEFAULT_LOREBOOK_TAB_DRAFT: LorebookTabDraft = {
   selectedEntryId: null,
   primaryKeyInput: '',
   secondaryKeyInput: '',
+  extraContextImages: [],
   loreTempRefImageUrl: null,
   loreTempRefImageName: '',
 };
@@ -144,10 +145,15 @@ function loadWorkspaceDraftCacheFromSession(): WorkspaceDraftCache {
     const parsed = JSON.parse(raw) as Partial<WorkspaceDraftCache>;
     if (!parsed || typeof parsed !== 'object') return base;
     return {
-      character: { ...DEFAULT_CHARACTER_TAB_DRAFT, ...(parsed.character || {}) },
+      character: {
+        ...DEFAULT_CHARACTER_TAB_DRAFT,
+        ...(parsed.character || {}),
+        extraContextImages: [],
+      },
       lorebook: {
         ...DEFAULT_LOREBOOK_TAB_DRAFT,
         ...(parsed.lorebook || {}),
+        extraContextImages: [],
         loreTempRefImageUrl: null,
         loreTempRefImageName: '',
       },
@@ -181,9 +187,13 @@ function saveWorkspaceDraftCacheToSession(cache: WorkspaceDraftCache): void {
       }
     }
     const serializable: WorkspaceDraftCache = {
-      character: cache.character,
+      character: {
+        ...cache.character,
+        extraContextImages: [],
+      },
       lorebook: {
         ...cache.lorebook,
+        extraContextImages: [],
         loreTempRefImageUrl: null,
         loreTempRefImageName: '',
       },
@@ -2009,6 +2019,8 @@ export const DEFAULT_STAT_BLOCK: StatBlockConfig = {
     },
   ],
   formatTemplate: `<details><summary>Character Stats</summary>\n\`\`\`yaml\nAffection: {{stat:Affection}}\nCurrent Mood: {{stat:Current Mood}}\n\`\`\`\n</details>`,
+  templatePreset: 'collapsible_block',
+  isCustomTemplate: false,
 };
 
 export const DEFAULT_LOREBOOK: Lorebook = {
@@ -2520,6 +2532,8 @@ export function createBlankCharacter(
       },
     ],
     formatTemplate: `<details><summary>Character Stats</summary>\n\`\`\`yaml\nAffection: {{stat:Affection}}\nCurrent Mood: {{stat:Current Mood}}\n\`\`\`\n</details>`,
+    templatePreset: 'collapsible_block',
+    isCustomTemplate: false,
   };
 
   return {

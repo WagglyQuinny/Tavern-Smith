@@ -25,7 +25,6 @@ import {
   RefreshCw,
   FolderOpen,
   ShieldAlert,
-  Image as ImageIcon,
 } from 'lucide-react';
 import {
   ensureUniqueEntityName,
@@ -33,23 +32,21 @@ import {
   useStore,
 } from '../context/StoreContext';
 import {
+  ContextReferenceImage,
   Lorebook,
   LorebookEntry,
   LorebookPosition,
   RosterSortOption,
 } from '../types';
 import { SmartEditor } from './SmartEditor';
+import { ContextImagesBar } from './ContextImagesBar';
 import { Tooltip } from './Tooltip';
 import { isTagNsfw, TagSelector } from './TagSelector';
 import {
   calculateLorebookTokens,
   estimateTokens,
 } from '../utils/tokenCounter';
-import {
-  compressImageForVision,
-  exportLorebookAsJson,
-  readImageFileAsDataUrl,
-} from '../utils/cardIO';
+import { exportLorebookAsJson } from '../utils/cardIO';
 import {
   AIServiceError,
   doesBackendSupportVision,
@@ -162,12 +159,17 @@ export const LorebookEditor: React.FC = () => {
   const secondaryKeyInput = lbDraft.secondaryKeyInput;
   const setSecondaryKeyInput = (next: string) =>
     updateLorebookDraft({ secondaryKeyInput: next });
-  const loreTempRefImageUrl = lbDraft.loreTempRefImageUrl ?? null;
-  const setLoreTempRefImageUrl = (next: string | null) =>
-    updateLorebookDraft({ loreTempRefImageUrl: next });
-  const loreTempRefImageName = lbDraft.loreTempRefImageName ?? '';
-  const setLoreTempRefImageName = (next: string) =>
-    updateLorebookDraft({ loreTempRefImageName: next });
+  const extraContextImages = lbDraft.extraContextImages || [];
+  const handleAddExtraContextImages = (newImages: ContextReferenceImage[]) =>
+    updateLorebookDraft({
+      extraContextImages: [...extraContextImages, ...newImages],
+    });
+  const handleRemoveExtraContextImage = (imgId: string) =>
+    updateLorebookDraft({
+      extraContextImages: extraContextImages.filter((img) => img.id !== imgId),
+    });
+  const handleClearExtraContextImages = () =>
+    updateLorebookDraft({ extraContextImages: [] });
 
   // Transient UI / Request State
   const [isDraggingFile, setIsDraggingFile] = useState(false);
@@ -206,37 +208,16 @@ export const LorebookEditor: React.FC = () => {
   const [visionFallbackBanner, setVisionFallbackBanner] = useState<
     string | null
   >(null);
-  const loreTempRefInputRef = useRef<HTMLInputElement | null>(null);
 
   const visionSupported = useMemo(
     () => doesBackendSupportVision(aiConfig),
     [aiConfig]
   );
 
-  const handleLoadLoreTempReferenceFile = async (file: File) => {
-    if (!file.type.startsWith('image/')) {
-      setAiKeyError({
-        message: 'Please select or drop a valid image file (PNG, JPEG, WebP).',
-      });
-      return;
-    }
-    try {
-      const rawUrl = await readImageFileAsDataUrl(file);
-      const compressed = await compressImageForVision(rawUrl, 512);
-      updateLorebookDraft({
-        loreTempRefImageUrl: compressed,
-        loreTempRefImageName: file.name,
-      });
-      setAiKeyError(null);
-    } catch (err) {
-      setAiKeyError({
-        message:
-          err instanceof Error
-            ? err.message
-            : 'Failed to compress reference image for vision.',
-      });
-    }
-  };
+  const activeLoreVisionUrls = useMemo(() => {
+    if (!visionSupported) return [];
+    return extraContextImages.map((img) => img.dataUrl).filter(Boolean);
+  }, [visionSupported, extraContextImages]);
   const [syncSuccessBanner, setSyncSuccessBanner] = useState(false);
 
   const abortRef = useRef<AbortController | null>(null);
@@ -588,8 +569,8 @@ export const LorebookEditor: React.FC = () => {
   // Wizard Step 1: "✨ AI Generate Multi-Entry Lorebook from Concept"
   const handleGenerateMultiEntryLorebook = async (e: React.FormEvent) => {
     e.preventDefault();
-    const useRefImage = Boolean(visionSupported && loreTempRefImageUrl);
-    if (!worldConceptPrompt.trim() && !useRefImage) return;
+    const hasRefImages = activeLoreVisionUrls.length > 0;
+    if (!worldConceptPrompt.trim() && !hasRefImages) return;
 
     if (abortRef.current) abortRef.current.abort();
     const controller = new AbortController();
@@ -601,9 +582,9 @@ export const LorebookEditor: React.FC = () => {
     const prompt = [
       worldConceptPrompt.trim()
         ? `Design a rich SillyTavern World Info / Lorebook based on this concept: "${worldConceptPrompt.trim()}"`
-        : `Design a rich SillyTavern World Info / Lorebook inspired directly by the attached Reference Image.`,
-      useRefImage
-        ? `A Reference Image is attached (~260 tokens). Inspect the visual setting, architecture, atmosphere, items, or entities in the image and incorporate them into the generated Lorebook entries.`
+        : `Design a rich SillyTavern World Info / Lorebook inspired directly by the attached Reference Image(s).`,
+      hasRefImages
+        ? `${activeLoreVisionUrls.length} Context Reference Image(s) are attached (~260 tokens each). Inspect ALL visual settings, architecture, atmosphere, items, outfits, or entities in the images and incorporate them into the generated Lorebook entries.`
         : '',
       lorebook.name && lorebook.name !== 'New Lorebook'
         ? `Lorebook Title: ${lorebook.name}`
@@ -640,7 +621,7 @@ export const LorebookEditor: React.FC = () => {
           activeTheme,
           allTags: tags,
           characterTags: lorebook.tags || [],
-          imageDataUrl: useRefImage ? loreTempRefImageUrl! : undefined,
+          imageDataUrls: hasRefImages ? activeLoreVisionUrls : undefined,
           onVisionFallback: (warning) => setVisionFallbackBanner(warning),
         }
       );
@@ -739,7 +720,7 @@ export const LorebookEditor: React.FC = () => {
     }
   };
 
-  // Wizard Step 2: Per-Entry "✨ AI Assist" Draft from Short Prompt (supports Temporary Reference Image)
+  // Wizard Step 2: Per-Entry "AI Generate" Draft from Short Prompt (supports Multi-Image Context when vision is supported)
   const handleDraftSelectedEntryWithAI = async () => {
     if (!selectedEntry) return;
     if (abortRef.current) abortRef.current.abort();
@@ -750,19 +731,28 @@ export const LorebookEditor: React.FC = () => {
     setAiKeyError(null);
     setVisionFallbackBanner(null);
 
-    const useRefImage = Boolean(visionSupported && loreTempRefImageUrl);
+    const hasRefImages = activeLoreVisionUrls.length > 0;
+    const mergedEntryTags = Array.from(
+      new Set([...(lorebook.tags || []), ...(selectedEntry.tags || [])])
+    );
 
     const prompt = [
-      `Write a rich, atmospheric SillyTavern World Info / Lorebook entry (1 to 2 concise paragraphs) for:`,
+      `Write or refine a rich, atmospheric SillyTavern World Info / Lorebook entry (1 to 2 concise paragraphs) for:`,
       `Entry Title: "${selectedEntry.comment || 'World Lore'}"`,
       entryDraftPrompt.trim()
         ? `Specific Directive / Concept: "${entryDraftPrompt.trim()}"`
         : '',
-      useRefImage
-        ? `A Reference Image is attached (~260 tokens). Describe the location, item, outfit, faction, or entity shown in the attached picture with vivid worldbuilding detail.`
+      hasRefImages
+        ? `${activeLoreVisionUrls.length} Context Reference Image(s) are attached (~260 tokens each). Inspect the location, item, outfit, faction, or entity details in the attached picture(s) and weave them into this entry with vivid worldbuilding detail.`
         : '',
       selectedEntry.keys.length > 0
         ? `Associated Keywords: ${selectedEntry.keys.join(', ')}`
+        : '',
+      selectedEntry.secondary_keys.length > 0
+        ? `Secondary Keywords: ${selectedEntry.secondary_keys.join(', ')}`
+        : '',
+      selectedEntry.content.trim()
+        ? `\nExisting Entry Content (improve, expand, or refine based on the directive and context):\n${selectedEntry.content.trim()}`
         : '',
       `Focus on concrete worldbuilding facts, sensory details, faction rules, or narrative hooks that help the AI roleplay accurately. Output ONLY the lore entry text.`,
     ]
@@ -780,8 +770,8 @@ export const LorebookEditor: React.FC = () => {
           temperature: aiConfig.temperature,
           activeTheme,
           allTags: tags,
-          characterTags: selectedEntry.tags || lorebook.tags || [],
-          imageDataUrl: useRefImage ? loreTempRefImageUrl! : undefined,
+          characterTags: mergedEntryTags,
+          imageDataUrls: hasRefImages ? activeLoreVisionUrls : undefined,
           onVisionFallback: (warning) => setVisionFallbackBanner(warning),
         }
       );
@@ -812,7 +802,7 @@ export const LorebookEditor: React.FC = () => {
     }
   };
 
-  // 1-Click AI Auto-Key Suggestion (works for selectedEntry or any entry passed in Wizard Step 3)
+  // 1-Click AI Auto-Key Suggestion (works for selectedEntry or any entry passed in Wizard Step 3 & Full Mode)
   const handleSuggestTriggerKeysForEntry = async (targetEntry?: LorebookEntry) => {
     const entry = targetEntry || selectedEntry;
     if (!entry) return;
@@ -824,12 +814,21 @@ export const LorebookEditor: React.FC = () => {
     setSuggestingEntryId(entry.id);
     setAiKeyError(null);
 
+    const hasRefImages = activeLoreVisionUrls.length > 0;
+    const mergedEntryTags = Array.from(
+      new Set([...(lorebook.tags || []), ...(entry.tags || [])])
+    );
     const prompt = [
       `Analyze this SillyTavern Lorebook / World Info entry and suggest 4 to 7 concise, high-signal trigger keywords or proper nouns that should activate this entry when mentioned in roleplay chat.`,
       `Entry Title: ${entry.comment || 'Untitled'}`,
       `Entry Content: ${entry.content || '(Empty)'}`,
+      hasRefImages
+        ? `Also consider visible objects, emblems, settings, or concepts in the ${activeLoreVisionUrls.length} attached reference image(s) if relevant to this entry.`
+        : '',
       `Output ONLY a comma-separated list of trigger keywords (e.g., Ashen Reach, Hollow Bell, Warden Signet, Oakhaven). Do not include numbering or explanations.`,
-    ].join('\n');
+    ]
+      .filter(Boolean)
+      .join('\n');
 
     try {
       const detailed = await generateCompletionDetailed(
@@ -842,9 +841,15 @@ export const LorebookEditor: React.FC = () => {
           temperature: 0.4,
           activeTheme,
           allTags: tags,
-          characterTags: entry.tags || lorebook.tags,
+          characterTags: mergedEntryTags,
+          imageDataUrls: hasRefImages ? activeLoreVisionUrls : undefined,
+          onVisionFallback: (warning) => setVisionFallbackBanner(warning),
         }
       );
+
+      if (!controller.signal.aborted && detailed.visionFallbackWarning) {
+        setVisionFallbackBanner(detailed.visionFallbackWarning);
+      }
 
       if (!controller.signal.aborted && detailed.content) {
         const suggested = detailed.content
@@ -1366,6 +1371,36 @@ export const LorebookEditor: React.FC = () => {
           </div>
         )}
 
+        {/* Vision Adapter Fallback Notice */}
+        {visionFallbackBanner && (
+          <div className="flex items-start justify-between gap-2 rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 text-xs text-amber-900 dark:text-amber-200">
+            <div className="flex items-start gap-2">
+              <AlertTriangle className="h-4 w-4 text-amber-500 shrink-0 mt-0.5" />
+              <div>
+                <span className="font-semibold">Vision (mmproj) Notice: </span>
+                <span>{visionFallbackBanner}</span>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => setVisionFallbackBanner(null)}
+              className="text-amber-700 dark:text-amber-300 cursor-pointer"
+            >
+              <X className="h-3.5 w-3.5" />
+            </button>
+          </div>
+        )}
+
+        {/* Context-Only Extra Reference Images (shared across Wizard & Full Editor modes; never saved to JSON) */}
+        <ContextImagesBar
+          images={extraContextImages}
+          onAddImages={handleAddExtraContextImages}
+          onRemoveImage={handleRemoveExtraContextImage}
+          onClearAll={handleClearExtraContextImages}
+          entityLabel="Lorebook"
+          visionSupported={visionSupported}
+        />
+
         {/* MODE A: 5-STEP LOREBOOK WIZARD */}
         {settings.editorMode === 'wizard' ? (
           <div className="space-y-6">
@@ -1464,7 +1499,7 @@ export const LorebookEditor: React.FC = () => {
                       disabled={
                         isGeneratingMultiLore ||
                         (!worldConceptPrompt.trim() &&
-                          !(visionSupported && loreTempRefImageUrl))
+                          activeLoreVisionUrls.length === 0)
                       }
                       style={{ borderColor: 'var(--theme-accent)' }}
                       className="theme-hover-outline flex items-center justify-center gap-2 rounded-lg border bg-slate-900 dark:bg-white px-4 py-2 text-xs font-semibold text-white dark:text-slate-900 disabled:opacity-50 cursor-pointer whitespace-nowrap"
@@ -1477,77 +1512,28 @@ export const LorebookEditor: React.FC = () => {
                       ) : (
                         <>
                           <Sparkles className="h-3.5 w-3.5" />
-                          <span>✨ AI Generate Multi-Entry Lorebook</span>
+                          <span>AI Generate Multi-Entry Lorebook</span>
                         </>
                       )}
                     </button>
                   </div>
 
-                  {/* Hidden File Input for Temporary Reference Image in Lorebook */}
-                  <input
-                    ref={loreTempRefInputRef}
-                    type="file"
-                    accept="image/*"
-                    className="hidden"
-                    onChange={(e) => {
-                      const f = e.target.files?.[0];
-                      if (f) {
-                        void handleLoadLoreTempReferenceFile(f);
-                      }
-                      e.target.value = '';
-                    }}
-                  />
-
-                  {visionSupported && (
-                    <div
-                      onDragOver={(e) => e.preventDefault()}
-                      onDrop={(e) => {
-                        e.preventDefault();
-                        const f = e.dataTransfer.files?.[0];
-                        if (f) void handleLoadLoreTempReferenceFile(f);
-                      }}
-                      className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-slate-200/80 dark:border-slate-800/80 text-xs"
-                    >
-                      {loreTempRefImageUrl ? (
-                        <div className="flex items-center gap-2 rounded-md border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 px-2.5 py-1">
-                          <img
-                            src={loreTempRefImageUrl}
-                            alt="Lorebook Temp Reference"
-                            className="h-6 w-6 rounded object-cover"
-                          />
-                          <span className="font-semibold text-slate-800 dark:text-slate-200 truncate max-w-[180px]">
-                            {loreTempRefImageName || 'Reference Image'}
-                          </span>
-                          <span className="font-mono text-[10px] text-emerald-600 dark:text-emerald-400">
-                            👁️ ~260 tok JPEG (Temp Ref)
-                          </span>
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setLoreTempRefImageUrl(null);
-                              setLoreTempRefImageName('');
-                            }}
-                            className="text-slate-400 hover:text-rose-500 cursor-pointer"
-                          >
-                            <X className="h-3.5 w-3.5" />
-                          </button>
-                        </div>
-                      ) : (
-                        <button
-                          type="button"
-                          onClick={() => loreTempRefInputRef.current?.click()}
-                          className="inline-flex items-center gap-1.5 rounded-md border border-dashed border-slate-300 dark:border-slate-700 bg-slate-50/70 dark:bg-slate-950/60 px-2.5 py-1 text-[11px] font-medium text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white cursor-pointer"
-                        >
-                          <ImageIcon
-                            className="h-3.5 w-3.5"
-                            style={{ color: 'var(--theme-accent)' }}
-                          />
-                          <span>
-                            👁️ Attach Reference Image (Temp · Never saved to JSON)
-                          </span>
-                        </button>
-                      )}
+                  {activeLoreVisionUrls.length > 0 ? (
+                    <div className="flex items-center gap-2 pt-2 border-t border-slate-200/80 dark:border-slate-800/80 text-[11px]">
+                      <span className="inline-flex items-center gap-1 rounded-md border border-emerald-500/30 bg-emerald-500/10 px-2.5 py-1 font-semibold text-emerald-700 dark:text-emerald-300">
+                        👁️ Auto-including {activeLoreVisionUrls.length} Context Image
+                        {activeLoreVisionUrls.length > 1 ? 's' : ''}
+                      </span>
                     </div>
+                  ) : (
+                    !visionSupported &&
+                    extraContextImages.length > 0 && (
+                      <div className="flex items-center gap-2 pt-2 border-t border-slate-200/80 dark:border-slate-800/80 text-[11px]">
+                        <span className="inline-flex items-center gap-1 rounded-md border border-amber-500/30 bg-amber-500/10 px-2.5 py-1 font-semibold text-amber-700 dark:text-amber-300">
+                          Selected model doesn&apos;t support images — generating from text &amp; tags only
+                        </span>
+                      </div>
+                    )
                   )}
                 </form>
 
@@ -1807,11 +1793,11 @@ export const LorebookEditor: React.FC = () => {
                           />
                         </div>
 
-                        {/* Per-Entry ✨ AI Assist Draft Bar */}
+                        {/* Per-Entry AI Generate Draft Bar */}
                         <div className="rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-950/60 p-3 space-y-2">
                           <div className="flex items-center justify-between">
                             <span className="text-xs font-semibold text-slate-800 dark:text-slate-200">
-                              ✨ AI Assist Entry Drafter
+                              ✨ AI Entry Drafter
                             </span>
                             <span className="text-[11px] text-slate-500">
                               Drafts lore from title &amp; optional prompt
@@ -1839,78 +1825,28 @@ export const LorebookEditor: React.FC = () => {
                               ) : (
                                 <Sparkles className="h-3.5 w-3.5" />
                               )}
-                              <span>✨ AI Assist Draft</span>
+                              <span>AI Generate</span>
                             </button>
                           </div>
 
-                          {visionSupported && (
-                            <div
-                              onDragOver={(e) => e.preventDefault()}
-                              onDrop={(e) => {
-                                e.preventDefault();
-                                const f = e.dataTransfer.files?.[0];
-                                if (f) void handleLoadLoreTempReferenceFile(f);
-                              }}
-                              className="flex flex-wrap items-center justify-between gap-2 pt-1.5 border-t border-slate-200/70 dark:border-slate-800/70 text-[11px]"
-                            >
-                              {loreTempRefImageUrl ? (
-                                <div className="flex items-center gap-2">
-                                  <img
-                                    src={loreTempRefImageUrl}
-                                    alt="Entry Reference"
-                                    className="h-5 w-5 rounded object-cover"
-                                  />
-                                  <span className="font-semibold text-slate-800 dark:text-slate-200 truncate max-w-[160px]">
-                                    {loreTempRefImageName || 'Reference Image'}
-                                  </span>
-                                  <span className="font-mono text-[9px] text-emerald-600 dark:text-emerald-400">
-                                    👁️ ~260 tok JPEG (Temp Ref)
-                                  </span>
-                                  <button
-                                    type="button"
-                                    onClick={() => {
-                                      setLoreTempRefImageUrl(null);
-                                      setLoreTempRefImageName('');
-                                    }}
-                                    className="text-slate-400 hover:text-rose-500 cursor-pointer"
-                                  >
-                                    <X className="h-3.5 w-3.5" />
-                                  </button>
-                                </div>
-                              ) : (
-                                <button
-                                  type="button"
-                                  onClick={() => loreTempRefInputRef.current?.click()}
-                                  className="inline-flex items-center gap-1.5 text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white cursor-pointer"
-                                >
-                                  <ImageIcon
-                                    className="h-3.5 w-3.5"
-                                    style={{ color: 'var(--theme-accent)' }}
-                                  />
-                                  <span>
-                                    👁️ Attach Temp Reference Image for Location / Item / Entity (~260 tok)
-                                  </span>
-                                </button>
-                              )}
+                          {activeLoreVisionUrls.length > 0 ? (
+                            <div className="pt-1.5 border-t border-slate-200/70 dark:border-slate-800/70 text-[11px]">
+                              <span className="inline-flex items-center gap-1 font-mono text-[10px] font-semibold text-emerald-700 dark:text-emerald-300">
+                                👁️ Auto-including {activeLoreVisionUrls.length} Context Image
+                                {activeLoreVisionUrls.length > 1 ? 's' : ''}
+                              </span>
                             </div>
+                          ) : (
+                            !visionSupported &&
+                            extraContextImages.length > 0 && (
+                              <div className="pt-1.5 border-t border-slate-200/70 dark:border-slate-800/70 text-[11px]">
+                                <span className="inline-flex items-center gap-1 font-mono text-[10px] font-semibold text-amber-600 dark:text-amber-400">
+                                  Selected model doesn&apos;t support images (skipped)
+                                </span>
+                              </div>
+                            )
                           )}
                         </div>
-
-                        {visionFallbackBanner && (
-                          <div className="flex items-start justify-between gap-2 rounded-lg border border-amber-500/40 bg-amber-500/10 p-2.5 text-xs text-amber-900 dark:text-amber-200">
-                            <div className="flex items-start gap-2">
-                              <AlertTriangle className="h-4 w-4 text-amber-500 shrink-0 mt-0.5" />
-                              <span>{visionFallbackBanner}</span>
-                            </div>
-                            <button
-                              type="button"
-                              onClick={() => setVisionFallbackBanner(null)}
-                              className="text-amber-700 dark:text-amber-300 cursor-pointer"
-                            >
-                              <X className="h-3.5 w-3.5" />
-                            </button>
-                          </div>
-                        )}
 
                         <SmartEditor
                           label="Entry Content"
@@ -1924,8 +1860,14 @@ export const LorebookEditor: React.FC = () => {
                           rows={7}
                           isPermanentTokenField={selectedEntry.constant}
                           extraContextSummary={`${lorebookContextSummary}\nActive Entry Title: ${selectedEntry.comment || ''}\nTrigger Keys: ${selectedEntry.keys.join(', ')}`}
-                          additionalTags={selectedEntry.tags}
+                          additionalTags={Array.from(
+                            new Set([
+                              ...(lorebook.tags || []),
+                              ...(selectedEntry.tags || []),
+                            ])
+                          )}
                           enablePortraitVision={false}
+                          extraContextImages={extraContextImages}
                         />
                       </>
                     ) : (
@@ -2836,12 +2778,18 @@ export const LorebookEditor: React.FC = () => {
                     onChange={(val) =>
                       handleUpdateSelectedEntry({ content: val })
                     }
-                    tooltip="The lore details that get added to chat whenever this entry's keywords appear."
+                    tooltip="The lore details that get added to chat when this entry's keywords appear."
                     rows={6}
                     isPermanentTokenField={selectedEntry.constant}
                     extraContextSummary={`${lorebookContextSummary}\nActive Entry Title: ${selectedEntry.comment || ''}\nTrigger Keys: ${selectedEntry.keys.join(', ')}`}
-                    additionalTags={selectedEntry.tags}
+                    additionalTags={Array.from(
+                      new Set([
+                        ...(lorebook.tags || []),
+                        ...(selectedEntry.tags || []),
+                      ])
+                    )}
                     enablePortraitVision={false}
+                    extraContextImages={extraContextImages}
                   />
 
                   {/* Insertion Order, Position & Trigger Flags */}

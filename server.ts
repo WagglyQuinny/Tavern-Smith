@@ -242,6 +242,7 @@ async function startServer() {
         responseMimeType,
         responseSchema,
         inlineData,
+        inlineDataList,
         imageDataUrl,
       } = req.body ?? {};
 
@@ -264,48 +265,68 @@ async function startServer() {
         config.responseSchema = responseSchema;
       }
 
-      let resolvedInlineData: { mimeType: string; data: string } | null = null;
-      if (
+      const resolvedInlineDataList: Array<{ mimeType: string; data: string }> = [];
+      if (Array.isArray(inlineDataList)) {
+        for (const item of inlineDataList) {
+          if (
+            item &&
+            typeof item === 'object' &&
+            typeof (item as { data?: unknown }).data === 'string' &&
+            (item as { data: string }).data.trim()
+          ) {
+            const rawMime = (item as { mimeType?: unknown }).mimeType;
+            resolvedInlineDataList.push({
+              mimeType:
+                typeof rawMime === 'string' && rawMime ? rawMime : 'image/jpeg',
+              data: (item as { data: string }).data.trim(),
+            });
+          }
+        }
+      } else if (
         inlineData &&
         typeof inlineData === 'object' &&
         typeof inlineData.data === 'string' &&
         inlineData.data.trim()
       ) {
-        resolvedInlineData = {
+        resolvedInlineDataList.push({
           mimeType:
             typeof inlineData.mimeType === 'string' && inlineData.mimeType
               ? inlineData.mimeType
               : 'image/jpeg',
           data: inlineData.data.trim(),
-        };
-      } else if (typeof imageDataUrl === 'string' && imageDataUrl.startsWith('data:image/')) {
+        });
+      } else if (
+        typeof imageDataUrl === 'string' &&
+        imageDataUrl.startsWith('data:image/')
+      ) {
         const commaIndex = imageDataUrl.indexOf(',');
         if (commaIndex !== -1) {
           const header = imageDataUrl.slice(5, commaIndex);
           const mimeMatch = header.split(';')[0] || 'image/jpeg';
           const base64Part = imageDataUrl.slice(commaIndex + 1).trim();
           if (base64Part) {
-            resolvedInlineData = {
+            resolvedInlineDataList.push({
               mimeType: mimeMatch,
               data: base64Part,
-            };
+            });
           }
         }
       }
 
-      const contentsPayload = resolvedInlineData
-        ? {
-            parts: [
-              { text: prompt },
-              {
-                inlineData: {
-                  mimeType: resolvedInlineData.mimeType,
-                  data: resolvedInlineData.data,
-                },
-              },
-            ],
-          }
-        : prompt;
+      const contentsPayload =
+        resolvedInlineDataList.length > 0
+          ? {
+              parts: [
+                { text: prompt },
+                ...resolvedInlineDataList.map((img) => ({
+                  inlineData: {
+                    mimeType: img.mimeType,
+                    data: img.data,
+                  },
+                })),
+              ],
+            }
+          : prompt;
 
       const response: GenerateContentResponse = await ai.models.generateContent({
         model,

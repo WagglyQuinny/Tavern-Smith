@@ -61,7 +61,7 @@ export interface ContextTheme {
   isBuiltIn?: boolean;
 }
 
-export type StatItemType = 'number' | 'bar' | 'text' | 'list';
+export type StatItemType = 'number' | 'bar' | 'text' | 'list' | 'group';
 
 export interface StatItem {
   id: string;
@@ -72,6 +72,7 @@ export interface StatItem {
   max?: number;
   unit?: string;
   changeRules: string;
+  subStats?: StatItem[];
 }
 
 export type StatTemplatePresetId =
@@ -84,6 +85,8 @@ export interface StatBlockConfig {
   injectionPosition: 'post_history_instructions' | 'system_prompt' | 'depth_0';
   stats: StatItem[];
   formatTemplate: string;
+  templatePreset?: StatTemplatePresetId;
+  isCustomTemplate?: boolean;
 }
 
 export type LorebookPosition =
@@ -318,6 +321,12 @@ export interface PendingDeleteTarget {
   subtitle?: string;
 }
 
+export interface ContextReferenceImage {
+  id: string;
+  name: string;
+  dataUrl: string;
+}
+
 export interface SmartEditorFieldDraft {
   showGenerateBar: boolean;
   customInstruction: string;
@@ -338,7 +347,7 @@ export interface CharacterTabDraft {
   conceptPrompt: string;
   activeGreetingIdx: number;
   altGreetingTwist: string;
-  usePortraitAsVisionContext: boolean;
+  extraContextImages: ContextReferenceImage[];
 }
 
 export interface LorebookTabDraft {
@@ -355,6 +364,7 @@ export interface LorebookTabDraft {
   selectedEntryId: string | number | null;
   primaryKeyInput: string;
   secondaryKeyInput: string;
+  extraContextImages: ContextReferenceImage[];
   loreTempRefImageUrl?: string | null;
   loreTempRefImageName?: string;
 }

@@ -780,6 +780,9 @@ export const ThemesAndTagsView: React.FC = () => {
             }
             rows={3}
             tooltip="Sent to the AI whenever this theme is selected so your cards and lore match this vibe."
+            enablePortraitVision={false}
+            additionalTags={activeTheme.associatedTags || []}
+            extraContextSummary={`Context Theme Name: ${activeTheme.name}\nTheme Accent Color: ${activeTheme.color}`}
           />
 
           <div className="flex flex-wrap items-center justify-between gap-2 pt-1">

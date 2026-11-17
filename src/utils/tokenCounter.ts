@@ -58,6 +58,9 @@ export function formatAsciiProgressBar(
 }
 
 export function formatSingleStatDefault(stat: StatItem): string {
+  if (stat.type === 'group') {
+    return '';
+  }
   if (stat.type === 'bar') {
     return formatAsciiProgressBar(
       stat.defaultValue,
@@ -72,21 +75,71 @@ export function formatSingleStatDefault(stat: StatItem): string {
   return `${stat.defaultValue}${stat.unit ? ' ' + stat.unit : ''}`;
 }
 
+export function inferStatTemplatePreset(
+  formatTemplate: string,
+  explicitPreset?: StatTemplatePresetId
+): StatTemplatePresetId {
+  if (explicitPreset) return explicitPreset;
+  const trimmed = (formatTemplate || '').trim();
+  if (trimmed.includes('[STATUS]')) return 'compact_rpg_bar';
+  if (trimmed.startsWith('|')) return 'markdown_table';
+  return 'collapsible_block';
+}
+
+function collectStatPathEntries(
+  stats: StatItem[],
+  parentPath = ''
+): Array<{ path: string; stat: StatItem; depth: number }> {
+  const entries: Array<{ path: string; stat: StatItem; depth: number }> = [];
+  for (const stat of stats) {
+    const cleanLabel = (stat.label || '').trim() || 'Stat';
+    const fullPath = parentPath ? `${parentPath}.${cleanLabel}` : cleanLabel;
+    const depth = parentPath ? parentPath.split('.').length : 0;
+    entries.push({ path: fullPath, stat, depth });
+    if (Array.isArray(stat.subStats) && stat.subStats.length > 0) {
+      entries.push(...collectStatPathEntries(stat.subStats, fullPath));
+    }
+  }
+  return entries;
+}
+
+export function countAllStatItems(stats: StatItem[]): {
+  topLevel: number;
+  subStats: number;
+  total: number;
+} {
+  let subStats = 0;
+  const countChildren = (items: StatItem[]) => {
+    for (const item of items) {
+      if (Array.isArray(item.subStats) && item.subStats.length > 0) {
+        subStats += item.subStats.length;
+        countChildren(item.subStats);
+      }
+    }
+  };
+  countChildren(stats);
+  return {
+    topLevel: stats.length,
+    subStats,
+    total: stats.length + subStats,
+  };
+}
+
 /**
- * Generates a Format Template string for one of the 3 presets based on current stats.
+ * Generates a Format Template string for one of the 3 presets based on current stats and sub-stats.
  */
 export function buildStatTemplatePreset(
   preset: StatTemplatePresetId,
   stats: StatItem[]
 ): string {
-  const activeStats =
+  const activeStats: StatItem[] =
     stats.length > 0
       ? stats
       : [
           {
             id: 'default-hp',
             label: 'Resolve',
-            type: 'bar' as const,
+            type: 'bar',
             defaultValue: '85',
             min: 0,
             max: 100,
@@ -96,69 +149,152 @@ export function buildStatTemplatePreset(
         ];
 
   if (preset === 'compact_rpg_bar') {
-    const parts = activeStats.map((s) => `${s.label}: {{stat:${s.label}}}`);
+    const renderCompactNode = (stat: StatItem, parentPath = ''): string => {
+      const label = (stat.label || '').trim() || 'Stat';
+      const path = parentPath ? `${parentPath}.${label}` : label;
+      const children = Array.isArray(stat.subStats) ? stat.subStats : [];
+      if (children.length > 0) {
+        const subParts = children.map((child) => renderCompactNode(child, path));
+        if (stat.type === 'group') {
+          return `${label} (${subParts.join(', ')})`;
+        }
+        return `${label}: {{stat:${path}}} (${subParts.join(', ')})`;
+      }
+      if (stat.type === 'group') {
+        return `${label}: []`;
+      }
+      return `${label}: {{stat:${path}}}`;
+    };
+
+    const parts = activeStats.map((s) => renderCompactNode(s));
     return `\`\`\`text\n[STATUS] ${parts.join(' | ')}\n\`\`\``;
   }
 
   if (preset === 'markdown_table') {
-    const headers = activeStats.map((s) => ` ${s.label} `).join('|');
-    const dividers = activeStats.map(() => ' :--- ').join('|');
-    const values = activeStats.map((s) => ` {{stat:${s.label}}} `).join('|');
-    return `|${headers}|\n|${dividers}|\n|${values}|`;
+    const rows: string[] = ['| Stat | Value |', '| :--- | :--- |'];
+    const appendTableRows = (items: StatItem[], parentPath = '', depth = 0) => {
+      for (const stat of items) {
+        const label = (stat.label || '').trim() || 'Stat';
+        const path = parentPath ? `${parentPath}.${label}` : label;
+        const prefix = depth > 0 ? `${'  '.repeat(depth - 1)}↳ ` : '';
+        if (stat.type === 'group') {
+          rows.push(`| ${prefix}**${label}** | |`);
+        } else {
+          rows.push(`| ${prefix}${label} | {{stat:${path}}} |`);
+        }
+        if (Array.isArray(stat.subStats) && stat.subStats.length > 0) {
+          appendTableRows(stat.subStats, path, depth + 1);
+        }
+      }
+    };
+    appendTableRows(activeStats);
+    return rows.join('\n');
   }
 
   // Default: 'collapsible_block'
-  const yamlLines = activeStats
-    .map((s) => `${s.label}: {{stat:${s.label}}}`)
-    .join('\n');
-  return `<details><summary>Character Stats</summary>\n\`\`\`yaml\n${yamlLines}\n\`\`\`\n</details>`;
+  const yamlLines: string[] = [];
+  const appendYamlLines = (items: StatItem[], parentPath = '', depth = 0) => {
+    const indent = '  '.repeat(depth);
+    for (const stat of items) {
+      const label = (stat.label || '').trim() || 'Stat';
+      const path = parentPath ? `${parentPath}.${label}` : label;
+      const hasChildren =
+        Array.isArray(stat.subStats) && stat.subStats.length > 0;
+      if (stat.type === 'group') {
+        yamlLines.push(
+          hasChildren ? `${indent}${label}:` : `${indent}${label}: {}`
+        );
+      } else {
+        yamlLines.push(`${indent}${label}: {{stat:${path}}}`);
+      }
+      if (hasChildren && stat.subStats) {
+        appendYamlLines(stat.subStats, path, depth + 1);
+      }
+    }
+  };
+  appendYamlLines(activeStats);
+  return `<details><summary>Character Stats</summary>\n\`\`\`yaml\n${yamlLines.join('\n')}\n\`\`\`\n</details>`;
 }
 
 /**
- * Renders the concrete live preview / initial stat block (with `{{stat:Label}}` replaced by formatted defaults).
+ * Renders the concrete live preview / initial stat block (with `{{stat:Label}}` & `{{stat:Parent.Child}}` replaced by formatted defaults).
  */
 export function renderInitialStatBlockInstance(statBlock: StatBlockConfig): string {
   if (!statBlock.formatTemplate.trim()) return '';
   let output = statBlock.formatTemplate;
-  for (const stat of statBlock.stats) {
+
+  const pathEntries = collectStatPathEntries(statBlock.stats);
+  // Sort longest path first so `Parent.Child` matches before `Parent`
+  const sortedEntries = [...pathEntries].sort(
+    (a, b) => b.path.length - a.path.length
+  );
+
+  for (const { path, stat } of sortedEntries) {
     const renderedVal = formatSingleStatDefault(stat);
-    const pattern = new RegExp(
-      `\\{\\{stat:${stat.label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\}\\}`,
-      'gi'
-    );
+    const escapedPath = path.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const pattern = new RegExp(`\\{\\{stat:${escapedPath}\\}\\}`, 'gi');
     output = output.replace(pattern, renderedVal);
   }
+
+  // Fallback: match bare {{stat:Label}} if someone manually wrote a sub-stat without parent prefix
+  for (const { stat } of sortedEntries) {
+    const cleanLabel = (stat.label || '').trim();
+    if (!cleanLabel) continue;
+    const renderedVal = formatSingleStatDefault(stat);
+    const escapedLabel = cleanLabel.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const pattern = new RegExp(`\\{\\{stat:${escapedLabel}\\}\\}`, 'gi');
+    output = output.replace(pattern, renderedVal);
+  }
+
   return output;
 }
 
 /**
- * Formats a StatBlockConfig into the rendered prompt string that gets injected into SillyTavern's `post_history_instructions`.
+ * Formats a StatBlockConfig (including nested sub-stats) into the rendered prompt string that gets injected into SillyTavern's `post_history_instructions`.
  */
 export function compileStatBlockPrompt(statBlock: StatBlockConfig): string {
   if (!statBlock.enableDMTracker || statBlock.stats.length === 0) {
     return '';
   }
 
-  const statLines = statBlock.stats
-    .map((stat) => {
-      const rangeInfo =
-        stat.type === 'bar'
-          ? ` (Progress Bar [████░░], range ${stat.min ?? 0} to ${stat.max ?? 100}${stat.unit ? ' ' + stat.unit : ''})`
-          : stat.type === 'number' &&
-              stat.min !== undefined &&
-              stat.max !== undefined
-            ? ` (Number ${stat.min} to ${stat.max}${stat.unit ? ' ' + stat.unit : ''})`
-            : ` (${stat.type})`;
-      const rulePart = stat.changeRules ? ` | Update Rule: ${stat.changeRules}` : '';
-      return `- ${stat.label}${rangeInfo}: Initial = ${formatSingleStatDefault(stat)}${rulePart}`;
-    })
-    .join('\n');
+  const statLines: string[] = [];
+  const appendCompiledLines = (items: StatItem[], depth = 0) => {
+    const indent = '  '.repeat(depth);
+    for (const stat of items) {
+      const label = (stat.label || '').trim() || 'Stat';
+      if (stat.type === 'group') {
+        const rulePart = stat.changeRules
+          ? ` (${stat.changeRules})`
+          : '';
+        statLines.push(`${indent}- [Group] ${label}${rulePart}`);
+      } else {
+        const rangeInfo =
+          stat.type === 'bar'
+            ? ` (Progress Bar [████░░], range ${stat.min ?? 0} to ${stat.max ?? 100}${stat.unit ? ' ' + stat.unit : ''})`
+            : stat.type === 'number' &&
+                stat.min !== undefined &&
+                stat.max !== undefined
+              ? ` (Number ${stat.min} to ${stat.max}${stat.unit ? ' ' + stat.unit : ''})`
+              : ` (${stat.type})`;
+        const rulePart = stat.changeRules
+          ? ` | Update Rule: ${stat.changeRules}`
+          : '';
+        statLines.push(
+          `${indent}- ${label}${rangeInfo}: Initial = ${formatSingleStatDefault(stat)}${rulePart}`
+        );
+      }
+      if (Array.isArray(stat.subStats) && stat.subStats.length > 0) {
+        appendCompiledLines(stat.subStats, depth + 1);
+      }
+    }
+  };
+  appendCompiledLines(statBlock.stats);
 
   return [
     '[System Directive: Dynamic DM/GM Stat Tracker]',
     'At the very end of every response, append the updated Status Block reflecting the events of the turn.',
     'Tracked Attributes & Rules:',
-    statLines,
+    statLines.join('\n'),
     '',
     'Required Output Format Template:',
     statBlock.formatTemplate.trim(),

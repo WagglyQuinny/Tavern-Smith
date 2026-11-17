@@ -32,6 +32,7 @@ import {
   RefreshCw,
   FolderOpen,
   ShieldAlert,
+  CornerDownRight,
 } from 'lucide-react';
 import {
   ensureUniqueEntityName,
@@ -40,12 +41,15 @@ import {
 } from '../context/StoreContext';
 import {
   CharacterCardData,
+  ContextReferenceImage,
   RosterSortOption,
+  StatBlockConfig,
   StatItem,
   StatItemType,
   StatTemplatePresetId,
 } from '../types';
 import { SmartEditor } from './SmartEditor';
+import { ContextImagesBar } from './ContextImagesBar';
 import { Tooltip } from './Tooltip';
 import { PortraitCropperModal } from './PortraitCropperModal';
 import { isTagNsfw, TagSelector } from './TagSelector';
@@ -53,7 +57,10 @@ import {
   buildStatTemplatePreset,
   calculateCardTokenBreakdown,
   compileStatBlockPrompt,
+  countAllStatItems,
   estimateTokens,
+  formatAsciiProgressBar,
+  inferStatTemplatePreset,
   renderInitialStatBlockInstance,
 } from '../utils/tokenCounter';
 import {
@@ -167,14 +174,17 @@ export const CharacterEditor: React.FC = () => {
   const altGreetingTwist = charDraft.altGreetingTwist;
   const setAltGreetingTwist = (next: string) =>
     updateCharacterDraft({ altGreetingTwist: next });
-  const usePortraitAsVisionContext = charDraft.usePortraitAsVisionContext;
-  const setUsePortraitAsVisionContext = (next: React.SetStateAction<boolean>) =>
+  const extraContextImages = charDraft.extraContextImages || [];
+  const handleAddExtraContextImages = (newImages: ContextReferenceImage[]) =>
     updateCharacterDraft({
-      usePortraitAsVisionContext:
-        typeof next === 'function'
-          ? next(charDraft.usePortraitAsVisionContext)
-          : next,
+      extraContextImages: [...extraContextImages, ...newImages],
     });
+  const handleRemoveExtraContextImage = (imgId: string) =>
+    updateCharacterDraft({
+      extraContextImages: extraContextImages.filter((img) => img.id !== imgId),
+    });
+  const handleClearExtraContextImages = () =>
+    updateCharacterDraft({ extraContextImages: [] });
 
   // Transient per-mount UI State (file drag, modals, active AI requests)
   const [isDraggingFile, setIsDraggingFile] = useState(false);
@@ -220,8 +230,6 @@ export const CharacterEditor: React.FC = () => {
   const [compiledBanner, setCompiledBanner] = useState<string | null>(null);
 
   // Multimodal Vision transient state
-  const [isDescribingPortrait, setIsDescribingPortrait] =
-    useState<boolean>(false);
   const [visionFallbackBanner, setVisionFallbackBanner] = useState<
     string | null
   >(null);
@@ -233,6 +241,25 @@ export const CharacterEditor: React.FC = () => {
   const hasPortraitImage = Boolean(
     character.avatar && character.avatar.startsWith('data:image/')
   );
+
+  const activeCharacterVisionUrls = useMemo(() => {
+    if (!visionSupported) return [];
+    const urls: string[] = [];
+    if (hasPortraitImage && character.avatar) {
+      urls.push(character.avatar);
+    }
+    for (const img of extraContextImages) {
+      if (img.dataUrl) {
+        urls.push(img.dataUrl);
+      }
+    }
+    return Array.from(new Set(urls));
+  }, [
+    visionSupported,
+    hasPortraitImage,
+    character.avatar,
+    extraContextImages,
+  ]);
 
   const abortRef = useRef<AbortController | null>(null);
   const importFileInputRef = useRef<HTMLInputElement | null>(null);
@@ -523,6 +550,9 @@ export const CharacterEditor: React.FC = () => {
       character.description ? `Description:\n${character.description}` : '',
       character.personality ? `Personality:\n${character.personality}` : '',
       character.scenario ? `Scenario:\n${character.scenario}` : '',
+      character.mes_example
+        ? `Example Dialogue:\n${character.mes_example}`
+        : '',
       character.system_prompt
         ? `System Prompt:\n${character.system_prompt}`
         : '',
@@ -544,9 +574,6 @@ export const CharacterEditor: React.FC = () => {
     ].join('\n');
 
     try {
-      const usePortraitNow =
-        visionSupported && hasPortraitImage && usePortraitAsVisionContext;
-
       const detailed = await generateCompletionDetailed(
         prompt,
         cardContext,
@@ -558,7 +585,10 @@ export const CharacterEditor: React.FC = () => {
           activeTheme,
           allTags: tags,
           characterTags: character.tags,
-          imageDataUrl: usePortraitNow ? character.avatar : undefined,
+          imageDataUrls:
+            activeCharacterVisionUrls.length > 0
+              ? activeCharacterVisionUrls
+              : undefined,
           onVisionFallback: (warning) => setVisionFallbackBanner(warning),
         }
       );
@@ -594,86 +624,12 @@ export const CharacterEditor: React.FC = () => {
     }
   };
 
-  // 1-Click "✨ Describe Appearance from Portrait" (used in Wizard Step 1 & Portrait Workbench)
-  const handleDescribeAppearanceFromPortraitCard = async () => {
-    if (!character.avatar) return;
-    if (abortRef.current) abortRef.current.abort();
-    const controller = new AbortController();
-    abortRef.current = controller;
-    setIsDescribingPortrait(true);
-    setConceptError(null);
-    setVisionFallbackBanner(null);
-
-    const promptText = [
-      `Inspect the attached Character Portrait image carefully and write a vivid, high-craft SillyTavern physical appearance & attire description for "${character.name || '{{char}}'}".`,
-      `Include facial features, eye/hair details, physique/build, clothing/armor/accessories, posture, and visual aura.`,
-      character.description.trim()
-        ? `\nExisting Description Draft (integrate or enrich with visual details from the portrait):\n${character.description}`
-        : '',
-      `\nOutput ONLY the raw Markdown description content using {{char}} where appropriate, without conversational filler.`,
-    ]
-      .filter(Boolean)
-      .join('\n');
-
-    try {
-      const detailed = await generateCompletionDetailed(
-        promptText,
-        `Character Name: ${character.name || '{{char}}'}\nPersonality: ${character.personality}\nScenario: ${character.scenario}`,
-        aiConfig,
-        controller.signal,
-        {
-          maxTokens: aiConfig.maxTokens || 512,
-          temperature: aiConfig.temperature,
-          activeTheme,
-          allTags: tags,
-          characterTags: character.tags,
-          imageDataUrl: character.avatar,
-          onVisionFallback: (warning) => setVisionFallbackBanner(warning),
-        }
-      );
-
-      if (!controller.signal.aborted && detailed.content.trim()) {
-        if (detailed.visionFallbackWarning) {
-          setVisionFallbackBanner(detailed.visionFallbackWarning);
-        }
-        const currentDesc = character.description.trim();
-        const nextDesc = currentDesc
-          ? `${currentDesc}\n\n${detailed.content.trim()}`
-          : detailed.content.trim();
-        updateCharacterField('description', nextDesc);
-        setImportStatusBanner(
-          `✨ Generated physical appearance description from ${character.name || 'Character'}'s portrait!`
-        );
-        scheduleTimer(() => setImportStatusBanner(null), 4000);
-      }
-    } catch (err: unknown) {
-      if (err instanceof DOMException && err.name === 'AbortError') return;
-      if (err instanceof AIServiceError) {
-        setConceptError({
-          message: err.message,
-          corsHint: err.isCorsOrNetworkError ? err.corsHint : undefined,
-        });
-      } else {
-        setConceptError({
-          message:
-            err instanceof Error
-              ? err.message
-              : 'Failed to describe appearance from portrait.',
-        });
-      }
-    } finally {
-      if (!controller.signal.aborted) {
-        setIsDescribingPortrait(false);
-      }
-    }
-  };
-
   // Wizard Step 1: "Generate Full Character from Concept"
   const handleGenerateFullCharacterFromConcept = async (e: React.FormEvent) => {
     e.preventDefault();
-    const usePortraitNow =
-      visionSupported && hasPortraitImage && usePortraitAsVisionContext;
-    if (!conceptPrompt.trim() && !usePortraitNow) return;
+    const usePortraitNow = visionSupported && hasPortraitImage;
+    const hasAnyVisualContext = activeCharacterVisionUrls.length > 0;
+    if (!conceptPrompt.trim() && !hasAnyVisualContext) return;
 
     if (abortRef.current) abortRef.current.abort();
     const controller = new AbortController();
@@ -682,13 +638,26 @@ export const CharacterEditor: React.FC = () => {
     setConceptError(null);
     setVisionFallbackBanner(null);
 
+    const visualContextPromptNote =
+      activeCharacterVisionUrls.length > 0
+        ? [
+            usePortraitNow
+              ? `The Character Portrait image is attached (~260 tokens).`
+              : '',
+            extraContextImages.length > 0
+              ? `${extraContextImages.length} additional Context-Only Reference Image(s) are attached (~260 tokens each).`
+              : '',
+            `Inspect ALL attached visual image(s) carefully and ensure the character's physical appearance, attire, mood, accessories, personality cues, and scenario reflect them accurately.`,
+          ]
+            .filter(Boolean)
+            .join(' ')
+        : '';
+
     const prompt = [
       conceptPrompt.trim()
         ? `Generate a complete SillyTavern Character Card based on this concept: "${conceptPrompt.trim()}"`
-        : `Generate a complete SillyTavern Character Card inspired directly by the attached Character Portrait image.`,
-      usePortraitNow
-        ? `The Character Portrait image is attached (~260 tokens). Inspect the portrait carefully and ensure the character's physical appearance, attire, aura, and description accurately reflect the portrait.`
-        : '',
+        : `Generate a complete SillyTavern Character Card inspired directly by the attached visual reference image(s).`,
+      visualContextPromptNote,
       character.name && character.name !== 'New Character'
         ? `Preferred Character Name: ${character.name}`
         : '',
@@ -722,8 +691,14 @@ export const CharacterEditor: React.FC = () => {
       character.first_mes
         ? `Existing Greeting Draft:\n${character.first_mes}`
         : '',
+      character.mes_example
+        ? `Existing Example Dialogue:\n${character.mes_example}`
+        : '',
       character.system_prompt
         ? `Existing System Prompt:\n${character.system_prompt}`
+        : '',
+      character.post_history_instructions
+        ? `Existing Post-History Instructions:\n${character.post_history_instructions}`
         : '',
     ]
       .filter(Boolean)
@@ -741,7 +716,10 @@ export const CharacterEditor: React.FC = () => {
           activeTheme,
           allTags: tags,
           characterTags: character.tags,
-          imageDataUrl: usePortraitNow ? character.avatar : undefined,
+          imageDataUrls:
+            activeCharacterVisionUrls.length > 0
+              ? activeCharacterVisionUrls
+              : undefined,
           onVisionFallback: (warning) => setVisionFallbackBanner(warning),
         }
       );
@@ -801,45 +779,217 @@ export const CharacterEditor: React.FC = () => {
     }
   };
 
-  // Modular DM/GM StatBlock Builder Handlers
-  const handleAddStatItem = () => {
-    const newItem: StatItem = {
-      id: `stat-${Date.now()}`,
-      label: `Stat ${statBlock.stats.length + 1}`,
-      type: 'bar',
-      defaultValue: '50',
-      min: 0,
-      max: 100,
-      unit: '%',
-      changeRules: 'Adjusts based on scene actions and dialogue choices.',
-    };
-    setStatBlock((prev) => ({
-      ...prev,
-      enableDMTracker: true,
-      stats: [...prev.stats, newItem],
-    }));
+  // Recursive Stat & Sub-Stat Helpers + Live Template Synchronization
+  const findStatPathEntry = (
+    items: StatItem[],
+    targetId: string,
+    parentPath = ''
+  ): { stat: StatItem; path: string; parentLabel?: string } | null => {
+    for (const item of items) {
+      const cleanLabel = (item.label || '').trim() || 'Stat';
+      const path = parentPath ? `${parentPath}.${cleanLabel}` : cleanLabel;
+      if (item.id === targetId) {
+        return {
+          stat: item,
+          path,
+          parentLabel: parentPath || undefined,
+        };
+      }
+      if (Array.isArray(item.subStats) && item.subStats.length > 0) {
+        const nested = findStatPathEntry(item.subStats, targetId, path);
+        if (nested) return nested;
+      }
+    }
+    return null;
   };
 
-  const handleUpdateStatItem = (
-    id: string,
-    patch: Partial<StatItem>
-  ) => {
-    setStatBlock((prev) => ({
-      ...prev,
-      stats: prev.stats.map((item) =>
-        item.id === id ? { ...item, ...patch } : item
-      ),
-    }));
+  const mapStatTreeById = (
+    items: StatItem[],
+    targetId: string,
+    updater: (item: StatItem) => StatItem
+  ): StatItem[] => {
+    return items.map((item) => {
+      const updated = item.id === targetId ? updater(item) : item;
+      if (Array.isArray(updated.subStats) && updated.subStats.length > 0) {
+        return {
+          ...updated,
+          subStats: mapStatTreeById(updated.subStats, targetId, updater),
+        };
+      }
+      return updated;
+    });
+  };
+
+  const deleteStatTreeById = (items: StatItem[], targetId: string): StatItem[] => {
+    return items
+      .filter((item) => item.id !== targetId)
+      .map((item) =>
+        Array.isArray(item.subStats) && item.subStats.length > 0
+          ? { ...item, subStats: deleteStatTreeById(item.subStats, targetId) }
+          : item
+      );
+  };
+
+  const syncStatBlockTemplate = (
+    prevBlock: StatBlockConfig,
+    nextStats: StatItem[],
+    renameHint?: { oldPath: string; newPath: string }
+  ): Pick<
+    StatBlockConfig,
+    'formatTemplate' | 'templatePreset' | 'isCustomTemplate'
+  > => {
+    const activePreset = inferStatTemplatePreset(
+      prevBlock.formatTemplate,
+      prevBlock.templatePreset
+    );
+    if (!prevBlock.isCustomTemplate) {
+      return {
+        formatTemplate: buildStatTemplatePreset(activePreset, nextStats),
+        templatePreset: activePreset,
+        isCustomTemplate: false,
+      };
+    }
+    let nextTemplate = prevBlock.formatTemplate;
+    if (
+      renameHint &&
+      renameHint.oldPath &&
+      renameHint.newPath &&
+      renameHint.oldPath !== renameHint.newPath
+    ) {
+      const escapedOld = renameHint.oldPath.replace(
+        /[.*+?^${}()|[\]\\]/g,
+        '\\$&'
+      );
+      nextTemplate = nextTemplate.replace(
+        new RegExp(`\\{\\{stat:${escapedOld}\\}\\}`, 'gi'),
+        `{{stat:${renameHint.newPath}}}`
+      );
+    }
+    return {
+      formatTemplate: nextTemplate,
+      templatePreset: activePreset,
+      isCustomTemplate: true,
+    };
+  };
+
+  // Modular DM/GM StatBlock Builder Handlers
+  const handleAddStatItem = () => {
+    setStatBlockExpanded(true);
+    setStatBlock((prev) => {
+      const newItem: StatItem = {
+        id: `stat-${Date.now()}-${Math.random().toString(36).slice(2, 5)}`,
+        label: `Stat ${prev.stats.length + 1}`,
+        type: 'bar',
+        defaultValue: '50',
+        min: 0,
+        max: 100,
+        unit: '%',
+        changeRules: 'Adjusts based on scene actions and dialogue choices.',
+        subStats: [],
+      };
+      const nextStats = [...prev.stats, newItem];
+      const synced = syncStatBlockTemplate(prev, nextStats);
+      return {
+        ...prev,
+        enableDMTracker: true,
+        stats: nextStats,
+        ...synced,
+      };
+    });
+  };
+
+  const handleAddSubStatItem = (parentId: string) => {
+    setStatBlockExpanded(true);
+    setStatBlock((prev) => {
+      const parentFound = findStatPathEntry(prev.stats, parentId);
+      const existingSubCount = parentFound?.stat.subStats?.length || 0;
+      const newSub: StatItem = {
+        id: `substat-${Date.now()}-${Math.random().toString(36).slice(2, 5)}`,
+        label: `Sub-Stat ${existingSubCount + 1}`,
+        type: 'bar',
+        defaultValue: '50',
+        min: 0,
+        max: 100,
+        unit: '%',
+        changeRules: 'Adjusts dynamically based on scene actions.',
+      };
+      const nextStats = mapStatTreeById(prev.stats, parentId, (parent) => ({
+        ...parent,
+        subStats: [...(parent.subStats || []), newSub],
+      }));
+      const synced = syncStatBlockTemplate(prev, nextStats);
+      return {
+        ...prev,
+        enableDMTracker: true,
+        stats: nextStats,
+        ...synced,
+      };
+    });
+  };
+
+  const handleUpdateStatItem = (id: string, patch: Partial<StatItem>) => {
+    setStatBlock((prev) => {
+      const oldEntry = findStatPathEntry(prev.stats, id);
+      const nextStats = mapStatTreeById(prev.stats, id, (item) => {
+        const merged: StatItem = { ...item, ...patch };
+        if (
+          patch.type &&
+          patch.type !== item.type &&
+          (patch.type === 'bar' || patch.type === 'number')
+        ) {
+          if (merged.min === undefined) merged.min = 0;
+          if (merged.max === undefined) merged.max = 100;
+          if (Number.isNaN(parseFloat(merged.defaultValue))) {
+            merged.defaultValue = '50';
+          }
+          if (patch.type === 'bar' && merged.unit === undefined) {
+            merged.unit = '%';
+          }
+        }
+        return merged;
+      });
+      const newEntry = findStatPathEntry(nextStats, id);
+      const renameHint =
+        oldEntry && newEntry && oldEntry.path !== newEntry.path
+          ? { oldPath: oldEntry.path, newPath: newEntry.path }
+          : undefined;
+      const synced = syncStatBlockTemplate(prev, nextStats, renameHint);
+      return {
+        ...prev,
+        stats: nextStats,
+        ...synced,
+      };
+    });
   };
 
   const handleMoveStatItem = (index: number, direction: -1 | 1) => {
-    const targetIdx = index + direction;
-    if (targetIdx < 0 || targetIdx >= statBlock.stats.length) return;
     setStatBlock((prev) => {
-      const next = [...prev.stats];
-      const [moved] = next.splice(index, 1);
-      next.splice(targetIdx, 0, moved);
-      return { ...prev, stats: next };
+      const targetIdx = index + direction;
+      if (targetIdx < 0 || targetIdx >= prev.stats.length) return prev;
+      const nextStats = [...prev.stats];
+      const [moved] = nextStats.splice(index, 1);
+      nextStats.splice(targetIdx, 0, moved);
+      const synced = syncStatBlockTemplate(prev, nextStats);
+      return { ...prev, stats: nextStats, ...synced };
+    });
+  };
+
+  const handleMoveSubStatItem = (
+    parentId: string,
+    subIndex: number,
+    direction: -1 | 1
+  ) => {
+    setStatBlock((prev) => {
+      const nextStats = mapStatTreeById(prev.stats, parentId, (parent) => {
+        const currentSubs = [...(parent.subStats || [])];
+        const targetIdx = subIndex + direction;
+        if (targetIdx < 0 || targetIdx >= currentSubs.length) return parent;
+        const [moved] = currentSubs.splice(subIndex, 1);
+        currentSubs.splice(targetIdx, 0, moved);
+        return { ...parent, subStats: currentSubs };
+      });
+      const synced = syncStatBlockTemplate(prev, nextStats);
+      return { ...prev, stats: nextStats, ...synced };
     });
   };
 
@@ -854,30 +1004,40 @@ export const CharacterEditor: React.FC = () => {
       ) {
         return prev;
       }
-      const next = [...prev.stats];
-      const [moved] = next.splice(fromIdx, 1);
-      next.splice(toIdx, 0, moved);
-      return { ...prev, stats: next };
+      const nextStats = [...prev.stats];
+      const [moved] = nextStats.splice(fromIdx, 1);
+      nextStats.splice(toIdx, 0, moved);
+      const synced = syncStatBlockTemplate(prev, nextStats);
+      return { ...prev, stats: nextStats, ...synced };
     });
   };
 
   const handleDeleteStatItem = (id: string) => {
-    setStatBlock((prev) => ({
-      ...prev,
-      stats: prev.stats.filter((s) => s.id !== id),
-    }));
+    setStatBlock((prev) => {
+      const nextStats = deleteStatTreeById(prev.stats, id);
+      const synced = syncStatBlockTemplate(prev, nextStats);
+      return {
+        ...prev,
+        stats: nextStats,
+        ...synced,
+      };
+    });
   };
 
   const handleApplyStatTemplatePreset = (preset: StatTemplatePresetId) => {
-    const generatedTemplate = buildStatTemplatePreset(preset, statBlock.stats);
     setStatBlock((prev) => ({
       ...prev,
-      formatTemplate: generatedTemplate,
+      templatePreset: preset,
+      isCustomTemplate: false,
+      formatTemplate: buildStatTemplatePreset(preset, prev.stats),
     }));
   };
 
-  // Per-Stat "✨ AI Assist" Progression Rule Generator
-  const handleGenerateStatRuleWithAI = async (stat: StatItem) => {
+  // Per-Stat / Sub-Stat "AI Generate" Progression Rule Generator
+  const handleGenerateStatRuleWithAI = async (
+    stat: StatItem,
+    parentLabel?: string
+  ) => {
     if (abortRef.current) abortRef.current.abort();
     const controller = new AbortController();
     abortRef.current = controller;
@@ -889,12 +1049,50 @@ export const CharacterEditor: React.FC = () => {
         ? `Range: ${stat.min ?? 0} to ${stat.max ?? 100}${stat.unit || ''}, Initial Value: ${stat.defaultValue}`
         : `Type: ${stat.type}, Initial Value: ${stat.defaultValue}`;
 
+    const flattenSummary = (items: StatItem[], prefix = ''): string[] => {
+      const lines: string[] = [];
+      for (const s of items) {
+        if (s.id !== stat.id) {
+          lines.push(
+            `- ${prefix}${s.label} (${s.type}): ${s.changeRules || 'no rule yet'}`
+          );
+        }
+        if (Array.isArray(s.subStats) && s.subStats.length > 0) {
+          lines.push(...flattenSummary(s.subStats, `${prefix}${s.label} > `));
+        }
+      }
+      return lines;
+    };
+    const otherStatsSummary = flattenSummary(statBlock.stats).join('\n');
+
+    const characterFullContext = [
+      `Character Name: ${character.name || '{{char}}'}`,
+      character.nickname ? `Nickname: ${character.nickname}` : '',
+      character.description ? `Description:\n${character.description}` : '',
+      character.personality ? `Personality:\n${character.personality}` : '',
+      character.scenario ? `Scenario:\n${character.scenario}` : '',
+      character.first_mes ? `First Message:\n${character.first_mes}` : '',
+      character.system_prompt
+        ? `System Prompt:\n${character.system_prompt}`
+        : '',
+      character.post_history_instructions
+        ? `Post-History Instructions:\n${character.post_history_instructions}`
+        : '',
+      otherStatsSummary ? `Other Tracked Stats:\n${otherStatsSummary}` : '',
+    ]
+      .filter(Boolean)
+      .join('\n\n');
+
     const prompt = [
       `Write a concise, actionable 1-sentence DM/GM progression and update rule for a tracked roleplay stat.`,
-      `Character: ${character.name || '{{char}}'} (${character.personality || 'Roleplay character'})`,
-      `Stat Name: "${stat.label}" (${rangeInfo})`,
+      parentLabel
+        ? `Parent Stat / Category: "${parentLabel}"\nSub-Stat Name: "${stat.label}" (${rangeInfo})`
+        : `Stat Name: "${stat.label}" (${rangeInfo})`,
       stat.changeRules.trim()
         ? `Current Draft / Hint: "${stat.changeRules.trim()}"`
+        : '',
+      activeCharacterVisionUrls.length > 0
+        ? `Attached images (${activeCharacterVisionUrls.length}) are included in context if character appearance/items inform this stat.`
         : '',
       `Specify exact triggers (e.g., +2 to +10 on trust/help, -5 to -15 on betrayal/aggression, or how status/inventory shifts) so the AI knows when and how to update this stat every turn. Output ONLY the 1-sentence rule without quotes.`,
     ]
@@ -904,15 +1102,20 @@ export const CharacterEditor: React.FC = () => {
     try {
       const detailed = await generateCompletionDetailed(
         prompt,
-        `Character Description: ${character.description}\nScenario: ${character.scenario}`,
+        characterFullContext,
         aiConfig,
         controller.signal,
         {
-          maxTokens: 120,
+          maxTokens: Math.max(4096, aiConfig.maxTokens || 4096),
           temperature: 0.65,
           activeTheme,
           allTags: tags,
           characterTags: character.tags,
+          imageDataUrls:
+            activeCharacterVisionUrls.length > 0
+              ? activeCharacterVisionUrls
+              : undefined,
+          onVisionFallback: (warning) => setVisionFallbackBanner(warning),
         }
       );
 
@@ -979,6 +1182,20 @@ export const CharacterEditor: React.FC = () => {
     );
     scheduleTimer(() => setCompiledBanner(null), 4000);
   };
+
+  const statItemCounts = useMemo(
+    () => countAllStatItems(statBlock.stats),
+    [statBlock.stats]
+  );
+
+  const activeStatTemplatePreset = useMemo(
+    () =>
+      inferStatTemplatePreset(
+        statBlock.formatTemplate,
+        statBlock.templatePreset
+      ),
+    [statBlock.formatTemplate, statBlock.templatePreset]
+  );
 
   const liveRenderedStatPreview = useMemo(
     () => renderInitialStatBlockInstance(statBlock),
@@ -1099,79 +1316,26 @@ export const CharacterEditor: React.FC = () => {
             </>
           )}
         </div>
-
-        {/* Portrait Multimodal Vision Context Controls (shown when active model supports Vision and Portrait is uploaded) */}
-        {visionSupported && hasPortraitImage && (
-          <div className="space-y-1.5 pt-1">
-            <button
-              type="button"
-              onClick={() =>
-                setUsePortraitAsVisionContext((prev) => !prev)
-              }
-              style={
-                usePortraitAsVisionContext
-                  ? {
-                      borderColor: 'var(--theme-accent)',
-                      backgroundColor:
-                        'color-mix(in srgb, var(--theme-accent) 14%, transparent)',
-                    }
-                  : undefined
-              }
-              title="When enabled, AI Assist and Concept Generation inspect a compressed 512px JPEG (~260 tokens) of this portrait. Never sent during Ghost-Text autocomplete."
-              className={`theme-hover-outline w-full flex items-center justify-between gap-1.5 rounded-lg border px-2.5 py-1.5 text-left text-[11px] font-semibold transition-colors cursor-pointer ${
-                usePortraitAsVisionContext
-                  ? 'text-slate-900 dark:text-white'
-                  : 'border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 text-slate-500 dark:text-slate-400'
-              }`}
-            >
-              <span className="leading-tight">
-                👁️ Include Portrait in AI Prompt (~260 tok)
-              </span>
-              {usePortraitAsVisionContext && (
-                <Check
-                  className="h-3.5 w-3.5 shrink-0"
-                  style={{ color: 'var(--theme-accent)' }}
-                />
-              )}
-            </button>
-
-            <button
-              type="button"
-              disabled={isDescribingPortrait}
-              onClick={handleDescribeAppearanceFromPortraitCard}
-              style={{ borderColor: 'var(--theme-accent)' }}
-              title="Have the AI look at your portrait and write or expand the character's appearance in Description"
-              className="theme-hover-outline w-full flex items-center justify-center gap-1.5 rounded-lg border bg-white dark:bg-slate-900 px-2.5 py-1.5 text-[11px] font-semibold text-slate-900 dark:text-white disabled:opacity-50 cursor-pointer"
-            >
-              {isDescribingPortrait ? (
-                <Loader2
-                  className="h-3 w-3 animate-spin shrink-0"
-                  style={{ color: 'var(--theme-accent)' }}
-                />
-              ) : (
-                <Sparkles
-                  className="h-3 w-3 shrink-0"
-                  style={{ color: 'var(--theme-accent)' }}
-                />
-              )}
-              <span>✨ Describe from Portrait</span>
-            </button>
-          </div>
-        )}
       </div>
     );
   };
 
-  // Full-Width, Spacious Expandable DM / GM Stat-Block Builder Section (2-Column Responsive Grid)
+  // Full-Width, Overhauled Expandable DM / GM Stat-Block Builder Section (Collapsed by Default; Supports Nested Sub-Stats)
   const renderStatBlockBuilderPanel = () => (
     <section
       style={{
         borderColor: 'color-mix(in srgb, var(--theme-accent) 45%, transparent)',
       }}
-      className="w-full rounded-xl border bg-white dark:bg-slate-900 p-5 space-y-5 shadow-2xs"
+      className="w-full rounded-xl border bg-white dark:bg-slate-900 p-4 sm:p-5 space-y-4 shadow-2xs"
     >
       {/* Expandable Section Header */}
-      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 dark:border-slate-800 pb-3.5">
+      <div
+        className={`flex flex-wrap items-center justify-between gap-3 ${
+          statBlockExpanded
+            ? 'border-b border-slate-200 dark:border-slate-800 pb-3.5'
+            : ''
+        }`}
+      >
         <div className="flex items-center gap-2.5 min-w-0">
           <button
             type="button"
@@ -1194,14 +1358,21 @@ export const CharacterEditor: React.FC = () => {
               ) : (
                 <>
                   <ChevronDown className="h-3 w-3" />
-                  <span>Expand ({statBlock.stats.length} Stats)</span>
+                  <span>
+                    Expand ({statItemCounts.topLevel} Stat
+                    {statItemCounts.topLevel === 1 ? '' : 's'}
+                    {statItemCounts.subStats > 0
+                      ? ` · ${statItemCounts.subStats} Sub`
+                      : ''}
+                    )
+                  </span>
                 </>
               )}
             </span>
           </button>
           <Tooltip
             title="Live Chat Stat Tracker"
-            content="Track numbers, progress bars [████░░], mood text, or inventory items during roleplay. Drag stats to reorder them, or use ✨ AI Assist to write the update rules."
+            content="Track numbers, progress bars [████░░], mood text, inventory lists, or nested sub-stats during roleplay. Collapsed by default to keep your workspace clean."
           />
         </div>
 
@@ -1262,21 +1433,26 @@ export const CharacterEditor: React.FC = () => {
           }}
           className="grid gap-6 items-start"
         >
-          {/* LEFT COLUMN: Spacious Stat Manager with Drag-and-Drop Reordering */}
+          {/* LEFT COLUMN: Hierarchical Stat & Sub-Stat Manager */}
           <div className="space-y-3 min-w-0">
             <div className="flex flex-wrap items-center justify-between gap-1">
               <span className="text-xs font-bold uppercase tracking-wider text-slate-700 dark:text-slate-300">
-                Tracked Stats ({statBlock.stats.length})
+                Tracked Stats ({statItemCounts.topLevel}
+                {statItemCounts.subStats > 0
+                  ? ` + ${statItemCounts.subStats} sub`
+                  : ''}
+                )
               </span>
               <span className="text-[11px] text-slate-500">
-                Drag handle to reorder · ✨ AI Assist for rules
+                Drag to reorder · Add nested sub-stats inside any stat
               </span>
             </div>
 
-            <div className="space-y-3 max-h-[600px] overflow-y-auto pr-1">
+            <div className="space-y-3 max-h-[650px] overflow-y-auto pr-1">
               {statBlock.stats.map((stat, idx) => {
                 const isGeneratingThisRule = generatingStatRuleId === stat.id;
                 const isDragOver = dragOverStatIdx === idx;
+                const subStats = stat.subStats || [];
                 return (
                   <div
                     key={stat.id}
@@ -1308,22 +1484,22 @@ export const CharacterEditor: React.FC = () => {
                     style={{
                       borderColor: isDragOver
                         ? 'var(--theme-accent)'
-                        : 'color-mix(in srgb, var(--theme-accent) 25%, transparent)',
+                        : 'color-mix(in srgb, var(--theme-accent) 28%, transparent)',
                     }}
                     className={`rounded-xl border bg-slate-50/80 dark:bg-slate-950/70 p-4 space-y-3 transition-all ${
                       isDragOver ? 'ring-2 ring-amber-500/40' : ''
                     }`}
                   >
-                    {/* Row 1: Drag Handle, Stat Label, Type Selector, Reorder & Delete */}
+                    {/* Row 1: Drag Handle, Stat Label, Type Selector, + Sub-Stat, Reorder & Delete */}
                     <div className="flex flex-wrap items-center justify-between gap-2">
                       <div
-                        title="Drag to reorder attribute"
+                        title="Drag to reorder stat"
                         className="cursor-grab active:cursor-grabbing text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 pt-4 shrink-0"
                       >
                         <GripVertical className="h-4 w-4" />
                       </div>
 
-                      <div className="flex-1 min-w-[160px]">
+                      <div className="flex-1 min-w-[145px]">
                         <label className="block text-[10px] font-medium uppercase tracking-wider text-slate-500 mb-0.5">
                           Stat Name
                         </label>
@@ -1335,12 +1511,12 @@ export const CharacterEditor: React.FC = () => {
                               label: e.target.value,
                             })
                           }
-                          placeholder="Stat Label (e.g., Affection, Sanity, Gold)"
+                          placeholder="Stat Label (e.g., Combat, Affection, Sanity)"
                           className="theme-focus-ring w-full rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-3 py-1.5 text-xs font-semibold text-slate-900 dark:text-white"
                         />
                       </div>
 
-                      <div className="min-w-[145px]">
+                      <div className="min-w-[135px]">
                         <label className="block text-[10px] font-medium uppercase tracking-wider text-slate-500 mb-0.5">
                           Stat Type
                         </label>
@@ -1357,10 +1533,24 @@ export const CharacterEditor: React.FC = () => {
                           <option value="number">Number</option>
                           <option value="text">Text / Status</option>
                           <option value="list">Inventory List</option>
+                          <option value="group">Group Header</option>
                         </select>
                       </div>
 
                       <div className="flex items-center gap-1 pt-4 shrink-0">
+                        <button
+                          type="button"
+                          onClick={() => handleAddSubStatItem(stat.id)}
+                          title="Add a sub-stat nested inside this stat"
+                          style={{ borderColor: 'var(--theme-accent)' }}
+                          className="theme-hover-outline flex items-center gap-1 rounded border bg-white dark:bg-slate-900 px-2 py-1 text-[11px] font-semibold text-slate-800 dark:text-slate-200 cursor-pointer"
+                        >
+                          <Plus
+                            className="h-3 w-3"
+                            style={{ color: 'var(--theme-accent)' }}
+                          />
+                          <span>Sub-Stat</span>
+                        </button>
                         <button
                           type="button"
                           disabled={idx === 0}
@@ -1390,133 +1580,393 @@ export const CharacterEditor: React.FC = () => {
                       </div>
                     </div>
 
-                    {/* Row 2: Initial Value, Min/Max, Unit */}
-                    <div
-                      style={{
-                        gridTemplateColumns:
-                          'repeat(auto-fit, minmax(min(100%, 110px), 1fr))',
-                      }}
-                      className="grid gap-2.5"
-                    >
-                      <div>
-                        <label className="block text-[10px] font-medium text-slate-500 mb-0.5">
-                          Initial Value
-                        </label>
-                        <input
-                          type="text"
-                          value={stat.defaultValue}
-                          onChange={(e) =>
-                            handleUpdateStatItem(stat.id, {
-                              defaultValue: e.target.value,
-                            })
-                          }
-                          className="theme-focus-ring font-mono w-full rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-2.5 py-1.5 text-xs text-slate-900 dark:text-white"
-                        />
-                      </div>
-
-                      {(stat.type === 'bar' || stat.type === 'number') && (
-                        <>
+                    {/* Row 2: Initial Value, Min/Max, Unit (omitted for pure Group Headers) */}
+                    {stat.type !== 'group' ? (
+                      <>
+                        <div
+                          style={{
+                            gridTemplateColumns:
+                              'repeat(auto-fit, minmax(min(100%, 105px), 1fr))',
+                          }}
+                          className="grid gap-2.5"
+                        >
                           <div>
                             <label className="block text-[10px] font-medium text-slate-500 mb-0.5">
-                              Min Value
-                            </label>
-                            <input
-                              type="number"
-                              value={stat.min ?? 0}
-                              onChange={(e) =>
-                                handleUpdateStatItem(stat.id, {
-                                  min: Number(e.target.value),
-                                })
-                              }
-                              className="theme-focus-ring font-mono w-full rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-2.5 py-1.5 text-xs text-slate-900 dark:text-white tabular-nums"
-                            />
-                          </div>
-                          <div>
-                            <label className="block text-[10px] font-medium text-slate-500 mb-0.5">
-                              Max Value
-                            </label>
-                            <input
-                              type="number"
-                              value={stat.max ?? 100}
-                              onChange={(e) =>
-                                handleUpdateStatItem(stat.id, {
-                                  max: Number(e.target.value),
-                                })
-                              }
-                              className="theme-focus-ring font-mono w-full rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-2.5 py-1.5 text-xs text-slate-900 dark:text-white tabular-nums"
-                            />
-                          </div>
-                          <div>
-                            <label className="block text-[10px] font-medium text-slate-500 mb-0.5">
-                              Unit (e.g. %, HP)
+                              Initial Value
                             </label>
                             <input
                               type="text"
-                              value={stat.unit ?? ''}
+                              value={stat.defaultValue}
                               onChange={(e) =>
                                 handleUpdateStatItem(stat.id, {
-                                  unit: e.target.value,
+                                  defaultValue: e.target.value,
                                 })
                               }
                               className="theme-focus-ring font-mono w-full rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-2.5 py-1.5 text-xs text-slate-900 dark:text-white"
                             />
                           </div>
-                        </>
-                      )}
-                    </div>
 
-                    {/* Row 3: AI Update / Progression Rule + Per-Stat ✨ AI Assist Button */}
-                    <div className="space-y-1.5">
-                      <div className="flex flex-wrap items-center justify-between gap-2">
-                        <label className="text-[11px] font-medium text-slate-600 dark:text-slate-300">
-                          When Should This Stat Change?
-                        </label>
+                          {(stat.type === 'bar' || stat.type === 'number') && (
+                            <>
+                              <div>
+                                <label className="block text-[10px] font-medium text-slate-500 mb-0.5">
+                                  Min Value
+                                </label>
+                                <input
+                                  type="number"
+                                  value={stat.min ?? 0}
+                                  onChange={(e) =>
+                                    handleUpdateStatItem(stat.id, {
+                                      min: Number(e.target.value),
+                                    })
+                                  }
+                                  className="theme-focus-ring font-mono w-full rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-2.5 py-1.5 text-xs text-slate-900 dark:text-white tabular-nums"
+                                />
+                              </div>
+                              <div>
+                                <label className="block text-[10px] font-medium text-slate-500 mb-0.5">
+                                  Max Value
+                                </label>
+                                <input
+                                  type="number"
+                                  value={stat.max ?? 100}
+                                  onChange={(e) =>
+                                    handleUpdateStatItem(stat.id, {
+                                      max: Number(e.target.value),
+                                    })
+                                  }
+                                  className="theme-focus-ring font-mono w-full rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-2.5 py-1.5 text-xs text-slate-900 dark:text-white tabular-nums"
+                                />
+                              </div>
+                              <div>
+                                <label className="block text-[10px] font-medium text-slate-500 mb-0.5">
+                                  Unit (e.g. %, HP)
+                                </label>
+                                <input
+                                  type="text"
+                                  value={stat.unit ?? ''}
+                                  onChange={(e) =>
+                                    handleUpdateStatItem(stat.id, {
+                                      unit: e.target.value,
+                                    })
+                                  }
+                                  className="theme-focus-ring font-mono w-full rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-2.5 py-1.5 text-xs text-slate-900 dark:text-white"
+                                />
+                              </div>
+                            </>
+                          )}
+                        </div>
+
+                        {stat.type === 'bar' && (
+                          <div className="font-mono text-[11px] text-slate-500 dark:text-slate-400">
+                            Preview:{' '}
+                            <span className="text-slate-800 dark:text-slate-200">
+                              {formatAsciiProgressBar(
+                                stat.defaultValue,
+                                stat.min ?? 0,
+                                stat.max ?? 100,
+                                stat.unit ?? ''
+                              )}
+                            </span>
+                          </div>
+                        )}
+
+                        {/* Row 3: AI Update / Progression Rule + AI Generate Button */}
+                        <div className="space-y-1.5">
+                          <div className="flex flex-wrap items-center justify-between gap-2">
+                            <label className="text-[11px] font-medium text-slate-600 dark:text-slate-300">
+                              When Should This Stat Change?
+                            </label>
+                            <button
+                              type="button"
+                              disabled={isGeneratingThisRule}
+                              onClick={() => handleGenerateStatRuleWithAI(stat)}
+                              style={{ borderColor: 'var(--theme-accent)' }}
+                              className="theme-hover-outline inline-flex items-center gap-1 rounded-md border bg-white dark:bg-slate-900 px-2.5 py-1 text-[11px] font-semibold text-slate-900 dark:text-white disabled:opacity-50 cursor-pointer"
+                            >
+                              {isGeneratingThisRule ? (
+                                <Loader2
+                                  className="h-3 w-3 animate-spin"
+                                  style={{ color: 'var(--theme-accent)' }}
+                                />
+                              ) : (
+                                <Sparkles
+                                  className="h-3 w-3"
+                                  style={{ color: 'var(--theme-accent)' }}
+                                />
+                              )}
+                              <span>AI Generate</span>
+                            </button>
+                          </div>
+                          <input
+                            type="text"
+                            value={stat.changeRules}
+                            onChange={(e) =>
+                              handleUpdateStatItem(stat.id, {
+                                changeRules: e.target.value,
+                              })
+                            }
+                            placeholder="When and how should the AI modify this stat every turn?"
+                            className="theme-focus-ring w-full rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-3 py-1.5 text-xs text-slate-700 dark:text-slate-200"
+                          />
+                        </div>
+                      </>
+                    ) : (
+                      <div className="flex items-center justify-between gap-2 rounded-lg border border-dashed border-slate-300 dark:border-slate-800 bg-white/60 dark:bg-slate-900/50 px-3 py-2 text-[11px] text-slate-500">
+                        <span>
+                          Group header container ({subStats.length} sub-stat
+                          {subStats.length === 1 ? '' : 's'})
+                        </span>
                         <button
                           type="button"
-                          disabled={isGeneratingThisRule}
-                          onClick={() => handleGenerateStatRuleWithAI(stat)}
-                          style={{ borderColor: 'var(--theme-accent)' }}
-                          className="theme-hover-outline inline-flex items-center gap-1 rounded-md border bg-white dark:bg-slate-900 px-2.5 py-1 text-[11px] font-semibold text-slate-900 dark:text-white disabled:opacity-50 cursor-pointer"
+                          onClick={() => handleAddSubStatItem(stat.id)}
+                          className="font-semibold hover:underline cursor-pointer"
+                          style={{ color: 'var(--theme-accent)' }}
                         >
-                          {isGeneratingThisRule ? (
-                            <Loader2
-                              className="h-3 w-3 animate-spin"
-                              style={{ color: 'var(--theme-accent)' }}
-                            />
-                          ) : (
-                            <Sparkles
+                          + Add Sub-Stat
+                        </button>
+                      </div>
+                    )}
+
+                    {/* Nested Sub-Stats Container */}
+                    {subStats.length > 0 && (
+                      <div
+                        style={{ borderColor: 'var(--theme-accent)' }}
+                        className="mt-2 ml-3 border-l-2 pl-3 space-y-2.5"
+                      >
+                        <div className="flex items-center justify-between text-[10px] font-bold uppercase tracking-wider text-slate-500">
+                          <span className="inline-flex items-center gap-1">
+                            <CornerDownRight
                               className="h-3 w-3"
                               style={{ color: 'var(--theme-accent)' }}
                             />
-                          )}
-                          <span>✨ AI Assist Rule</span>
-                        </button>
+                            <span>
+                              Sub-Stats inside {stat.label || 'Stat'} (
+                              {subStats.length})
+                            </span>
+                          </span>
+                        </div>
+
+                        {subStats.map((sub, subIdx) => {
+                          const isGeneratingSubRule =
+                            generatingStatRuleId === sub.id;
+                          return (
+                            <div
+                              key={sub.id}
+                              className="rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900/90 p-3 space-y-2.5"
+                            >
+                              <div className="flex flex-wrap items-center justify-between gap-2">
+                                <div className="flex-1 min-w-[130px]">
+                                  <label className="block text-[9px] font-medium uppercase tracking-wider text-slate-400 mb-0.5">
+                                    Sub-Stat Name
+                                  </label>
+                                  <input
+                                    type="text"
+                                    value={sub.label}
+                                    onChange={(e) =>
+                                      handleUpdateStatItem(sub.id, {
+                                        label: e.target.value,
+                                      })
+                                    }
+                                    placeholder="e.g., Trust, HP, Stamina"
+                                    className="theme-focus-ring w-full rounded-md border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 px-2.5 py-1 text-xs font-semibold text-slate-900 dark:text-white"
+                                  />
+                                </div>
+
+                                <div className="min-w-[125px]">
+                                  <label className="block text-[9px] font-medium uppercase tracking-wider text-slate-400 mb-0.5">
+                                    Type
+                                  </label>
+                                  <select
+                                    value={sub.type}
+                                    onChange={(e) =>
+                                      handleUpdateStatItem(sub.id, {
+                                        type: e.target.value as StatItemType,
+                                      })
+                                    }
+                                    className="theme-focus-ring w-full rounded-md border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 px-2 py-1 text-xs font-medium text-slate-800 dark:text-slate-200 cursor-pointer"
+                                  >
+                                    <option value="bar">Bar [████░░]</option>
+                                    <option value="number">Number</option>
+                                    <option value="text">Text / Status</option>
+                                    <option value="list">Inventory List</option>
+                                  </select>
+                                </div>
+
+                                <div className="flex items-center gap-1 pt-3.5 shrink-0">
+                                  <button
+                                    type="button"
+                                    disabled={subIdx === 0}
+                                    onClick={() =>
+                                      handleMoveSubStatItem(
+                                        stat.id,
+                                        subIdx,
+                                        -1
+                                      )
+                                    }
+                                    title="Move sub-stat up"
+                                    className="rounded border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 p-1 text-slate-500 hover:text-slate-900 dark:hover:text-white disabled:opacity-30 cursor-pointer"
+                                  >
+                                    <ArrowUp className="h-3 w-3" />
+                                  </button>
+                                  <button
+                                    type="button"
+                                    disabled={subIdx === subStats.length - 1}
+                                    onClick={() =>
+                                      handleMoveSubStatItem(stat.id, subIdx, 1)
+                                    }
+                                    title="Move sub-stat down"
+                                    className="rounded border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 p-1 text-slate-500 hover:text-slate-900 dark:hover:text-white disabled:opacity-30 cursor-pointer"
+                                  >
+                                    <ArrowDown className="h-3 w-3" />
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => handleDeleteStatItem(sub.id)}
+                                    title="Delete sub-stat"
+                                    className="rounded border border-rose-200 dark:border-rose-900/40 bg-slate-50 dark:bg-slate-950 p-1 text-slate-400 hover:text-rose-600 dark:hover:text-rose-400 cursor-pointer"
+                                  >
+                                    <Trash2 className="h-3 w-3" />
+                                  </button>
+                                </div>
+                              </div>
+
+                              <div
+                                style={{
+                                  gridTemplateColumns:
+                                    'repeat(auto-fit, minmax(min(100%, 88px), 1fr))',
+                                }}
+                                className="grid gap-2"
+                              >
+                                <div>
+                                  <label className="block text-[9px] font-medium text-slate-500 mb-0.5">
+                                    Initial Value
+                                  </label>
+                                  <input
+                                    type="text"
+                                    value={sub.defaultValue}
+                                    onChange={(e) =>
+                                      handleUpdateStatItem(sub.id, {
+                                        defaultValue: e.target.value,
+                                      })
+                                    }
+                                    className="theme-focus-ring font-mono w-full rounded-md border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 px-2 py-1 text-xs text-slate-900 dark:text-white"
+                                  />
+                                </div>
+
+                                {(sub.type === 'bar' ||
+                                  sub.type === 'number') && (
+                                  <>
+                                    <div>
+                                      <label className="block text-[9px] font-medium text-slate-500 mb-0.5">
+                                        Min
+                                      </label>
+                                      <input
+                                        type="number"
+                                        value={sub.min ?? 0}
+                                        onChange={(e) =>
+                                          handleUpdateStatItem(sub.id, {
+                                            min: Number(e.target.value),
+                                          })
+                                        }
+                                        className="theme-focus-ring font-mono w-full rounded-md border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 px-2 py-1 text-xs text-slate-900 dark:text-white tabular-nums"
+                                      />
+                                    </div>
+                                    <div>
+                                      <label className="block text-[9px] font-medium text-slate-500 mb-0.5">
+                                        Max
+                                      </label>
+                                      <input
+                                        type="number"
+                                        value={sub.max ?? 100}
+                                        onChange={(e) =>
+                                          handleUpdateStatItem(sub.id, {
+                                            max: Number(e.target.value),
+                                          })
+                                        }
+                                        className="theme-focus-ring font-mono w-full rounded-md border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 px-2 py-1 text-xs text-slate-900 dark:text-white tabular-nums"
+                                      />
+                                    </div>
+                                    <div>
+                                      <label className="block text-[9px] font-medium text-slate-500 mb-0.5">
+                                        Unit
+                                      </label>
+                                      <input
+                                        type="text"
+                                        value={sub.unit ?? ''}
+                                        onChange={(e) =>
+                                          handleUpdateStatItem(sub.id, {
+                                            unit: e.target.value,
+                                          })
+                                        }
+                                        className="theme-focus-ring font-mono w-full rounded-md border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 px-2 py-1 text-xs text-slate-900 dark:text-white"
+                                      />
+                                    </div>
+                                  </>
+                                )}
+                              </div>
+
+                              <div className="space-y-1">
+                                <div className="flex flex-wrap items-center justify-between gap-2">
+                                  <label className="text-[10px] font-medium text-slate-500 dark:text-slate-400">
+                                    Update Rule
+                                  </label>
+                                  <button
+                                    type="button"
+                                    disabled={isGeneratingSubRule}
+                                    onClick={() =>
+                                      handleGenerateStatRuleWithAI(
+                                        sub,
+                                        stat.label
+                                      )
+                                    }
+                                    style={{ borderColor: 'var(--theme-accent)' }}
+                                    className="theme-hover-outline inline-flex items-center gap-1 rounded border bg-slate-50 dark:bg-slate-950 px-2 py-0.5 text-[10px] font-semibold text-slate-900 dark:text-white disabled:opacity-50 cursor-pointer"
+                                  >
+                                    {isGeneratingSubRule ? (
+                                      <Loader2
+                                        className="h-2.5 w-2.5 animate-spin"
+                                        style={{ color: 'var(--theme-accent)' }}
+                                      />
+                                    ) : (
+                                      <Sparkles
+                                        className="h-2.5 w-2.5"
+                                        style={{ color: 'var(--theme-accent)' }}
+                                      />
+                                    )}
+                                    <span>AI Generate</span>
+                                  </button>
+                                </div>
+                                <input
+                                  type="text"
+                                  value={sub.changeRules}
+                                  onChange={(e) =>
+                                    handleUpdateStatItem(sub.id, {
+                                      changeRules: e.target.value,
+                                    })
+                                  }
+                                  placeholder="When should this sub-stat change?"
+                                  className="theme-focus-ring w-full rounded-md border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 px-2.5 py-1 text-[11px] text-slate-700 dark:text-slate-200"
+                                />
+                              </div>
+                            </div>
+                          );
+                        })}
                       </div>
-                      <input
-                        type="text"
-                        value={stat.changeRules}
-                        onChange={(e) =>
-                          handleUpdateStatItem(stat.id, {
-                            changeRules: e.target.value,
-                          })
-                        }
-                        placeholder="When and how should the AI modify this stat every turn?"
-                        className="theme-focus-ring w-full rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-3 py-1.5 text-xs text-slate-700 dark:text-slate-200"
-                      />
-                    </div>
+                    )}
                   </div>
                 );
               })}
 
               {statBlock.stats.length === 0 && (
                 <div className="rounded-xl border border-dashed border-slate-300 dark:border-slate-800 p-6 text-center text-xs text-slate-400">
-                  No stats added yet. Click &ldquo;+ Add Stat&rdquo; above to add RPG bars, relationship meters, or an inventory list.
+                  No stats added yet. Click &ldquo;+ Add Stat&rdquo; above to add RPG bars, relationship meters, inventory lists, or grouped sub-stats.
                 </div>
               )}
             </div>
           </div>
 
-          {/* RIGHT COLUMN: Template & Preview */}
+          {/* RIGHT COLUMN: Template & Live Auto-Synced Preview */}
           <div className="space-y-4 min-w-0 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-950/50 p-4">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <div>
@@ -1527,54 +1977,93 @@ export const CharacterEditor: React.FC = () => {
                   Shows at the end of each reply using placeholders like{' '}
                   <code className="font-mono text-slate-700 dark:text-slate-300">
                     {'{{stat:Name}}'}
+                  </code>{' '}
+                  or{' '}
+                  <code className="font-mono text-slate-700 dark:text-slate-300">
+                    {'{{stat:Parent.Sub}}'}
                   </code>
                   .
                 </p>
               </div>
               <div className="flex flex-wrap items-center gap-1.5">
-                <button
-                  type="button"
-                  onClick={() =>
-                    handleApplyStatTemplatePreset('compact_rpg_bar')
-                  }
-                  className="theme-hover-outline rounded-md border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-2.5 py-1 text-xs font-medium text-slate-700 dark:text-slate-200 cursor-pointer"
-                >
-                  Compact RPG Bar
-                </button>
-                <button
-                  type="button"
-                  onClick={() =>
-                    handleApplyStatTemplatePreset('markdown_table')
-                  }
-                  className="theme-hover-outline rounded-md border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-2.5 py-1 text-xs font-medium text-slate-700 dark:text-slate-200 cursor-pointer"
-                >
-                  Table
-                </button>
-                <button
-                  type="button"
-                  onClick={() =>
-                    handleApplyStatTemplatePreset('collapsible_block')
-                  }
-                  className="theme-hover-outline rounded-md border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-2.5 py-1 text-xs font-medium text-slate-700 dark:text-slate-200 cursor-pointer"
-                >
-                  Collapsible
-                </button>
+                {(
+                  [
+                    { id: 'compact_rpg_bar', label: 'Compact RPG Bar' },
+                    { id: 'markdown_table', label: 'Table' },
+                    { id: 'collapsible_block', label: 'Collapsible' },
+                  ] as const
+                ).map((presetOpt) => {
+                  const isActivePreset =
+                    !statBlock.isCustomTemplate &&
+                    activeStatTemplatePreset === presetOpt.id;
+                  return (
+                    <button
+                      key={presetOpt.id}
+                      type="button"
+                      onClick={() =>
+                        handleApplyStatTemplatePreset(presetOpt.id)
+                      }
+                      style={
+                        isActivePreset
+                          ? {
+                              borderColor: 'var(--theme-accent)',
+                              backgroundColor:
+                                'color-mix(in srgb, var(--theme-accent) 14%, transparent)',
+                            }
+                          : undefined
+                      }
+                      className={`theme-hover-outline rounded-md border px-2.5 py-1 text-xs font-medium cursor-pointer ${
+                        isActivePreset
+                          ? 'text-slate-900 dark:text-white font-semibold'
+                          : 'border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 text-slate-700 dark:text-slate-200'
+                      }`}
+                    >
+                      {presetOpt.label}
+                    </button>
+                  );
+                })}
               </div>
             </div>
 
-            <textarea
-              rows={6}
-              value={statBlock.formatTemplate}
-              onChange={(e) =>
-                setStatBlock((prev) => ({
-                  ...prev,
-                  formatTemplate: e.target.value,
-                }))
-              }
-              className="theme-focus-ring font-mono w-full rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-3 text-xs text-slate-800 dark:text-slate-200"
-            />
+            <div className="space-y-1.5">
+              <div className="flex items-center justify-between text-[11px]">
+                <span className="font-medium text-slate-600 dark:text-slate-400">
+                  Template Format
+                </span>
+                {statBlock.isCustomTemplate ? (
+                  <button
+                    type="button"
+                    onClick={() =>
+                      handleApplyStatTemplatePreset(activeStatTemplatePreset)
+                    }
+                    className="inline-flex items-center gap-1 font-semibold hover:underline cursor-pointer"
+                    style={{ color: 'var(--theme-accent)' }}
+                  >
+                    <RefreshCw className="h-3 w-3" />
+                    <span>Re-sync Layout to Stats</span>
+                  </button>
+                ) : (
+                  <span className="font-mono text-[10px] text-emerald-600 dark:text-emerald-400">
+                    Auto-Synced with Stats
+                  </span>
+                )}
+              </div>
 
-            {/* Preview */}
+              <textarea
+                rows={6}
+                value={statBlock.formatTemplate}
+                onChange={(e) =>
+                  setStatBlock((prev) => ({
+                    ...prev,
+                    formatTemplate: e.target.value,
+                    isCustomTemplate: true,
+                  }))
+                }
+                className="theme-focus-ring font-mono w-full rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-3 text-xs text-slate-800 dark:text-slate-200"
+              />
+            </div>
+
+            {/* Live Preview */}
             <div className="space-y-1.5">
               <div className="flex items-center justify-between text-xs font-medium text-slate-600 dark:text-slate-400">
                 <span>Starting Stat Preview (added to First Message)</span>
@@ -1598,9 +2087,7 @@ export const CharacterEditor: React.FC = () => {
                 className="h-4 w-4 shrink-0"
                 style={{ color: 'var(--theme-accent)' }}
               />
-              <span>
-                Apply Stat Tracker to Character
-              </span>
+              <span>Apply Stat Tracker to Character</span>
             </button>
           </div>
         </div>
@@ -1811,8 +2298,7 @@ export const CharacterEditor: React.FC = () => {
         tooltip="The opening message {{char}} sends when a new chat begins. Use *italics* for actions and quotes for spoken dialogue."
         rows={7}
         isPermanentTokenField={false}
-        usePortraitVisionContext={usePortraitAsVisionContext}
-        onTogglePortraitVisionContext={setUsePortraitAsVisionContext}
+        extraContextImages={extraContextImages}
       />
     </div>
   );
@@ -2301,6 +2787,16 @@ export const CharacterEditor: React.FC = () => {
           </div>
         )}
 
+        {/* Context-Only Extra Reference Images (shared across Wizard & Full Editor modes; never saved to card) */}
+        <ContextImagesBar
+          images={extraContextImages}
+          onAddImages={handleAddExtraContextImages}
+          onRemoveImage={handleRemoveExtraContextImage}
+          onClearAll={handleClearExtraContextImages}
+          entityLabel="Character"
+          visionSupported={visionSupported}
+        />
+
         {/* MODE A: GUIDED 5-STEP WIZARD MODE */}
         {settings.editorMode === 'wizard' ? (
           <div className="space-y-6">
@@ -2384,7 +2880,7 @@ export const CharacterEditor: React.FC = () => {
                     </span>
                   </div>
                   <p className="text-xs text-slate-500 dark:text-slate-400">
-                    Describe a character idea in 1–3 sentences (or upload a portrait below with Vision enabled) and let the AI draft the Name, Description, Personality, Scenario, First Message, and Example Dialogue automatically.
+                    Describe a character idea in 1–3 sentences (attached Portrait &amp; Context Images are included automatically when your selected model supports images) and let the AI draft the Name, Description, Personality, Scenario, First Message, and Example Dialogue.
                   </p>
                   <div className="flex flex-col sm:flex-row gap-2.5">
                     <input
@@ -2399,11 +2895,7 @@ export const CharacterEditor: React.FC = () => {
                       disabled={
                         isGeneratingConcept ||
                         (!conceptPrompt.trim() &&
-                          !(
-                            visionSupported &&
-                            hasPortraitImage &&
-                            usePortraitAsVisionContext
-                          ))
+                          activeCharacterVisionUrls.length === 0)
                       }
                       style={{ borderColor: 'var(--theme-accent)' }}
                       className="theme-hover-outline flex items-center justify-center gap-2 rounded-lg border bg-slate-900 dark:bg-white px-4 py-2 text-xs font-semibold text-white dark:text-slate-900 disabled:opacity-50 cursor-pointer whitespace-nowrap"
@@ -2422,59 +2914,31 @@ export const CharacterEditor: React.FC = () => {
                     </button>
                   </div>
 
-                  {/* Wizard Step 1 Vision Context Controls when Portrait is Uploaded */}
-                  {visionSupported && hasPortraitImage && (
-                    <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-slate-200/80 dark:border-slate-800/80">
-                      <button
-                        type="button"
-                        onClick={() =>
-                          setUsePortraitAsVisionContext((prev) => !prev)
-                        }
-                        style={
-                          usePortraitAsVisionContext
-                            ? {
-                                borderColor: 'var(--theme-accent)',
-                                backgroundColor:
-                                  'color-mix(in srgb, var(--theme-accent) 14%, transparent)',
-                              }
-                            : undefined
-                        }
-                        className={`theme-hover-outline inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-xs font-semibold transition-colors cursor-pointer ${
-                          usePortraitAsVisionContext
-                            ? 'text-slate-900 dark:text-white'
-                            : 'border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 text-slate-500 dark:text-slate-400'
-                        }`}
-                      >
-                        <span>👁️ Include Portrait in AI Prompt (~260 tok)</span>
-                        {usePortraitAsVisionContext && (
-                          <Check
-                            className="h-3.5 w-3.5 shrink-0"
-                            style={{ color: 'var(--theme-accent)' }}
-                          />
-                        )}
-                      </button>
-
-                      <button
-                        type="button"
-                        disabled={isDescribingPortrait}
-                        onClick={handleDescribeAppearanceFromPortraitCard}
-                        style={{ borderColor: 'var(--theme-accent)' }}
-                        className="theme-hover-outline inline-flex items-center gap-1.5 rounded-md border bg-slate-50 dark:bg-slate-950 px-3 py-1 text-xs font-semibold text-slate-800 dark:text-slate-200 disabled:opacity-50 cursor-pointer"
-                      >
-                        {isDescribingPortrait ? (
-                          <Loader2
-                            className="h-3.5 w-3.5 animate-spin"
-                            style={{ color: 'var(--theme-accent)' }}
-                          />
-                        ) : (
-                          <Sparkles
-                            className="h-3.5 w-3.5"
-                            style={{ color: 'var(--theme-accent)' }}
-                          />
-                        )}
-                        <span>✨ Describe from Portrait</span>
-                      </button>
+                  {/* Active Visual Context Status Pill (Auto-included if selected model supports images) */}
+                  {activeCharacterVisionUrls.length > 0 ? (
+                    <div className="flex flex-wrap items-center gap-2 pt-2 border-t border-slate-200/80 dark:border-slate-800/80 text-[11px]">
+                      <span className="inline-flex items-center gap-1.5 rounded-md border border-emerald-500/30 bg-emerald-500/10 px-2.5 py-1 font-semibold text-emerald-700 dark:text-emerald-300">
+                        <span>
+                          👁️ Auto-including Images:
+                          {hasPortraitImage ? ' Portrait' : ''}
+                          {hasPortraitImage && extraContextImages.length > 0
+                            ? ' +'
+                            : ''}
+                          {extraContextImages.length > 0
+                            ? ` ${extraContextImages.length} Extra Reference Image${extraContextImages.length > 1 ? 's' : ''}`
+                            : ''}
+                        </span>
+                      </span>
                     </div>
+                  ) : (
+                    !visionSupported &&
+                    (hasPortraitImage || extraContextImages.length > 0) && (
+                      <div className="flex flex-wrap items-center gap-2 pt-2 border-t border-slate-200/80 dark:border-slate-800/80 text-[11px]">
+                        <span className="inline-flex items-center gap-1.5 rounded-md border border-amber-500/30 bg-amber-500/10 px-2.5 py-1 font-semibold text-amber-700 dark:text-amber-300">
+                          Selected model doesn&apos;t support images — generating from text &amp; tags only
+                        </span>
+                      </div>
+                    )
                   )}
                 </form>
 
@@ -2594,8 +3058,7 @@ export const CharacterEditor: React.FC = () => {
                   tooltip="How {{char}} looks, what they wear, their background, and key traits."
                   rows={7}
                   isPermanentTokenField={true}
-                  usePortraitVisionContext={usePortraitAsVisionContext}
-                  onTogglePortraitVisionContext={setUsePortraitAsVisionContext}
+                  extraContextImages={extraContextImages}
                 />
                 <SmartEditor
                   label="Personality"
@@ -2605,8 +3068,7 @@ export const CharacterEditor: React.FC = () => {
                   tooltip="How {{char}} acts, speaks, and reacts to others."
                   rows={5}
                   isPermanentTokenField={true}
-                  usePortraitVisionContext={usePortraitAsVisionContext}
-                  onTogglePortraitVisionContext={setUsePortraitAsVisionContext}
+                  extraContextImages={extraContextImages}
                 />
               </div>
             )}
@@ -2622,8 +3084,7 @@ export const CharacterEditor: React.FC = () => {
                   tooltip="Where the story starts and the situation between {{char}} and {{user}}."
                   rows={4}
                   isPermanentTokenField={true}
-                  usePortraitVisionContext={usePortraitAsVisionContext}
-                  onTogglePortraitVisionContext={setUsePortraitAsVisionContext}
+                  extraContextImages={extraContextImages}
                 />
                 {renderGreetingsCarousel()}
               </div>
@@ -2640,8 +3101,7 @@ export const CharacterEditor: React.FC = () => {
                   tooltip="Sample back-and-forth lines using <START>, {{user}}, and {{char}} to show the AI how {{char}} talks."
                   rows={6}
                   isPermanentTokenField={false}
-                  usePortraitVisionContext={usePortraitAsVisionContext}
-                  onTogglePortraitVisionContext={setUsePortraitAsVisionContext}
+                  extraContextImages={extraContextImages}
                 />
                 <SmartEditor
                   label="System Prompt"
@@ -2651,8 +3111,7 @@ export const CharacterEditor: React.FC = () => {
                   tooltip="Optional custom rules for how the AI should roleplay this character."
                   rows={4}
                   isPermanentTokenField={true}
-                  usePortraitVisionContext={usePortraitAsVisionContext}
-                  onTogglePortraitVisionContext={setUsePortraitAsVisionContext}
+                  extraContextImages={extraContextImages}
                 />
                 <SmartEditor
                   label="Post-History Instructions"
@@ -2664,8 +3123,7 @@ export const CharacterEditor: React.FC = () => {
                   tooltip="High-priority reminders placed near the bottom of the chat right before the AI replies."
                   rows={4}
                   isPermanentTokenField={true}
-                  usePortraitVisionContext={usePortraitAsVisionContext}
-                  onTogglePortraitVisionContext={setUsePortraitAsVisionContext}
+                  extraContextImages={extraContextImages}
                 />
                 <SmartEditor
                   label="Creator Notes"
@@ -2675,8 +3133,7 @@ export const CharacterEditor: React.FC = () => {
                   tooltip="Notes for other players (not sent to the AI during chat)."
                   rows={3}
                   isPermanentTokenField={false}
-                  usePortraitVisionContext={usePortraitAsVisionContext}
-                  onTogglePortraitVisionContext={setUsePortraitAsVisionContext}
+                  extraContextImages={extraContextImages}
                 />
               </div>
             )}
@@ -2945,8 +3402,7 @@ export const CharacterEditor: React.FC = () => {
                 tooltip="How {{char}} looks, what they wear, their backstory, and key traits. Always included in chat."
                 rows={6}
                 isPermanentTokenField={true}
-                usePortraitVisionContext={usePortraitAsVisionContext}
-                onTogglePortraitVisionContext={setUsePortraitAsVisionContext}
+                extraContextImages={extraContextImages}
               />
 
               <div
@@ -2964,8 +3420,7 @@ export const CharacterEditor: React.FC = () => {
                   tooltip="How {{char}} acts, speaks, thinks, and reacts to others."
                   rows={5}
                   isPermanentTokenField={true}
-                  usePortraitVisionContext={usePortraitAsVisionContext}
-                  onTogglePortraitVisionContext={setUsePortraitAsVisionContext}
+                  extraContextImages={extraContextImages}
                 />
 
                 <SmartEditor
@@ -2976,8 +3431,7 @@ export const CharacterEditor: React.FC = () => {
                   tooltip="Where the story starts and the situation between {{char}} and {{user}}."
                   rows={5}
                   isPermanentTokenField={true}
-                  usePortraitVisionContext={usePortraitAsVisionContext}
-                  onTogglePortraitVisionContext={setUsePortraitAsVisionContext}
+                  extraContextImages={extraContextImages}
                 />
               </div>
 
@@ -2992,8 +3446,7 @@ export const CharacterEditor: React.FC = () => {
                 tooltip="Sample chats using <START>, {{user}}, and {{char}} to teach the AI how {{char}} speaks and formats replies."
                 rows={5}
                 isPermanentTokenField={false}
-                usePortraitVisionContext={usePortraitAsVisionContext}
-                onTogglePortraitVisionContext={setUsePortraitAsVisionContext}
+                extraContextImages={extraContextImages}
               />
 
               <div
@@ -3011,8 +3464,7 @@ export const CharacterEditor: React.FC = () => {
                   tooltip="Optional custom rules that override or add to SillyTavern's main prompt for this character."
                   rows={4}
                   isPermanentTokenField={true}
-                  usePortraitVisionContext={usePortraitAsVisionContext}
-                  onTogglePortraitVisionContext={setUsePortraitAsVisionContext}
+                  extraContextImages={extraContextImages}
                 />
 
                 <SmartEditor
@@ -3025,8 +3477,7 @@ export const CharacterEditor: React.FC = () => {
                   tooltip="High-priority reminders added near the end of chat history right before the AI replies. Stat Tracker rules also go here."
                   rows={4}
                   isPermanentTokenField={true}
-                  usePortraitVisionContext={usePortraitAsVisionContext}
-                  onTogglePortraitVisionContext={setUsePortraitAsVisionContext}
+                  extraContextImages={extraContextImages}
                 />
               </div>
 
@@ -3038,8 +3489,7 @@ export const CharacterEditor: React.FC = () => {
                 tooltip="Tips and notes for users downloading your card (never sent to the AI or counted as chat tokens)."
                 rows={3}
                 isPermanentTokenField={false}
-                usePortraitVisionContext={usePortraitAsVisionContext}
-                onTogglePortraitVisionContext={setUsePortraitAsVisionContext}
+                extraContextImages={extraContextImages}
               />
             </div>
           </div>

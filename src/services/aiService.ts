@@ -23,6 +23,7 @@ export const VISION_MODEL_SUBSTRINGS: readonly string[] = [
   'qwen-vl',
   'qwen2-vl',
   'qwen2.5-vl',
+  'qwen2.5vl',
   'qwen3',
   'pixtral',
   'llava',
@@ -31,11 +32,27 @@ export const VISION_MODEL_SUBSTRINGS: readonly string[] = [
   'llama-3.2-vision',
   'llama3.2-vision',
   'minicpm-v',
+  'internvl',
+  'mistral-small-3',
+  'kimi-vl',
+  'glm-4v',
+  'glm-4.1v',
+  'molmo',
+  'cogvlm',
   'grok',
   'gpt-4o',
   'gpt-4.1',
+  'gpt-4.5',
+  'gpt-5',
+  'o1-',
+  'o3-',
+  'o4-',
   'claude-3',
   'claude-4',
+  'vision',
+  '-vl',
+  ':vl',
+  'vl-',
 ];
 
 /**
@@ -1079,6 +1096,11 @@ export interface GenerateCompletionOptions {
    */
   imageDataUrl?: string;
   /**
+   * Optional array of visual context Data URLs (Portrait + Extra Context-Only Reference Images).
+   * NEVER passed by inline Ghost-Text autocomplete; only used on-demand in AI Assist / Wizard.
+   */
+  imageDataUrls?: string[];
+  /**
    * Optional callback invoked if a local server returns HTTP 400 because the GGUF lacks a vision `mmproj` adapter
    * and TavernSmith automatically retries and succeeds with text-only context.
    */
@@ -1229,23 +1251,32 @@ export async function generateCompletionDetailed(
   );
   const temperature = options?.temperature ?? config.temperature ?? 0.75;
 
-  // Compress image for Vision Context if provided (~260 tokens max, 512px longest edge, JPEG 0.8)
-  let compressedJpegDataUrl: string | undefined;
-  let compressedBase64Data: string | undefined;
-  if (options?.imageDataUrl && typeof options.imageDataUrl === 'string') {
+  // Compress all unique images for Vision Context (~260 tokens max per image, 512px longest edge, JPEG 0.8)
+  const rawImageUrls = Array.from(
+    new Set(
+      [
+        ...(Array.isArray(options?.imageDataUrls) ? options.imageDataUrls : []),
+        ...(options?.imageDataUrl ? [options.imageDataUrl] : []),
+      ].filter(
+        (u): u is string => typeof u === 'string' && u.trim().length > 0
+      )
+    )
+  );
+
+  const compressedImages: Array<{ dataUrl: string; base64: string }> = [];
+  for (const rawUrl of rawImageUrls) {
     try {
-      compressedJpegDataUrl = await compressImageForVision(
-        options.imageDataUrl,
-        512
-      );
-      const commaIdx = compressedJpegDataUrl.indexOf(',');
-      compressedBase64Data =
+      const jpegDataUrl = await compressImageForVision(rawUrl, 512);
+      const commaIdx = jpegDataUrl.indexOf(',');
+      const base64Data =
         commaIdx !== -1
-          ? compressedJpegDataUrl.slice(commaIdx + 1).trim()
-          : compressedJpegDataUrl;
+          ? jpegDataUrl.slice(commaIdx + 1).trim()
+          : jpegDataUrl.trim();
+      if (jpegDataUrl && base64Data) {
+        compressedImages.push({ dataUrl: jpegDataUrl, base64: base64Data });
+      }
     } catch {
-      compressedJpegDataUrl = undefined;
-      compressedBase64Data = undefined;
+      // Skip unreadable individual image without blocking generation
     }
   }
 
@@ -1270,11 +1301,11 @@ export async function generateCompletionDetailed(
           ]
         : [{ text: prompt }];
 
-      if (compressedBase64Data) {
+      for (const img of compressedImages) {
         userParts.push({
           inlineData: {
             mimeType: 'image/jpeg',
-            data: compressedBase64Data,
+            data: img.base64,
           },
         });
       }
@@ -1395,7 +1426,7 @@ export async function generateCompletionDetailed(
           reasoning: parsedDirect.reasoning,
           detectedFormat: 'gemini_thinking',
           sentSystemPrompt: fullSystemPrompt,
-          usedVisionContext: Boolean(compressedBase64Data),
+          usedVisionContext: compressedImages.length > 0,
         };
       }
 
@@ -1426,12 +1457,16 @@ export async function generateCompletionDetailed(
         temperature,
         maxTokens,
         stopSequences: options?.stop,
-        ...(compressedBase64Data
+        ...(compressedImages.length > 0
           ? {
               inlineData: {
                 mimeType: 'image/jpeg',
-                data: compressedBase64Data,
+                data: compressedImages[0].base64,
               },
+              inlineDataList: compressedImages.map((img) => ({
+                mimeType: 'image/jpeg',
+                data: img.base64,
+              })),
             }
           : {}),
       }),
@@ -1465,7 +1500,7 @@ export async function generateCompletionDetailed(
       reasoning: parsed.reasoning,
       detectedFormat: 'gemini_thinking',
       sentSystemPrompt: fullSystemPrompt,
-      usedVisionContext: Boolean(compressedBase64Data),
+      usedVisionContext: compressedImages.length > 0,
     };
   }
 
@@ -1486,33 +1521,36 @@ export async function generateCompletionDetailed(
     { role: 'user', content: prompt },
   ];
 
-  // Multimodal OpenAI/LM Studio/OpenRouter content array structures when compressedJpegDataUrl is present
-  const systemMergedUserMessages = compressedJpegDataUrl
-    ? [
-        {
-          role: 'user',
-          content: [
-            { type: 'text', text: mergedPromptText },
-            { type: 'image_url', image_url: { url: compressedJpegDataUrl } },
-          ],
-        },
-      ]
-    : textOnlySystemMergedMessages;
+  const openAiImageParts = compressedImages.map((img) => ({
+    type: 'image_url',
+    image_url: { url: img.dataUrl },
+  }));
+
+  // Multimodal OpenAI/LM Studio/OpenRouter content array structures when compressedImages is non-empty
+  const systemMergedUserMessages =
+    compressedImages.length > 0
+      ? [
+          {
+            role: 'user',
+            content: [
+              { type: 'text', text: mergedPromptText },
+              ...openAiImageParts,
+            ],
+          },
+        ]
+      : textOnlySystemMergedMessages;
 
   const isSystemMergedFormat =
     effectiveFormat === 'gemma' || effectiveFormat === 'mistral';
 
   const primaryMessages = isSystemMergedFormat
     ? systemMergedUserMessages
-    : compressedJpegDataUrl
+    : compressedImages.length > 0
       ? [
           { role: 'system', content: fullSystemPrompt },
           {
             role: 'user',
-            content: [
-              { type: 'text', text: prompt },
-              { type: 'image_url', image_url: { url: compressedJpegDataUrl } },
-            ],
+            content: [{ type: 'text', text: prompt }, ...openAiImageParts],
           },
         ]
       : textOnlyStandardMessages;
@@ -1636,7 +1674,7 @@ export async function generateCompletionDetailed(
     if (result) {
       return {
         ...result,
-        usedVisionContext: Boolean(compressedJpegDataUrl),
+        usedVisionContext: compressedImages.length > 0,
       };
     }
     throw new AIServiceError(
@@ -1672,7 +1710,7 @@ export async function generateCompletionDetailed(
         if (retryResult) {
           return {
             ...retryResult,
-            usedVisionContext: Boolean(compressedJpegDataUrl),
+            usedVisionContext: compressedImages.length > 0,
           };
         }
         throw new AIServiceError(
@@ -1684,7 +1722,7 @@ export async function generateCompletionDetailed(
       }
     }
 
-    if (compressedJpegDataUrl) {
+    if (compressedImages.length > 0) {
       const mmprojWarning =
         'Local server returned HTTP 400 for image input — this GGUF model likely lacks a Vision (mmproj) projector adapter in LM Studio / Ollama. Automatically retried using text-only context.';
 
