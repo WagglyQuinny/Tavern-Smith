@@ -2,6 +2,22 @@
 
 All notable changes to **TavernSmith** are documented in this file. This file is synced with the in-app **About & Changelog** modal (`src/utils/changelogData.ts`) and the automated GitHub Release workflows (`.github/workflows/version-update.yml` & `.github/workflows/release.yml`).
 
+## [v4.4.1] - 2026-11-17
+
+### 🚀 Highlights & Feature Additions
+- Add support for character reaction images (63241c9)
+- Add body type and skin trait tags (63d6333)
+
+### 🛠️ Bug Fixes, AI & Stability Improvements
+- Verified TypeScript compilation, zero-crash sandbox storage guards, and cross-platform standalone launcher compatibility.
+
+### 📂 Detailed Component & File Changes
+- **Repository Diff Summary**: 4 files changed, 1308 insertions(+), 3 deletions(-)
+- `src/components/CharacterEditor.tsx — Updated Character Card Workbench & Wizard (+694 / -3 lines)`
+- `src/context/StoreContext.tsx — Updated Workspace State, Auto-Save & Provider Credential Vault (+455 / -0 lines)`
+- `src/types.ts — Updated Project Configuration & Metadata (+18 / -0 lines)`
+- `src/utils/cardIO.ts — Updated PNG tEXt Chunk & JSON Import/Export Parser (+141 / -0 lines)`
+
 ## [v4.4.0] - 2026-11-17
 
 ### 🚀 Highlights & Feature Additions

@@ -7,9 +7,27 @@ export interface ChangelogReleaseEntry {
   fileChanges: string[];
 }
 
-export const APP_VERSION = "4.4.0";
+export const APP_VERSION = "4.4.1";
 
 export const CHANGELOG_RELEASES: ChangelogReleaseEntry[] = [
+  {
+    "version": "v4.4.1",
+    "date": "2026-11-17",
+    "title": "Add support for character reaction images (63241c9)",
+    "highlights": [
+      "Add support for character reaction images (63241c9)",
+      "Add body type and skin trait tags (63d6333)"
+    ],
+    "fixes": [
+      "Verified TypeScript compilation, zero-crash sandbox storage guards, and cross-platform standalone launcher compatibility."
+    ],
+    "fileChanges": [
+      "src/components/CharacterEditor.tsx — Updated Character Card Workbench & Wizard (+694 / -3 lines)",
+      "src/context/StoreContext.tsx — Updated Workspace State, Auto-Save & Provider Credential Vault (+455 / -0 lines)",
+      "src/types.ts — Updated Project Configuration & Metadata (+18 / -0 lines)",
+      "src/utils/cardIO.ts — Updated PNG tEXt Chunk & JSON Import/Export Parser (+141 / -0 lines)"
+    ]
+  },
   {
     "version": "v4.4.0",
     "date": "2026-11-17",
@@ -296,20 +314,6 @@ export const CHANGELOG_RELEASES: ChangelogReleaseEntry[] = [
       ".github/workflows/release.yml — Updated GitHub Actions CI/CD & Standalone Release Workflow (+12 / -11 lines)",
       "README.md — Updated Project Configuration & Metadata (+55 / -66 lines)",
       "src/components/TopBar.tsx — Updated UI Workbench Component (+1 / -3 lines)"
-    ]
-  },
-  {
-    "version": "v2.1.1",
-    "date": "2026-11-12",
-    "title": "Automated release v2.1.1 incorporating 1 updated module(s) (1 file changed, 16 insertions(+), 20 deletions(-)).",
-    "highlights": [
-      "Automated release v2.1.1 incorporating 1 updated module(s) (1 file changed, 16 insertions(+), 20 deletions(-))."
-    ],
-    "fixes": [
-      "Clean up version-update script logic (04ad2dc)"
-    ],
-    "fileChanges": [
-      ".github/workflows/version-update.yml — Updated GitHub Actions CI/CD & Standalone Release Workflow (+16 / -20 lines)"
     ]
   }
 ];
