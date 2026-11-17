@@ -34,6 +34,8 @@ import {
   Lock,
   Unlock,
   KeyRound,
+  Palette,
+  Tag,
 } from 'lucide-react';
 import {
   formatSafeTimestamp,
@@ -101,6 +103,8 @@ export const OptionsView: React.FC = () => {
   // Collapsible Subfolder Tree States inside Unified Save Folder
   const [charactersFolderOpen, setCharactersFolderOpen] = useState(true);
   const [lorebooksFolderOpen, setLorebooksFolderOpen] = useState(true);
+  const [themesFolderOpen, setThemesFolderOpen] = useState(true);
+  const [tagsFolderOpen, setTagsFolderOpen] = useState(true);
   const [metaSectionOpen, setMetaSectionOpen] = useState(true);
 
   // API Key Show/Hide & AES-256-GCM Vault States
@@ -167,7 +171,7 @@ export const OptionsView: React.FC = () => {
     return unfilteredSelectableModels.filter((m) => m.toLowerCase().includes(q));
   }, [unfilteredSelectableModels, modelSearchQuery]);
 
-  // Group Unified Save Folder files into `Characters/`, `Lorebooks/`, and `_tavernsmith_meta.json`
+  // Group Unified Save Folder files into `Characters/`, `Lorebooks/`, `Themes/`, `Tags/`, and root meta/vault files
   const characterSavedFiles = useMemo(
     () => savedFiles.filter((f) => f.kind === 'character'),
     [savedFiles]
@@ -175,6 +179,16 @@ export const OptionsView: React.FC = () => {
 
   const lorebookSavedFiles = useMemo(
     () => savedFiles.filter((f) => f.kind === 'lorebook'),
+    [savedFiles]
+  );
+
+  const themeSavedFiles = useMemo(
+    () => savedFiles.filter((f) => f.kind === 'theme'),
+    [savedFiles]
+  );
+
+  const tagSavedFiles = useMemo(
+    () => savedFiles.filter((f) => f.kind === 'tag'),
     [savedFiles]
   );
 
@@ -443,6 +457,14 @@ export const OptionsView: React.FC = () => {
                 </code>
                 ,{' '}
                 <code className="font-mono font-semibold text-slate-800 dark:text-slate-200">
+                  ./Saves/Themes/
+                </code>
+                ,{' '}
+                <code className="font-mono font-semibold text-slate-800 dark:text-slate-200">
+                  ./Saves/Tags/
+                </code>
+                ,{' '}
+                <code className="font-mono font-semibold text-slate-800 dark:text-slate-200">
                   ./Saves/{META_FILENAME}
                 </code>
                 , and{' '}
@@ -481,7 +503,7 @@ export const OptionsView: React.FC = () => {
               type="button"
               disabled={isImportingBackup}
               onClick={() => backupImportInputRef.current?.click()}
-              title="Import a backup bundle (.json) or character/lorebook files"
+              title="Import a singular TavernSmith backup (.json) or character, lorebook, theme, and tag files"
               className="theme-hover-outline flex items-center gap-1.5 rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-950 px-3 py-1.5 text-xs font-medium text-slate-700 dark:text-slate-200 disabled:opacity-50 cursor-pointer"
             >
               <Upload
@@ -493,7 +515,7 @@ export const OptionsView: React.FC = () => {
             <button
               type="button"
               onClick={() => exportSaveFolderBundle()}
-              title="Export full ./Saves/ backup bundle (.json)"
+              title="Export all Characters, Lorebooks, and custom/modified Themes & Tags into a single .json file"
               className="theme-hover-outline flex items-center gap-1.5 rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-950 px-3 py-1.5 text-xs font-medium text-slate-700 dark:text-slate-200 cursor-pointer"
             >
               <Archive
@@ -694,6 +716,176 @@ export const OptionsView: React.FC = () => {
                       </div>
                     </div>
                   ))}
+                </div>
+              )}
+            </div>
+
+            {/* SUBFOLDER 3: Themes/ */}
+            <div className="rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 overflow-hidden">
+              <button
+                type="button"
+                onClick={() => setThemesFolderOpen((prev) => !prev)}
+                className="flex w-full items-center justify-between px-3 py-2 text-left text-xs font-semibold text-slate-900 dark:text-white hover:bg-slate-50 dark:hover:bg-slate-800/60 cursor-pointer"
+              >
+                <div className="flex items-center gap-2">
+                  {themesFolderOpen ? (
+                    <ChevronDown className="h-3.5 w-3.5 text-slate-400" />
+                  ) : (
+                    <ChevronRight className="h-3.5 w-3.5 text-slate-400" />
+                  )}
+                  <Palette
+                    className="h-3.5 w-3.5"
+                    style={{ color: 'var(--theme-accent)' }}
+                  />
+                  <span className="font-mono">
+                    ./Saves/Themes/ ({themeSavedFiles.length} file
+                    {themeSavedFiles.length === 1 ? '' : 's'})
+                  </span>
+                </div>
+                <span className="font-mono text-[10px] text-slate-500">
+                  Added &amp; Modified Themes
+                </span>
+              </button>
+
+              {themesFolderOpen && (
+                <div className="border-t border-slate-100 dark:border-slate-800/80 divide-y divide-slate-100 dark:divide-slate-800/60">
+                  {themeSavedFiles.length === 0 ? (
+                    <div className="px-3 py-2 text-[11px] text-slate-400">
+                      Only the default built-in Basic theme is active (0 bytes saved on disk).
+                    </div>
+                  ) : (
+                    themeSavedFiles.map((file) => (
+                      <div
+                        key={file.id}
+                        className="flex items-center justify-between gap-2 px-3 py-2 text-xs hover:bg-slate-50/70 dark:hover:bg-slate-950/40"
+                      >
+                        <div className="min-w-0 flex-1">
+                          <div className="flex items-center gap-1.5">
+                            <span className="font-mono font-semibold text-slate-900 dark:text-white truncate">
+                              ./Saves/Themes/{file.fileName}
+                            </span>
+                          </div>
+                          <div className="font-mono text-[10px] text-slate-400">
+                            {file.sizeBytes} B · Updated{' '}
+                            {formatSafeTimestamp(file.updatedAt)}
+                          </div>
+                        </div>
+
+                        <div className="flex items-center gap-1.5 shrink-0">
+                          <button
+                            type="button"
+                            onClick={() => handleLoadFile(file)}
+                            title="Activate & open Theme in Themes & Tags"
+                            className="theme-hover-outline flex items-center gap-1 rounded-md border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800 px-2 py-1 text-[11px] font-semibold text-slate-700 dark:text-slate-200 cursor-pointer"
+                          >
+                            <ExternalLink className="h-3 w-3" />
+                            <span>Load</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleDownloadSavedFile(file)}
+                            title="Download Theme JSON file"
+                            className="rounded-md border border-slate-200 dark:border-slate-800 p-1.5 text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 cursor-pointer"
+                          >
+                            <Download className="h-3.5 w-3.5" />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => requestDeleteSavedFile(file)}
+                            title="Delete Theme file from ./Saves/Themes/"
+                            className="rounded-md border border-rose-200 dark:border-rose-900/40 p-1.5 text-rose-600 dark:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/40 cursor-pointer"
+                          >
+                            <Trash2 className="h-3.5 w-3.5" />
+                          </button>
+                        </div>
+                      </div>
+                    ))
+                  )}
+                </div>
+              )}
+            </div>
+
+            {/* SUBFOLDER 4: Tags/ */}
+            <div className="rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 overflow-hidden">
+              <button
+                type="button"
+                onClick={() => setTagsFolderOpen((prev) => !prev)}
+                className="flex w-full items-center justify-between px-3 py-2 text-left text-xs font-semibold text-slate-900 dark:text-white hover:bg-slate-50 dark:hover:bg-slate-800/60 cursor-pointer"
+              >
+                <div className="flex items-center gap-2">
+                  {tagsFolderOpen ? (
+                    <ChevronDown className="h-3.5 w-3.5 text-slate-400" />
+                  ) : (
+                    <ChevronRight className="h-3.5 w-3.5 text-slate-400" />
+                  )}
+                  <Tag
+                    className="h-3.5 w-3.5"
+                    style={{ color: 'var(--theme-accent)' }}
+                  />
+                  <span className="font-mono">
+                    ./Saves/Tags/ ({tagSavedFiles.length} file
+                    {tagSavedFiles.length === 1 ? '' : 's'})
+                  </span>
+                </div>
+                <span className="font-mono text-[10px] text-slate-500">
+                  Added &amp; Modified Tags
+                </span>
+              </button>
+
+              {tagsFolderOpen && (
+                <div className="border-t border-slate-100 dark:border-slate-800/80 divide-y divide-slate-100 dark:divide-slate-800/60">
+                  {tagSavedFiles.length === 0 ? (
+                    <div className="px-3 py-2 text-[11px] text-slate-400">
+                      Only built-in tags are loaded (0 bytes saved on disk until you add or edit a tag).
+                    </div>
+                  ) : (
+                    tagSavedFiles.map((file) => (
+                      <div
+                        key={file.id}
+                        className="flex items-center justify-between gap-2 px-3 py-2 text-xs hover:bg-slate-50/70 dark:hover:bg-slate-950/40"
+                      >
+                        <div className="min-w-0 flex-1">
+                          <div className="flex items-center gap-1.5">
+                            <span className="font-mono font-semibold text-slate-900 dark:text-white truncate">
+                              ./Saves/Tags/{file.fileName}
+                            </span>
+                          </div>
+                          <div className="font-mono text-[10px] text-slate-400">
+                            {file.sizeBytes} B · Updated{' '}
+                            {formatSafeTimestamp(file.updatedAt)}
+                          </div>
+                        </div>
+
+                        <div className="flex items-center gap-1.5 shrink-0">
+                          <button
+                            type="button"
+                            onClick={() => handleLoadFile(file)}
+                            title="Open Tag in Themes & Tags"
+                            className="theme-hover-outline flex items-center gap-1 rounded-md border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800 px-2 py-1 text-[11px] font-semibold text-slate-700 dark:text-slate-200 cursor-pointer"
+                          >
+                            <ExternalLink className="h-3 w-3" />
+                            <span>Load</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleDownloadSavedFile(file)}
+                            title="Download Tag JSON file"
+                            className="rounded-md border border-slate-200 dark:border-slate-800 p-1.5 text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 cursor-pointer"
+                          >
+                            <Download className="h-3.5 w-3.5" />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => requestDeleteSavedFile(file)}
+                            title="Delete Tag file from ./Saves/Tags/"
+                            className="rounded-md border border-rose-200 dark:border-rose-900/40 p-1.5 text-rose-600 dark:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/40 cursor-pointer"
+                          >
+                            <Trash2 className="h-3.5 w-3.5" />
+                          </button>
+                        </div>
+                      </div>
+                    ))
+                  )}
                 </div>
               )}
             </div>

@@ -23,6 +23,7 @@ import {
   SaveLogEntry,
   SmartEditorFieldDraft,
   StatBlockConfig,
+  TagCategory,
   TagDefinition,
   TavernSmithMetaPayload,
   ThemesTagsTabDraft,
@@ -1859,18 +1860,199 @@ export function ensureUniqueSavedFileName(
   return fallbackCandidate;
 }
 
+const builtInTagByNameMap = new Map(
+  DEFAULT_TAGS.map((b) => [b.name.trim().toLowerCase(), b])
+);
+
+const builtInThemeByIdMap = new Map(
+  DEFAULT_CONTEXT_THEMES.map((t) => [t.id.toLowerCase(), t])
+);
+
+const builtInThemeByNameMap = new Map(
+  DEFAULT_CONTEXT_THEMES.map((t) => [t.name.trim().toLowerCase(), t])
+);
+
 /**
- * Extracts ONLY user-created custom tags (or built-in tags whose NSFW flag or description was customized)
- * so the built-in `DEFAULT_TAGS` array is NEVER cached in `localStorage`.
+ * Returns true if a theme is user-created OR if a built-in theme (like "Basic")
+ * has been customized away from its source defaults. Unmodified built-ins take 0 bytes on disk/export.
+ */
+export function isThemeModifiedFromBuiltIn(
+  theme?: ContextTheme | null
+): boolean {
+  if (!theme || typeof theme.name !== 'string') return false;
+  const idLower = (theme.id || '').trim().toLowerCase();
+  const nameLower = theme.name.trim().toLowerCase();
+  const builtIn =
+    builtInThemeByIdMap.get(idLower) || builtInThemeByNameMap.get(nameLower);
+  if (!builtIn) return true;
+
+  const currentTags = (theme.associatedTags || [])
+    .map((t) => t.trim().toLowerCase())
+    .filter(Boolean)
+    .sort()
+    .join('|');
+  const defaultTags = (builtIn.associatedTags || [])
+    .map((t) => t.trim().toLowerCase())
+    .filter(Boolean)
+    .sort()
+    .join('|');
+
+  return (
+    theme.name.trim() !== builtIn.name.trim() ||
+    (theme.color || '').trim().toLowerCase() !==
+      builtIn.color.trim().toLowerCase() ||
+    (theme.aiContextPrompt || '').trim() !==
+      builtIn.aiContextPrompt.trim() ||
+    currentTags !== defaultTags
+  );
+}
+
+/**
+ * Serializes a ContextTheme into a minimal, space-efficient object (omitting empty arrays and false flags).
+ */
+export function compactThemeForStorage(
+  theme: ContextTheme
+): Record<string, unknown> {
+  const tags = Array.isArray(theme.associatedTags)
+    ? theme.associatedTags.map((t) => t.trim()).filter(Boolean)
+    : [];
+  return {
+    id: theme.id,
+    name: theme.name.trim() || 'Custom Theme',
+    color: theme.color || '#6366f1',
+    aiContextPrompt: theme.aiContextPrompt || '',
+    ...(tags.length > 0 ? { associatedTags: tags } : {}),
+    ...(theme.isBuiltIn ? { isBuiltIn: true } : {}),
+  };
+}
+
+export function extractCustomOrModifiedThemes(
+  allThemes?: ContextTheme[] | null
+): ContextTheme[] {
+  if (!Array.isArray(allThemes) || allThemes.length === 0) return [];
+  return allThemes.filter((t) => isThemeModifiedFromBuiltIn(t));
+}
+
+export function normalizeIncomingTheme(
+  raw: unknown
+): ContextTheme | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const obj = raw as Record<string, unknown>;
+  const rawName = typeof obj.name === 'string' ? obj.name.trim() : '';
+  if (!rawName) return null;
+  const rawId = typeof obj.id === 'string' ? obj.id.trim() : '';
+  const builtIn =
+    (rawId ? builtInThemeByIdMap.get(rawId.toLowerCase()) : undefined) ||
+    builtInThemeByNameMap.get(rawName.toLowerCase());
+  const diskFileName =
+    typeof obj._diskFileName === 'string'
+      ? obj._diskFileName
+      : typeof obj.savedFileName === 'string'
+        ? obj.savedFileName
+        : undefined;
+
+  return {
+    id:
+      builtIn?.id ||
+      rawId ||
+      `theme-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+    ...(diskFileName ? { savedFileName: diskFileName } : {}),
+    name: rawName,
+    color:
+      typeof obj.color === 'string' && obj.color.trim()
+        ? obj.color.trim()
+        : builtIn?.color || '#6366f1',
+    aiContextPrompt:
+      typeof obj.aiContextPrompt === 'string'
+        ? obj.aiContextPrompt
+        : builtIn?.aiContextPrompt || '',
+    associatedTags: Array.isArray(obj.associatedTags)
+      ? obj.associatedTags.map((t) => String(t).trim()).filter(Boolean)
+      : builtIn?.associatedTags || [],
+    isBuiltIn: Boolean(builtIn || obj.isBuiltIn),
+  };
+}
+
+export function mergeWithDefaultThemes(
+  customOrDiskThemes?: unknown[] | null
+): ContextTheme[] {
+  const resultMap = new Map<string, ContextTheme>();
+  for (const b of DEFAULT_CONTEXT_THEMES) {
+    resultMap.set(b.name.trim().toLowerCase(), {
+      ...b,
+      associatedTags: [...(b.associatedTags || [])],
+    });
+  }
+
+  if (Array.isArray(customOrDiskThemes)) {
+    for (const raw of customOrDiskThemes) {
+      const normalized = normalizeIncomingTheme(raw);
+      if (!normalized) continue;
+      const key = normalized.name.trim().toLowerCase();
+      const existingById = Array.from(resultMap.entries()).find(
+        ([, v]) => v.id === normalized.id
+      );
+      if (existingById) {
+        const [oldKey, prevTheme] = existingById;
+        resultMap.delete(oldKey);
+        resultMap.set(key, {
+          ...prevTheme,
+          ...normalized,
+          id: prevTheme.id,
+          isBuiltIn: Boolean(prevTheme.isBuiltIn || normalized.isBuiltIn),
+          savedFileName: normalized.savedFileName || prevTheme.savedFileName,
+        });
+      } else {
+        const existing = resultMap.get(key);
+        resultMap.set(key, {
+          ...existing,
+          ...normalized,
+          id: existing?.id || normalized.id,
+          isBuiltIn: Boolean(existing?.isBuiltIn || normalized.isBuiltIn),
+          savedFileName: normalized.savedFileName || existing?.savedFileName,
+        });
+      }
+    }
+  }
+
+  return Array.from(resultMap.values());
+}
+
+/**
+ * Serializes a TagDefinition into a minimal, non-redundant object for disk/export storage.
+ * Strips duplicate `aiDescription` / `description` fields and omits default `isNsfw: false` flags.
+ */
+export function compactTagForStorage(
+  tag: TagDefinition,
+  builtInMatch?: TagDefinition
+): Record<string, unknown> {
+  const desc = (
+    tag.aiContextDescription ||
+    tag.aiDescription ||
+    tag.description ||
+    ''
+  ).trim();
+  const isNsfwVal = Boolean(tag.isNsfw);
+  const includeIsNsfw = isNsfwVal || Boolean(builtInMatch?.isNsfw && !isNsfwVal);
+
+  return {
+    id: tag.id,
+    name: tag.name.trim(),
+    color: tag.color || '#a855f7',
+    category: tag.category || 'Custom',
+    ...(includeIsNsfw ? { isNsfw: isNsfwVal } : {}),
+    ...(desc ? { aiContextDescription: desc } : {}),
+  };
+}
+
+/**
+ * Extracts ONLY user-created custom tags (or built-in tags whose NSFW flag, category, color, or description was customized)
+ * so unmodified `DEFAULT_TAGS` entries take 0 bytes on disk and in exports.
  */
 export function extractCustomUserTags(
   allTags?: TagDefinition[] | null
 ): TagDefinition[] {
   if (!Array.isArray(allTags) || allTags.length === 0) return [];
-
-  const builtInByName = new Map(
-    DEFAULT_TAGS.map((b) => [b.name.trim().toLowerCase(), b])
-  );
 
   const customOnly: TagDefinition[] = [];
   for (const tag of allTags) {
@@ -1880,31 +2062,37 @@ export function extractCustomUserTags(
     if (RETIRED_BUILTIN_TAG_KEYS.has(key) || RETIRED_BUILTIN_TAG_KEYS.has(idKey)) {
       continue;
     }
-    const builtIn = builtInByName.get(key);
+    const builtIn = builtInTagByNameMap.get(key);
 
     if (!builtIn) {
-      const { ...cleanTag } = tag;
-      customOnly.push(cleanTag);
+      customOnly.push({ ...tag });
       continue;
     }
 
-    // If user toggled isNsfw or customized aiContextDescription on a built-in tag, record that override
+    const currentDesc = (
+      tag.aiContextDescription ||
+      tag.aiDescription ||
+      tag.description ||
+      ''
+    ).trim();
+    const builtInDesc = (builtIn.aiContextDescription || '').trim();
+
     if (
       Boolean(tag.isNsfw) !== Boolean(builtIn.isNsfw) ||
-      (tag.aiContextDescription &&
-        tag.aiContextDescription !== builtIn.aiContextDescription) ||
-      (tag.color && tag.color !== builtIn.color)
+      (currentDesc && currentDesc !== builtInDesc) ||
+      (tag.color &&
+        tag.color.trim().toLowerCase() !== builtIn.color.trim().toLowerCase()) ||
+      (tag.category && tag.category !== builtIn.category)
     ) {
       customOnly.push({
         ...builtIn,
+        savedFileName: tag.savedFileName,
         color: tag.color || builtIn.color,
+        category: tag.category || builtIn.category,
         isNsfw: Boolean(tag.isNsfw),
-        aiContextDescription:
-          tag.aiContextDescription || builtIn.aiContextDescription,
-        aiDescription:
-          tag.aiContextDescription ||
-          tag.aiDescription ||
-          builtIn.aiDescription,
+        aiContextDescription: currentDesc || builtIn.aiContextDescription,
+        aiDescription: currentDesc || builtIn.aiDescription,
+        description: currentDesc || builtIn.description,
       });
     }
   }
@@ -1914,10 +2102,10 @@ export function extractCustomUserTags(
 
 /**
  * Always loads the built-in `DEFAULT_TAGS` (including their `isNsfw` flags, categories,
- * colors, and `aiDescription`) 100% fresh from source code, and merges user-created custom tags on top.
+ * colors, and `aiDescription`) 100% fresh from source code, and merges user-created/customized tags on top.
  */
 export function mergeWithDefaultTags(
-  customOrMetaTags?: TagDefinition[] | null
+  customOrMetaTags?: Array<TagDefinition | Record<string, unknown>> | null
 ): TagDefinition[] {
   const freshBuiltIns: TagDefinition[] = DEFAULT_TAGS.map((b) => ({
     ...b,
@@ -1933,61 +2121,114 @@ export function mergeWithDefaultTags(
   });
 
   const userCustomTags: TagDefinition[] = [];
-  const seenCustomNames = new Set<string>();
+  const customIndexByName = new Map<string, number>();
 
-  for (const incoming of customOrMetaTags) {
-    if (!incoming || typeof incoming.name !== 'string') continue;
-    const cleanName = incoming.name.trim();
-    if (!cleanName) continue;
-    const key = cleanName.toLowerCase();
-    const idKey = (incoming.id || '').trim().toLowerCase();
+  for (const rawIncoming of customOrMetaTags) {
+    if (!rawIncoming || typeof rawIncoming !== 'object') continue;
+    const incoming = rawIncoming as Record<string, unknown>;
+    const rawName = typeof incoming.name === 'string' ? incoming.name.trim() : '';
+    if (!rawName) continue;
+
+    const key = rawName.toLowerCase();
+    const idKey =
+      typeof incoming.id === 'string' ? incoming.id.trim().toLowerCase() : '';
     if (RETIRED_BUILTIN_TAG_KEYS.has(key) || RETIRED_BUILTIN_TAG_KEYS.has(idKey)) {
       continue;
     }
 
+    const diskFileName =
+      typeof incoming._diskFileName === 'string'
+        ? incoming._diskFileName
+        : typeof incoming.savedFileName === 'string'
+          ? incoming.savedFileName
+          : undefined;
+
+    const incomingColor =
+      typeof incoming.color === 'string'
+        ? incoming.color
+        : typeof incoming.c === 'string'
+          ? incoming.c
+          : undefined;
+
+    const incomingCategory =
+      typeof incoming.category === 'string'
+        ? (incoming.category as TagCategory)
+        : typeof incoming.cat === 'string'
+          ? (incoming.cat as TagCategory)
+          : undefined;
+
+    const incomingNsfwRaw =
+      incoming.isNsfw !== undefined ? incoming.isNsfw : incoming.n;
+
+    const incomingDesc =
+      (typeof incoming.aiContextDescription === 'string'
+        ? incoming.aiContextDescription
+        : typeof incoming.aiDescription === 'string'
+          ? incoming.aiDescription
+          : typeof incoming.description === 'string'
+            ? incoming.description
+            : typeof incoming.d === 'string'
+              ? incoming.d
+              : ''
+      ).trim();
+
     const builtInIdx = builtInIndexByName.get(key);
     if (builtInIdx !== undefined) {
       const targetBuiltIn = freshBuiltIns[builtInIdx];
+      const resolvedDesc = incomingDesc || targetBuiltIn.aiContextDescription;
       freshBuiltIns[builtInIdx] = {
         ...targetBuiltIn,
-        color: incoming.color || targetBuiltIn.color,
+        ...(diskFileName ? { savedFileName: diskFileName } : {}),
+        color: incomingColor || targetBuiltIn.color,
+        category: incomingCategory || targetBuiltIn.category,
         isNsfw:
-          incoming.isNsfw !== undefined
-            ? Boolean(incoming.isNsfw)
+          incomingNsfwRaw !== undefined
+            ? Boolean(incomingNsfwRaw)
             : targetBuiltIn.isNsfw,
-        aiContextDescription:
-          incoming.aiContextDescription || targetBuiltIn.aiContextDescription,
-        aiDescription:
-          incoming.aiContextDescription ||
-          incoming.aiDescription ||
-          targetBuiltIn.aiDescription,
+        aiContextDescription: resolvedDesc,
+        aiDescription: resolvedDesc,
+        description: resolvedDesc,
       };
       continue;
     }
 
-    if (!seenCustomNames.has(key)) {
-      seenCustomNames.add(key);
-      userCustomTags.push({
-        id: incoming.id || `tag-custom-${Date.now()}-${userCustomTags.length}`,
-        name: cleanName,
-        color: incoming.color || '#a855f7',
-        category: incoming.category || 'Custom',
-        isNsfw:
-          incoming.isNsfw !== undefined
-            ? Boolean(incoming.isNsfw)
-            : incoming.category === 'NSFW & Kinks' ||
-              incoming.category === 'Extreme & Hentai Physics',
-        aiContextDescription:
-          incoming.aiContextDescription ||
-          incoming.aiDescription ||
-          incoming.description ||
-          `Incorporate thematic, tonal, and character elements consistent with "${cleanName}".`,
-        aiDescription:
-          incoming.aiContextDescription ||
-          incoming.aiDescription ||
-          incoming.description ||
-          `Incorporate thematic, tonal, and character elements consistent with "${cleanName}".`,
-      });
+    const resolvedCategory = incomingCategory || 'Custom';
+    const resolvedIsNsfw =
+      incomingNsfwRaw !== undefined
+        ? Boolean(incomingNsfwRaw)
+        : resolvedCategory === 'NSFW & Kinks' ||
+          resolvedCategory === 'Extreme & Hentai Physics';
+    const resolvedDesc =
+      incomingDesc ||
+      `Incorporate thematic, tonal, and character elements consistent with "${rawName}".`;
+
+    const existingCustomIdx = customIndexByName.get(key);
+    const normalizedCustom: TagDefinition = {
+      id:
+        typeof incoming.id === 'string' && incoming.id.trim()
+          ? incoming.id.trim()
+          : `tag-custom-${Date.now()}-${userCustomTags.length}`,
+      ...(diskFileName ? { savedFileName: diskFileName } : {}),
+      name: rawName,
+      color: incomingColor || '#a855f7',
+      category: resolvedCategory,
+      isNsfw: resolvedIsNsfw,
+      aiContextDescription: resolvedDesc,
+      aiDescription: resolvedDesc,
+      description: resolvedDesc,
+    };
+
+    if (existingCustomIdx !== undefined) {
+      userCustomTags[existingCustomIdx] = {
+        ...userCustomTags[existingCustomIdx],
+        ...normalizedCustom,
+        savedFileName:
+          normalizedCustom.savedFileName ||
+          userCustomTags[existingCustomIdx].savedFileName,
+      };
+    } else {
+      customIndexByName.set(key, userCustomTags.length);
+      userCustomTags.push(normalizedCustom);
     }
   }
 
@@ -2355,13 +2596,61 @@ export function buildUnifiedSavedFiles(
     });
   }
 
+  const usedThemeFileNames = new Set<string>();
+  const customOrModifiedThemes = extractCustomOrModifiedThemes(themes);
+  for (const theme of customOrModifiedThemes) {
+    const fileName =
+      theme.savedFileName && !usedThemeFileNames.has(theme.savedFileName.toLowerCase())
+        ? (() => {
+            usedThemeFileNames.add(theme.savedFileName.toLowerCase());
+            return theme.savedFileName;
+          })()
+        : ensureUniqueSavedFileName(theme.name, usedThemeFileNames, 'theme');
+    const themeJson = JSON.stringify({
+      ...compactThemeForStorage(theme),
+      _tavernsmithType: 'theme',
+    });
+    entries.push({
+      id: `Themes/${fileName}`,
+      folderPath: 'Themes/',
+      fileName,
+      kind: 'theme',
+      sizeBytes: new Blob([themeJson]).size,
+      updatedAt: nowIso,
+      content: themeJson,
+    });
+  }
+
+  const usedTagFileNames = new Set<string>();
   const customTagsOnly = extractCustomUserTags(tags);
+  for (const tag of customTagsOnly) {
+    const fileName =
+      tag.savedFileName && !usedTagFileNames.has(tag.savedFileName.toLowerCase())
+        ? (() => {
+            usedTagFileNames.add(tag.savedFileName.toLowerCase());
+            return tag.savedFileName;
+          })()
+        : ensureUniqueSavedFileName(tag.name, usedTagFileNames, 'tag');
+    const builtInMatch = builtInTagByNameMap.get(tag.name.trim().toLowerCase());
+    const tagJson = JSON.stringify({
+      ...compactTagForStorage(tag, builtInMatch),
+      _tavernsmithType: 'tag',
+    });
+    entries.push({
+      id: `Tags/${fileName}`,
+      folderPath: 'Tags/',
+      fileName,
+      kind: 'tag',
+      sizeBytes: new Blob([tagJson]).size,
+      updatedAt: nowIso,
+      content: tagJson,
+    });
+  }
+
   const metaPayload: TavernSmithMetaPayload = {
     schema: 'tavernsmith_meta_v1',
     updatedAt: nowIso,
     activeThemeId,
-    contextThemes: themes,
-    tags: customTagsOnly,
   };
   const metaJson = JSON.stringify(metaPayload, null, 2);
   entries.push({
@@ -2427,10 +2716,22 @@ interface StoreContextValue {
   // Themes & Tags
   themes: ContextTheme[];
   setThemes: React.Dispatch<React.SetStateAction<ContextTheme[]>>;
+  createNewTheme: (partial?: Partial<ContextTheme>) => ContextTheme;
+  deleteTheme: (id: string) => void;
   activeTheme: ContextTheme;
   setActiveThemeId: (id: string) => void;
   tags: TagDefinition[];
   setTags: React.Dispatch<React.SetStateAction<TagDefinition[]>>;
+  upsertCustomTag: (input: {
+    id?: string;
+    name: string;
+    color: string;
+    category: TagCategory;
+    isNsfw: boolean;
+    aiContextDescription: string;
+  }) => { updatedExisting: boolean; tag: TagDefinition };
+  toggleTagNsfw: (tagId: string) => void;
+  deleteTag: (id: string) => void;
   ensureTagRegistered: (
     tagName: string,
     category?: TagDefinition['category']
@@ -2672,10 +2973,12 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
     []
   );
 
-  // Track the exact on-disk `.json` filename for each Character ID and Lorebook ID
+  // Track the exact on-disk `.json` filename for each Character, Lorebook, Theme, and Tag ID
   // so renaming or deleting targets the exact `.json` file without colliding duplicates.
   const charDiskFileNamesRef = useRef<Map<string, string>>(new Map());
   const loreDiskFileNamesRef = useRef<Map<string, string>>(new Map());
+  const themeDiskFileNamesRef = useRef<Map<string, string>>(new Map());
+  const tagDiskFileNamesRef = useRef<Map<string, string>>(new Map());
   const initialDiskHydrationDoneRef = useRef<boolean>(false);
   const initialMountFetchedRef = useRef<boolean>(false);
 
@@ -3021,33 +3324,52 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
       );
       if (found) return found;
 
+      const currentTags = tagsRef.current;
+      const usedTagFiles = new Set(
+        currentTags
+          .map((t) =>
+            (
+              t.savedFileName ||
+              tagDiskFileNamesRef.current.get(t.id) ||
+              ''
+            ).toLowerCase()
+          )
+          .filter(Boolean)
+      );
+      const assignedFile = ensureUniqueSavedFileName(
+        clean,
+        usedTagFiles,
+        'tag'
+      );
+
       const color =
-        AUTO_TAG_PALETTE[tagsRef.current.length % AUTO_TAG_PALETTE.length] || '#a855f7';
+        AUTO_TAG_PALETTE[currentTags.length % AUTO_TAG_PALETTE.length] || '#a855f7';
       const isNsfw =
         category === 'NSFW & Kinks' ||
         category === 'Extreme & Hentai Physics' ||
         clean.toLowerCase().includes('nsfw') ||
         clean.toLowerCase().includes('18+');
+      const desc = `Incorporate thematic, tonal, and character elements consistent with "${clean}".`;
       const newTag: TagDefinition = {
         id: `tag-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+        savedFileName: assignedFile,
         name: clean,
         color,
         category,
         isNsfw,
-        aiContextDescription: `Incorporate thematic, tonal, and character elements consistent with "${clean}".`,
-        aiDescription: `Incorporate thematic, tonal, and character elements consistent with "${clean}".`,
+        aiContextDescription: desc,
+        aiDescription: desc,
+        description: desc,
       };
-      setTags((prev) => {
-        if (
-          prev.some((t) => t.name.trim().toLowerCase() === clean.toLowerCase())
-        ) {
-          return prev;
-        }
-        return [...prev, newTag];
-      });
+      tagDiskFileNamesRef.current.set(newTag.id, assignedFile);
+      diskMutationVersionRef.current += 1;
+      const nextTags = [...currentTags, newTag];
+      tagsRef.current = nextTags;
+      latestWorkspaceRef.current.tags = nextTags;
+      setTagsState(nextTags);
       return newTag;
     },
-    [setTags]
+    []
   );
 
   /**
@@ -3081,55 +3403,70 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
         return;
       }
 
-      // 1. Reconstruct Tags & Themes from `./Saves/_tavernsmith_meta.json`
-      let mergedTags = mergeWithDefaultTags(
-        extractCustomUserTags(tagsRef.current)
-      );
+      // 1. Reconstruct Tags & Themes from `./Saves/Tags/*.json` & `./Saves/Themes/*.json`
+      //    with backwards-compatible fallback to legacy `./Saves/_tavernsmith_meta.json`
+      const legacyMetaTags =
+        diskState.meta && Array.isArray(diskState.meta.tags)
+          ? diskState.meta.tags
+          : [];
+      const diskTagEntries = Array.isArray(diskState.tags) ? diskState.tags : [];
+      const mergedTags = mergeWithDefaultTags([
+        ...extractCustomUserTags(legacyMetaTags),
+        ...diskTagEntries,
+      ]);
+
+      const nextTagFileNames = new Map<string, string>();
+      for (const t of mergedTags) {
+        if (t.savedFileName && t.id) {
+          nextTagFileNames.set(t.id, t.savedFileName);
+        }
+      }
+      tagDiskFileNamesRef.current = nextTagFileNames;
+      tagsRef.current = mergedTags;
+      latestWorkspaceRef.current.tags = mergedTags;
+      setTagsState(mergedTags);
+
+      const legacyMetaThemes =
+        diskState.meta && Array.isArray(diskState.meta.contextThemes)
+          ? diskState.meta.contextThemes
+          : [];
+      const diskThemeEntries = Array.isArray(diskState.themes)
+        ? diskState.themes
+        : [];
+      const hydratedThemes = mergeWithDefaultThemes([
+        ...legacyMetaThemes,
+        ...diskThemeEntries,
+      ]);
+
+      const nextThemeFileNames = new Map<string, string>();
+      for (const th of hydratedThemes) {
+        if (th.savedFileName && th.id) {
+          nextThemeFileNames.set(th.id, th.savedFileName);
+        }
+      }
+      themeDiskFileNamesRef.current = nextThemeFileNames;
+      themesRef.current = hydratedThemes;
+      latestWorkspaceRef.current.themes = hydratedThemes;
+      setThemesState(hydratedThemes);
 
       if (diskState.meta && typeof diskState.meta === 'object') {
         const meta = diskState.meta;
 
-        if (Array.isArray(meta.tags)) {
-          mergedTags = mergeWithDefaultTags(extractCustomUserTags(meta.tags));
-          tagsRef.current = mergedTags;
-          latestWorkspaceRef.current.tags = mergedTags;
-          setTagsState(mergedTags);
-        }
-
-        if (
-          Array.isArray(meta.contextThemes) &&
-          meta.contextThemes.length > 0
-        ) {
-          const mapByName = new Map<string, ContextTheme>();
-          for (const t of DEFAULT_CONTEXT_THEMES) {
-            mapByName.set(t.name.trim().toLowerCase(), t);
-          }
-          for (const incoming of meta.contextThemes) {
-            if (incoming && incoming.name) {
-              const key = incoming.name.trim().toLowerCase();
-              const existing = mapByName.get(key);
-              mapByName.set(key, {
-                ...existing,
-                ...incoming,
-                id: existing?.id || incoming.id || `theme-${Date.now()}`,
-              });
-            }
-          }
-          const hydratedThemes = Array.from(mapByName.values());
-          themesRef.current = hydratedThemes;
-          latestWorkspaceRef.current.themes = hydratedThemes;
-          setThemesState(hydratedThemes);
-        }
-
         if (options?.isInitialMount && meta.settings) {
           setSettingsState((prev) => {
+            const candidateThemeId =
+              meta.activeThemeId ||
+              meta.settings?.activeThemeId ||
+              prev.activeThemeId;
+            const resolvedThemeId = hydratedThemes.some(
+              (t) => t.id === candidateThemeId
+            )
+              ? candidateThemeId
+              : hydratedThemes[0]?.id || prev.activeThemeId;
             const nextSettings = {
               ...prev,
               ...meta.settings,
-              activeThemeId:
-                meta.activeThemeId ||
-                meta.settings?.activeThemeId ||
-                prev.activeThemeId,
+              activeThemeId: resolvedThemeId,
               activeSaveFolder:
                 meta.settings?.activeSaveFolder || UNIFIED_INTERNAL_ROOT,
             };
@@ -3139,9 +3476,14 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
           });
         } else if (meta.activeThemeId && options?.isInitialMount) {
           setSettingsState((prev) => {
+            const resolvedThemeId = hydratedThemes.some(
+              (t) => t.id === meta.activeThemeId
+            )
+              ? meta.activeThemeId!
+              : hydratedThemes[0]?.id || prev.activeThemeId;
             const nextSettings = {
               ...prev,
-              activeThemeId: meta.activeThemeId!,
+              activeThemeId: resolvedThemeId,
             };
             settingsRef.current = nextSettings;
             latestWorkspaceRef.current.settings = nextSettings;
@@ -3716,13 +4058,15 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
       overrideState?: {
         characters?: CharacterCardData[];
         lorebooks?: Lorebook[];
+        themes?: ContextTheme[];
+        tags?: TagDefinition[];
       },
       expectedVersion?: number
     ): Promise<{ ok: boolean; message: string }> => {
       const charsToSave = overrideState?.characters ?? charactersRef.current;
       const booksToSave = overrideState?.lorebooks ?? lorebooksRef.current;
-      const themesToSave = themesRef.current;
-      const tagsToSave = tagsRef.current;
+      const themesToSave = overrideState?.themes ?? themesRef.current;
+      const tagsToSave = overrideState?.tags ?? tagsRef.current;
       const settingsToSave = settingsRef.current;
       const aiConfigToSave = aiConfigRef.current;
       const activeCharId = activeCharacterIdRef.current;
@@ -3782,6 +4126,8 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
       const nowIso = new Date().toISOString();
       const usedCharFiles = new Set<string>();
       const usedLoreFiles = new Set<string>();
+      const usedThemeFiles = new Set<string>();
+      const usedTagFiles = new Set<string>();
 
       const characterPayloads = charsToSave.map((c) => {
         const oldFileName =
@@ -3827,12 +4173,64 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
         };
       });
 
+      // Space-efficient disk persistence: only save added or modified Themes to ./Saves/Themes/
+      const customThemesToSave = extractCustomOrModifiedThemes(themesToSave);
+      const themePayloads = customThemesToSave.map((th) => {
+        const oldFileName =
+          (th.id ? themeDiskFileNamesRef.current.get(th.id) : undefined) ||
+          th.savedFileName;
+        const fileName = ensureUniqueSavedFileName(
+          th.name,
+          usedThemeFiles,
+          'theme'
+        );
+        if (th.id) {
+          themeDiskFileNamesRef.current.set(th.id, fileName);
+        }
+        const compactPayload = {
+          ...compactThemeForStorage(th),
+          _tavernsmithType: 'theme',
+        };
+        return {
+          fileName,
+          oldFileName,
+          content: JSON.stringify(compactPayload),
+        };
+      });
+
+      // Space-efficient disk persistence: only save added or modified Tags to ./Saves/Tags/
+      const customTagsToSave = extractCustomUserTags(tagsToSave);
+      const tagPayloads = customTagsToSave.map((tg) => {
+        const oldFileName =
+          (tg.id ? tagDiskFileNamesRef.current.get(tg.id) : undefined) ||
+          tg.savedFileName;
+        const fileName = ensureUniqueSavedFileName(
+          tg.name,
+          usedTagFiles,
+          'tag'
+        );
+        if (tg.id) {
+          tagDiskFileNamesRef.current.set(tg.id, fileName);
+        }
+        const builtInMatch = builtInTagByNameMap.get(
+          tg.name.trim().toLowerCase()
+        );
+        const compactPayload = {
+          ...compactTagForStorage(tg, builtInMatch),
+          _tavernsmithType: 'tag',
+        };
+        return {
+          fileName,
+          oldFileName,
+          content: JSON.stringify(compactPayload),
+        };
+      });
+
+      // Keep _tavernsmith_meta.json slim by not duplicating Themes and Tags arrays inside it
       const metaPayload: TavernSmithMetaPayload = {
         schema: 'tavernsmith_meta_v1',
         updatedAt: nowIso,
         activeThemeId: settingsToSave.activeThemeId,
-        contextThemes: themesToSave,
-        tags: extractCustomUserTags(tagsToSave),
         settings: settingsToSave,
         aiConfig: stripApiKeysForStorage(aiConfigToSave),
         activeCharacterId: activeCharId,
@@ -3856,6 +4254,8 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
           body: JSON.stringify({
             characters: characterPayloads,
             lorebooks: lorebookPayloads,
+            themes: themePayloads,
+            tags: tagPayloads,
             meta: metaPayload,
             vault: vaultEnvelope || undefined,
             customSavePath: settingsToSave.activeSaveFolder,
@@ -3886,7 +4286,7 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
 
         return {
           ok: true,
-          message: `Saved to ${diskState.diskRoot || './Saves/'} (${characterPayloads.length} Characters, ${lorebookPayloads.length} Lorebooks).`,
+          message: `Saved to ${diskState.diskRoot || './Saves/'} (${characterPayloads.length} Characters, ${lorebookPayloads.length} Lorebooks, ${themePayloads.length} Themes, ${tagPayloads.length} Tags).`,
         };
       } catch {
         return {
@@ -3904,6 +4304,8 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
       overrideState?: {
         characters?: CharacterCardData[];
         lorebooks?: Lorebook[];
+        themes?: ContextTheme[];
+        tags?: TagDefinition[];
       }
     ): Promise<{ ok: boolean; message: string }> => {
       return enqueueDiskOperation(() =>
@@ -4212,6 +4614,413 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
     [enqueueDiskOperation, runDiskSaveRequest]
   );
 
+  const THEME_SWATCHES = useMemo(
+    () => [
+      '#6366f1',
+      '#a855f7',
+      '#ec4899',
+      '#f43f5e',
+      '#f59e0b',
+      '#10b981',
+      '#06b6d4',
+      '#3b82f6',
+    ],
+    []
+  );
+
+  const createNewTheme = useCallback(
+    (partial?: Partial<ContextTheme>): ContextTheme => {
+      diskMutationVersionRef.current += 1;
+      const opVersion = diskMutationVersionRef.current;
+      const currentThemes = themesRef.current;
+      const uniqueName = ensureUniqueEntityName(
+        partial?.name || 'Custom Theme',
+        currentThemes.map((t) => t.name || 'Custom Theme'),
+        'Custom Theme'
+      );
+      const usedThemeFiles = new Set(
+        currentThemes
+          .map((t) =>
+            (
+              t.savedFileName ||
+              themeDiskFileNamesRef.current.get(t.id) ||
+              ''
+            ).toLowerCase()
+          )
+          .filter(Boolean)
+      );
+      const uniqueFileName = ensureUniqueSavedFileName(
+        uniqueName,
+        usedThemeFiles,
+        'theme'
+      );
+      const created: ContextTheme = {
+        id:
+          partial?.id ||
+          `theme-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+        savedFileName: uniqueFileName,
+        name: uniqueName,
+        color:
+          partial?.color ||
+          THEME_SWATCHES[currentThemes.length % THEME_SWATCHES.length] ||
+          '#ec4899',
+        aiContextPrompt:
+          partial?.aiContextPrompt ??
+          `Write in a compelling ${uniqueName} style with strong atmospheric detail.`,
+        associatedTags: Array.isArray(partial?.associatedTags)
+          ? [...partial.associatedTags]
+          : [],
+        isBuiltIn: false,
+      };
+
+      themeDiskFileNamesRef.current.set(created.id, uniqueFileName);
+      const nextThemes = [...currentThemes, created];
+      themesRef.current = nextThemes;
+      latestWorkspaceRef.current.themes = nextThemes;
+      setThemesState(nextThemes);
+
+      const nextSettings = {
+        ...settingsRef.current,
+        activeThemeId: created.id,
+      };
+      settingsRef.current = nextSettings;
+      latestWorkspaceRef.current.settings = nextSettings;
+      setSettingsState(nextSettings);
+
+      void enqueueDiskOperation(() =>
+        runDiskSaveRequest(
+          'autosave',
+          {
+            characters: charactersRef.current,
+            lorebooks: lorebooksRef.current,
+            themes: themesRef.current,
+            tags: tagsRef.current,
+          },
+          opVersion
+        )
+      );
+
+      return created;
+    },
+    [THEME_SWATCHES, enqueueDiskOperation, runDiskSaveRequest]
+  );
+
+  const deleteTheme = useCallback(
+    (id: string) => {
+      const currentThemes = themesRef.current;
+      const target = currentThemes.find((t) => t.id === id);
+      if (!target) return;
+
+      diskMutationVersionRef.current += 1;
+      const opVersion = diskMutationVersionRef.current;
+
+      const diskFileName =
+        themeDiskFileNamesRef.current.get(id) ||
+        target.savedFileName ||
+        `${sanitizeFilename(target.name)}.json`;
+
+      let nextThemes: ContextTheme[];
+      if (target.isBuiltIn || currentThemes.length <= 1) {
+        // Built-in theme: reset customization back to source default & remove disk override file
+        const builtInDefault =
+          builtInThemeByIdMap.get(id.toLowerCase()) ||
+          builtInThemeByNameMap.get(target.name.trim().toLowerCase()) ||
+          DEFAULT_CONTEXT_THEMES[0];
+        nextThemes = currentThemes.map((t) =>
+          t.id === id
+            ? {
+                ...builtInDefault,
+                associatedTags: [...(builtInDefault.associatedTags || [])],
+              }
+            : t
+        );
+      } else {
+        themeDiskFileNamesRef.current.delete(id);
+        nextThemes = currentThemes.filter((t) => t.id !== id);
+        if (settingsRef.current.activeThemeId === id) {
+          const nextActiveId = nextThemes[0]?.id || 'theme-basic';
+          const nextSettings = {
+            ...settingsRef.current,
+            activeThemeId: nextActiveId,
+          };
+          settingsRef.current = nextSettings;
+          latestWorkspaceRef.current.settings = nextSettings;
+          setSettingsState(nextSettings);
+        }
+      }
+
+      themesRef.current = nextThemes;
+      latestWorkspaceRef.current.themes = nextThemes;
+      setThemesState(nextThemes);
+
+      setDiskFiles((prev) =>
+        prev.filter(
+          (f) =>
+            !(
+              f.kind === 'theme' &&
+              (f.fileName === diskFileName ||
+                (target.savedFileName && f.fileName === target.savedFileName))
+            )
+        )
+      );
+
+      void enqueueDiskOperation(async () => {
+        try {
+          await fetch('/api/disk/delete', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              folder: 'Themes',
+              fileName: diskFileName || undefined,
+              savedFileName: target.savedFileName || undefined,
+              name: target.name || undefined,
+              id,
+              customSavePath: settingsRef.current.activeSaveFolder,
+            }),
+          });
+        } catch {
+          // Proceed with mirrored disk save even if direct delete failed
+        }
+        await runDiskSaveRequest(
+          'autosave',
+          {
+            characters: charactersRef.current,
+            lorebooks: lorebooksRef.current,
+            themes: themesRef.current,
+            tags: tagsRef.current,
+          },
+          opVersion
+        );
+      });
+    },
+    [enqueueDiskOperation, runDiskSaveRequest]
+  );
+
+  const upsertCustomTag = useCallback(
+    (input: {
+      id?: string;
+      name: string;
+      color: string;
+      category: TagCategory;
+      isNsfw: boolean;
+      aiContextDescription: string;
+    }): { updatedExisting: boolean; tag: TagDefinition } => {
+      diskMutationVersionRef.current += 1;
+      const opVersion = diskMutationVersionRef.current;
+
+      const cleanName = input.name.trim() || 'Custom Tag';
+      const cleanDesc =
+        input.aiContextDescription.trim() ||
+        (input.isNsfw
+          ? `Explicit 18+ directive for "${cleanName}": incorporate vivid sensory and thematic elements consistent with "${cleanName}".`
+          : `Incorporate thematic, tonal, and character elements consistent with "${cleanName}".`);
+
+      const currentTags = tagsRef.current;
+      const existing =
+        (input.id ? currentTags.find((t) => t.id === input.id) : undefined) ||
+        currentTags.find(
+          (t) => t.name.trim().toLowerCase() === cleanName.toLowerCase()
+        );
+
+      const usedTagFiles = new Set(
+        currentTags
+          .filter((t) => !existing || t.id !== existing.id)
+          .map((t) =>
+            (
+              t.savedFileName ||
+              tagDiskFileNamesRef.current.get(t.id) ||
+              ''
+            ).toLowerCase()
+          )
+          .filter(Boolean)
+      );
+
+      let resultTag: TagDefinition;
+      let nextTags: TagDefinition[];
+
+      if (existing) {
+        const assignedFile =
+          existing.savedFileName ||
+          tagDiskFileNamesRef.current.get(existing.id) ||
+          ensureUniqueSavedFileName(cleanName, usedTagFiles, 'tag');
+        resultTag = {
+          ...existing,
+          name: cleanName,
+          savedFileName: assignedFile,
+          color: input.color || existing.color,
+          category: input.category || existing.category,
+          isNsfw: Boolean(input.isNsfw),
+          aiContextDescription: cleanDesc,
+          aiDescription: cleanDesc,
+          description: cleanDesc,
+        };
+        tagDiskFileNamesRef.current.set(resultTag.id, assignedFile);
+        nextTags = currentTags.map((t) =>
+          t.id === existing.id ? resultTag : t
+        );
+      } else {
+        const newId =
+          input.id ||
+          `tag-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+        const assignedFile = ensureUniqueSavedFileName(
+          cleanName,
+          usedTagFiles,
+          'tag'
+        );
+        resultTag = {
+          id: newId,
+          savedFileName: assignedFile,
+          name: cleanName,
+          color: input.color || '#a855f7',
+          category: input.category || 'Custom',
+          isNsfw: Boolean(input.isNsfw),
+          aiContextDescription: cleanDesc,
+          aiDescription: cleanDesc,
+          description: cleanDesc,
+        };
+        tagDiskFileNamesRef.current.set(resultTag.id, assignedFile);
+        nextTags = [resultTag, ...currentTags];
+      }
+
+      tagsRef.current = nextTags;
+      latestWorkspaceRef.current.tags = nextTags;
+      setTagsState(nextTags);
+
+      void enqueueDiskOperation(() =>
+        runDiskSaveRequest(
+          'autosave',
+          {
+            characters: charactersRef.current,
+            lorebooks: lorebooksRef.current,
+            themes: themesRef.current,
+            tags: tagsRef.current,
+          },
+          opVersion
+        )
+      );
+
+      return { updatedExisting: Boolean(existing), tag: resultTag };
+    },
+    [enqueueDiskOperation, runDiskSaveRequest]
+  );
+
+  const toggleTagNsfw = useCallback(
+    (tagId: string) => {
+      const currentTags = tagsRef.current;
+      const target = currentTags.find((t) => t.id === tagId);
+      if (!target) return;
+
+      diskMutationVersionRef.current += 1;
+      const opVersion = diskMutationVersionRef.current;
+
+      const nextIsNsfw = !isTagNsfwFlagged(target);
+      const assignedFile =
+        target.savedFileName ||
+        tagDiskFileNamesRef.current.get(target.id) ||
+        `${sanitizeFilename(target.name)}.json`;
+      tagDiskFileNamesRef.current.set(target.id, assignedFile);
+
+      const nextTags = currentTags.map((t) =>
+        t.id === tagId
+          ? { ...t, isNsfw: nextIsNsfw, savedFileName: assignedFile }
+          : t
+      );
+      tagsRef.current = nextTags;
+      latestWorkspaceRef.current.tags = nextTags;
+      setTagsState(nextTags);
+
+      void enqueueDiskOperation(() =>
+        runDiskSaveRequest(
+          'autosave',
+          {
+            characters: charactersRef.current,
+            lorebooks: lorebooksRef.current,
+            themes: themesRef.current,
+            tags: tagsRef.current,
+          },
+          opVersion
+        )
+      );
+    },
+    [enqueueDiskOperation, runDiskSaveRequest]
+  );
+
+  const deleteTag = useCallback(
+    (id: string) => {
+      const currentTags = tagsRef.current;
+      const target = currentTags.find((t) => t.id === id);
+      if (!target) return;
+
+      diskMutationVersionRef.current += 1;
+      const opVersion = diskMutationVersionRef.current;
+
+      const diskFileName =
+        tagDiskFileNamesRef.current.get(id) ||
+        target.savedFileName ||
+        `${sanitizeFilename(target.name)}.json`;
+
+      const builtInMatch = builtInTagByNameMap.get(
+        target.name.trim().toLowerCase()
+      );
+      let nextTags: TagDefinition[];
+      if (builtInMatch) {
+        // Built-in tag override deleted from disk -> revert to clean source built-in default
+        tagDiskFileNamesRef.current.delete(id);
+        nextTags = currentTags.map((t) =>
+          t.id === id ? { ...builtInMatch } : t
+        );
+      } else {
+        tagDiskFileNamesRef.current.delete(id);
+        nextTags = currentTags.filter((t) => t.id !== id);
+      }
+
+      tagsRef.current = nextTags;
+      latestWorkspaceRef.current.tags = nextTags;
+      setTagsState(nextTags);
+
+      setDiskFiles((prev) =>
+        prev.filter(
+          (f) =>
+            !(
+              f.kind === 'tag' &&
+              (f.fileName === diskFileName ||
+                (target.savedFileName && f.fileName === target.savedFileName))
+            )
+        )
+      );
+
+      void enqueueDiskOperation(async () => {
+        try {
+          await fetch('/api/disk/delete', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              folder: 'Tags',
+              fileName: diskFileName || undefined,
+              savedFileName: target.savedFileName || undefined,
+              name: target.name || undefined,
+              id,
+              customSavePath: settingsRef.current.activeSaveFolder,
+            }),
+          });
+        } catch {
+          // Proceed with mirrored disk save even if direct delete failed
+        }
+        await runDiskSaveRequest(
+          'autosave',
+          {
+            characters: charactersRef.current,
+            lorebooks: lorebooksRef.current,
+            themes: themesRef.current,
+            tags: tagsRef.current,
+          },
+          opVersion
+        );
+      });
+    },
+    [enqueueDiskOperation, runDiskSaveRequest]
+  );
+
   const saveNow = useCallback(
     (mode: 'manual' | 'autosave' = 'manual') => {
       void executeDiskSaveAndRescan(mode);
@@ -4313,6 +5122,76 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
           };
         }
 
+        if (file.kind === 'theme' || file.folderPath === 'Themes/') {
+          const parsedThemeRaw = JSON.parse(file.content) as Record<
+            string,
+            unknown
+          >;
+          const normalized = normalizeIncomingTheme({
+            ...parsedThemeRaw,
+            _diskFileName: file.fileName,
+          });
+          if (!normalized) {
+            return {
+              ok: false,
+              message: `Could not read theme from ${file.fileName}.`,
+            };
+          }
+          const nextThemes = mergeWithDefaultThemes([
+            ...themesRef.current,
+            normalized,
+          ]);
+          const matched =
+            nextThemes.find(
+              (t) =>
+                t.id === normalized.id ||
+                t.name.trim().toLowerCase() ===
+                  normalized.name.trim().toLowerCase()
+            ) || normalized;
+          if (matched.savedFileName) {
+            themeDiskFileNamesRef.current.set(matched.id, matched.savedFileName);
+          }
+          themesRef.current = nextThemes;
+          latestWorkspaceRef.current.themes = nextThemes;
+          setThemesState(nextThemes);
+          setActiveThemeId(matched.id);
+          setActiveTab('themes');
+          return {
+            ok: true,
+            message: `Loaded and activated theme "${matched.name}" from ./Saves/Themes/${file.fileName}.`,
+          };
+        }
+
+        if (file.kind === 'tag' || file.folderPath === 'Tags/') {
+          const parsedTagRaw = JSON.parse(file.content) as Record<
+            string,
+            unknown
+          >;
+          const nextTags = mergeWithDefaultTags([
+            ...extractCustomUserTags(tagsRef.current),
+            {
+              ...parsedTagRaw,
+              _diskFileName: file.fileName,
+            },
+          ]);
+          const rawName =
+            typeof parsedTagRaw.name === 'string' ? parsedTagRaw.name.trim() : '';
+          const matched = nextTags.find(
+            (t) => t.name.trim().toLowerCase() === rawName.toLowerCase()
+          );
+          if (matched && matched.id) {
+            tagDiskFileNamesRef.current.set(matched.id, file.fileName);
+          }
+          tagsRef.current = nextTags;
+          latestWorkspaceRef.current.tags = nextTags;
+          setTagsState(nextTags);
+          setActiveTab('themes');
+          return {
+            ok: true,
+            message: `Loaded tag "${rawName || file.fileName}" from ./Saves/Tags/${file.fileName}.`,
+          };
+        }
+
         const forcedKind =
           file.kind === 'lorebook' || file.folderPath === 'Lorebooks/'
             ? 'lorebook'
@@ -4399,7 +5278,7 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
     [setActiveCharacterId, setActiveLorebookId, setCharacters, setLorebooks, setTags, setThemes]
   );
 
-  // Unified Disk Delete from Options File List — routes directly through deleteCharacter / deleteLorebook
+  // Unified Disk Delete from Options File List — routes directly through deleteCharacter / deleteLorebook / deleteTheme / deleteTag
   const deleteSavedFile = useCallback(
     (fileId: string) => {
       const target =
@@ -4413,7 +5292,14 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
           latestWorkspaceRef.current.settings.cardSpecVersion
         ).find((f) => f.id === fileId);
       if (!target) return;
-      if (target.kind !== 'character' && target.kind !== 'lorebook') return;
+      if (
+        target.kind !== 'character' &&
+        target.kind !== 'lorebook' &&
+        target.kind !== 'theme' &&
+        target.kind !== 'tag'
+      ) {
+        return;
+      }
 
       let embeddedId: string | undefined;
       let embeddedName: string | undefined;
@@ -4461,7 +5347,7 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
           deleteCharacter(matchingChar.id);
           return;
         }
-      } else {
+      } else if (target.kind === 'lorebook') {
         const matchingBook = lorebooksRef.current.find((l) => {
           const mappedFile =
             l.savedFileName ||
@@ -4481,6 +5367,44 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
           deleteLorebook(matchingBook.id);
           return;
         }
+      } else if (target.kind === 'theme') {
+        const matchingTheme = themesRef.current.find((th) => {
+          const mappedFile =
+            th.savedFileName || themeDiskFileNamesRef.current.get(th.id);
+          if (mappedFile && mappedFile === target.fileName) return true;
+          if (embeddedId && th.id === embeddedId) return true;
+          if (
+            embeddedName &&
+            th.name.trim().toLowerCase() === embeddedName.toLowerCase()
+          ) {
+            return true;
+          }
+          return false;
+        });
+
+        if (matchingTheme?.id) {
+          deleteTheme(matchingTheme.id);
+          return;
+        }
+      } else if (target.kind === 'tag') {
+        const matchingTag = tagsRef.current.find((tg) => {
+          const mappedFile =
+            tg.savedFileName || tagDiskFileNamesRef.current.get(tg.id);
+          if (mappedFile && mappedFile === target.fileName) return true;
+          if (embeddedId && tg.id === embeddedId) return true;
+          if (
+            embeddedName &&
+            tg.name.trim().toLowerCase() === embeddedName.toLowerCase()
+          ) {
+            return true;
+          }
+          return false;
+        });
+
+        if (matchingTag?.id) {
+          deleteTag(matchingTag.id);
+          return;
+        }
       }
 
       // Unattached on-disk file not currently loaded into React state
@@ -4488,7 +5412,14 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
       const opVersion = diskMutationVersionRef.current;
       setDiskFiles((prev) => prev.filter((f) => f.id !== fileId));
 
-      const folder = target.kind === 'lorebook' ? 'Lorebooks' : 'Characters';
+      const folder =
+        target.kind === 'lorebook'
+          ? 'Lorebooks'
+          : target.kind === 'theme'
+            ? 'Themes'
+            : target.kind === 'tag'
+              ? 'Tags'
+              : 'Characters';
       void enqueueDiskOperation(async () => {
         try {
           await fetch('/api/disk/delete', {
@@ -4511,12 +5442,22 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
           {
             characters: charactersRef.current,
             lorebooks: lorebooksRef.current,
+            themes: themesRef.current,
+            tags: tagsRef.current,
           },
           opVersion
         );
       });
     },
-    [diskFiles, deleteCharacter, deleteLorebook, enqueueDiskOperation, runDiskSaveRequest]
+    [
+      diskFiles,
+      deleteCharacter,
+      deleteLorebook,
+      deleteTheme,
+      deleteTag,
+      enqueueDiskOperation,
+      runDiskSaveRequest,
+    ]
   );
 
   const requestDeleteCharacter = useCallback((id: string) => {
@@ -4545,12 +5486,27 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
   }, []);
 
   const requestDeleteSavedFile = useCallback((file: SavedFileEntry) => {
-    if (file.kind !== 'character' && file.kind !== 'lorebook') return;
+    if (
+      file.kind !== 'character' &&
+      file.kind !== 'lorebook' &&
+      file.kind !== 'theme' &&
+      file.kind !== 'tag'
+    ) {
+      return;
+    }
     setPendingDeleteTarget({
       kind: 'savedFile',
       id: file.id,
       displayName: file.fileName,
       fileName: file.fileName,
+      folder:
+        file.kind === 'lorebook'
+          ? 'Lorebooks'
+          : file.kind === 'theme'
+            ? 'Themes'
+            : file.kind === 'tag'
+              ? 'Tags'
+              : 'Characters',
       fileKind: file.kind,
     });
   }, []);
@@ -4594,38 +5550,56 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
     settings.cardSpecVersion,
   ]);
 
+  /**
+   * Singular Space-Efficient Backup Export:
+   * Always builds from live synchronous workspace refs (`charactersRef`, `lorebooksRef`,
+   * `themesRef`, `tagsRef`) so even newly created/edited items before Auto-Save are exported.
+   * Built-in default themes and tags are excluded unless customized.
+   */
   const exportSaveFolderBundle = useCallback(() => {
+    const currentChars = charactersRef.current;
+    const currentBooks = lorebooksRef.current;
+    const currentThemes = themesRef.current;
+    const currentTags = tagsRef.current;
+    const currentSettings = settingsRef.current;
+    const spec = currentSettings.cardSpecVersion || 'v3';
+
+    const serializedChars = currentChars.map((c) =>
+      serializeCharacterCard(c, spec, c.character_book)
+    );
+    const serializedBooks = currentBooks.map((lb) => serializeLorebookCard(lb));
+    const addedOrModifiedThemes = extractCustomOrModifiedThemes(currentThemes).map(
+      (th) => compactThemeForStorage(th)
+    );
+    const addedOrModifiedTags = extractCustomUserTags(currentTags).map((tg) =>
+      compactTagForStorage(
+        tg,
+        builtInTagByNameMap.get(tg.name.trim().toLowerCase())
+      )
+    );
+
     const bundle = {
-      bundleVersion: '2.0.0',
+      schema: 'tavernsmith_backup_v3',
+      bundleVersion: '3.0.0',
       exportedAt: new Date().toISOString(),
-      saveFolderRoot: settings.activeSaveFolder || UNIFIED_INTERNAL_ROOT,
-      structure: {
-        charactersSubfolder: 'Characters/',
-        lorebooksSubfolder: 'Lorebooks/',
-        metaFile: META_FILENAME,
-        vaultFile: VAULT_FILENAME,
+      activeThemeId: currentSettings.activeThemeId,
+      counts: {
+        characters: serializedChars.length,
+        lorebooks: serializedBooks.length,
+        themes: addedOrModifiedThemes.length,
+        tags: addedOrModifiedTags.length,
       },
-      fileCount: savedFiles.length,
-      files: savedFiles.map((f) => ({
-        path: `${f.folderPath === '/' ? '' : f.folderPath}${f.fileName}`,
-        fileName: f.fileName,
-        subfolder: f.folderPath,
-        kind: f.kind,
-        updatedAt: f.updatedAt,
-        data: (() => {
-          try {
-            return JSON.parse(f.content);
-          } catch {
-            return f.content;
-          }
-        })(),
-      })),
+      characters: serializedChars,
+      lorebooks: serializedBooks,
+      themes: addedOrModifiedThemes,
+      tags: addedOrModifiedTags,
     };
-    const blob = new Blob([JSON.stringify(bundle, null, 2)], {
+
+    const blob = new Blob([JSON.stringify(bundle)], {
       type: 'application/json',
     });
-    triggerBrowserDownload(blob, 'TavernSmith_Saves_BackupBundle.json');
-  }, [savedFiles, settings.activeSaveFolder]);
+    triggerBrowserDownload(blob, 'TavernSmith_Backup.json');
+  }, []);
 
   const importFromFiles = useCallback(
     async (
@@ -4634,11 +5608,16 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
       const list = Array.from(files);
       let importedChars = 0;
       let importedBooks = 0;
+      let importedThemes = 0;
+      let importedTags = 0;
       let lastCharId: string | null = null;
       let lastBookId: string | null = null;
 
       const nextCharacters = [...charactersRef.current];
       const nextLorebooks = [...lorebooksRef.current];
+      let nextThemes = [...themesRef.current];
+      let nextTags = [...tagsRef.current];
+
       const usedCharFiles = new Set(
         nextCharacters
           .map((c) => (c.savedFileName || charDiskFileNamesRef.current.get(c.id || '') || '').toLowerCase())
@@ -4658,33 +5637,21 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
               text
             ) as Partial<TavernSmithMetaPayload>;
             if (Array.isArray(parsedMeta.tags) && parsedMeta.tags.length > 0) {
-              setTags((prev) => {
-                const byName = new Map(
-                  prev.map((t) => [t.name.toLowerCase(), t])
-                );
-                for (const incoming of parsedMeta.tags!) {
-                  if (incoming?.name) {
-                    byName.set(incoming.name.toLowerCase(), incoming);
-                  }
-                }
-                return mergeWithDefaultTags(Array.from(byName.values()));
-              });
+              nextTags = mergeWithDefaultTags([
+                ...extractCustomUserTags(nextTags),
+                ...parsedMeta.tags,
+              ]);
+              importedTags += parsedMeta.tags.length;
             }
             if (
               Array.isArray(parsedMeta.contextThemes) &&
               parsedMeta.contextThemes.length > 0
             ) {
-              setThemes((prev) => {
-                const byName = new Map(
-                  prev.map((t) => [t.name.toLowerCase(), t])
-                );
-                for (const incoming of parsedMeta.contextThemes!) {
-                  if (incoming?.name) {
-                    byName.set(incoming.name.toLowerCase(), incoming);
-                  }
-                }
-                return Array.from(byName.values());
-              });
+              nextThemes = mergeWithDefaultThemes([
+                ...nextThemes,
+                ...parsedMeta.contextThemes,
+              ]);
+              importedThemes += parsedMeta.contextThemes.length;
             }
           } catch {
             // Ignore malformed meta file
@@ -4692,10 +5659,40 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
           continue;
         }
 
+        if (file.name.toLowerCase().endsWith('.json')) {
+          try {
+            const text = await file.text();
+            const parsedObj = JSON.parse(text) as Record<string, unknown>;
+            if (parsedObj && typeof parsedObj === 'object') {
+              if (parsedObj._tavernsmithType === 'theme') {
+                const normalized = normalizeIncomingTheme(parsedObj);
+                if (normalized) {
+                  nextThemes = mergeWithDefaultThemes([
+                    ...nextThemes,
+                    normalized,
+                  ]);
+                  importedThemes += 1;
+                }
+                continue;
+              }
+              if (parsedObj._tavernsmithType === 'tag') {
+                nextTags = mergeWithDefaultTags([
+                  ...extractCustomUserTags(nextTags),
+                  parsedObj,
+                ]);
+                importedTags += 1;
+                continue;
+              }
+            }
+          } catch {
+            // Fall through to standard card parser
+          }
+        }
+
         const result = await importCardFromFile(file);
         if (result.kind === 'character') {
           const importedChar = { ...result.character };
-          importedChar.isNsfw = isCharacterNsfw(importedChar, tagsRef.current);
+          importedChar.isNsfw = isCharacterNsfw(importedChar, nextTags);
           importedChar.name = ensureUniqueEntityName(
             importedChar.name || 'Imported Character',
             nextCharacters.map((c) => c.name || 'Untitled'),
@@ -4720,7 +5717,7 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
 
           if (result.embeddedLorebook) {
             const book = { ...result.embeddedLorebook };
-            book.isNsfw = isLorebookNsfw(book, tagsRef.current);
+            book.isNsfw = isLorebookNsfw(book, nextTags);
             book.name = ensureUniqueEntityName(
               book.name || `${importedChar.name} Lorebook`,
               nextLorebooks.map((l) => l.name || 'Untitled Lorebook'),
@@ -4742,7 +5739,7 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
           }
         } else if (result.kind === 'lorebook') {
           const importedBook = { ...result.lorebook };
-          importedBook.isNsfw = isLorebookNsfw(importedBook, tagsRef.current);
+          importedBook.isNsfw = isLorebookNsfw(importedBook, nextTags);
           importedBook.name = ensureUniqueEntityName(
             importedBook.name || 'Imported Lorebook',
             nextLorebooks.map((l) => l.name || 'Untitled Lorebook'),
@@ -4767,6 +5764,17 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
         }
       }
 
+      if (importedTags > 0) {
+        tagsRef.current = nextTags;
+        latestWorkspaceRef.current.tags = nextTags;
+        setTagsState(nextTags);
+      }
+      if (importedThemes > 0) {
+        themesRef.current = nextThemes;
+        latestWorkspaceRef.current.themes = nextThemes;
+        setThemesState(nextThemes);
+      }
+
       setCharacters(nextCharacters);
       setLorebooks(nextLorebooks);
 
@@ -4776,10 +5784,17 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
         setActiveLorebookId(lastBookId);
       }
 
-      if (importedChars > 0 || importedBooks > 0) {
+      if (
+        importedChars > 0 ||
+        importedBooks > 0 ||
+        importedThemes > 0 ||
+        importedTags > 0
+      ) {
         await executeDiskSaveAndRescan('manual', {
           characters: nextCharacters,
           lorebooks: nextLorebooks,
+          themes: nextThemes,
+          tags: nextTags,
         });
       }
 
@@ -4794,16 +5809,26 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
           `${importedBooks} lorebook${importedBooks === 1 ? '' : 's'} (saved to ./Saves/Lorebooks/)`
         );
       }
+      if (importedThemes > 0) {
+        parts.push(
+          `${importedThemes} theme${importedThemes === 1 ? '' : 's'} (saved to ./Saves/Themes/)`
+        );
+      }
+      if (importedTags > 0) {
+        parts.push(
+          `${importedTags} tag${importedTags === 1 ? '' : 's'} (saved to ./Saves/Tags/)`
+        );
+      }
 
       return {
-        count: importedChars + importedBooks,
+        count: importedChars + importedBooks + importedThemes + importedTags,
         summary:
           parts.length > 0
-            ? `Imported ${parts.join(' and ')}.`
+            ? `Imported ${parts.join(', ')}.`
             : 'Restored metadata or no new card files found.',
       };
     },
-    [tags, executeDiskSaveAndRescan]
+    [executeDiskSaveAndRescan]
   );
 
   const importSaveFolderBundle = useCallback(
@@ -4815,14 +5840,25 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
         return { ok: false, count: 0, summary: 'No backup files selected.' };
       }
 
-      const bundleEntriesList: Array<{
+      interface LegacyBundleShape {
+        kind: 'legacy_v2';
         files: Array<{
           fileName?: string;
           subfolder?: string;
           kind?: string;
           data?: unknown;
         }>;
-      }> = [];
+      }
+      interface SingularBackupV3Shape {
+        kind: 'singular_v3';
+        activeThemeId?: string;
+        characters: unknown[];
+        lorebooks: unknown[];
+        themes: unknown[];
+        tags: unknown[];
+      }
+
+      const parsedBundles: Array<LegacyBundleShape | SingularBackupV3Shape> = [];
       const standaloneFiles: File[] = [];
 
       for (const file of list) {
@@ -4830,16 +5866,39 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
           try {
             const text = await file.text();
             const parsed = JSON.parse(text) as Record<string, unknown>;
-            if (parsed && typeof parsed === 'object' && Array.isArray(parsed.files)) {
-              bundleEntriesList.push({
-                files: parsed.files as Array<{
-                  fileName?: string;
-                  subfolder?: string;
-                  kind?: string;
-                  data?: unknown;
-                }>,
-              });
-              continue;
+            if (parsed && typeof parsed === 'object') {
+              if (
+                parsed.schema === 'tavernsmith_backup_v3' ||
+                parsed.bundleVersion === '3.0.0' ||
+                Array.isArray(parsed.characters) ||
+                Array.isArray(parsed.lorebooks) ||
+                Array.isArray(parsed.themes) ||
+                Array.isArray(parsed.tags)
+              ) {
+                parsedBundles.push({
+                  kind: 'singular_v3',
+                  activeThemeId:
+                    typeof parsed.activeThemeId === 'string'
+                      ? parsed.activeThemeId
+                      : undefined,
+                  characters: Array.isArray(parsed.characters)
+                    ? parsed.characters
+                    : [],
+                  lorebooks: Array.isArray(parsed.lorebooks)
+                    ? parsed.lorebooks
+                    : [],
+                  themes: Array.isArray(parsed.themes) ? parsed.themes : [],
+                  tags: Array.isArray(parsed.tags) ? parsed.tags : [],
+                });
+                continue;
+              }
+              if (Array.isArray(parsed.files)) {
+                parsedBundles.push({
+                  kind: 'legacy_v2',
+                  files: parsed.files as LegacyBundleShape['files'],
+                });
+                continue;
+              }
             }
           } catch {
             return {
@@ -4854,10 +5913,12 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
 
       let restoredChars = 0;
       let restoredBooks = 0;
+      let restoredThemesCount = 0;
+      let restoredTagsCount = 0;
       let restoredMeta = false;
       let restoredVault = false;
 
-      if (bundleEntriesList.length > 0) {
+      if (parsedBundles.length > 0) {
         diskMutationVersionRef.current += 1;
 
         let nextTags = [...tagsRef.current];
@@ -4869,8 +5930,249 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
         let preferredActiveCharId: string | undefined;
         let preferredActiveBookId: string | undefined;
 
-        for (const bundle of bundleEntriesList) {
-          // 1. Restore Meta (`_tavernsmith_meta.json`) first so tags & themes apply to imported cards
+        const upsertTagList = (rawTags: Array<Record<string, unknown> | TagDefinition>) => {
+          if (!Array.isArray(rawTags) || rawTags.length === 0) return;
+          const byName = new Map<string, Record<string, unknown> | TagDefinition>();
+          for (const t of extractCustomUserTags(nextTags)) {
+            if (t?.name) byName.set(t.name.trim().toLowerCase(), t);
+          }
+          for (const raw of rawTags) {
+            if (!raw || typeof raw !== 'object') continue;
+            const rawName =
+              typeof (raw as { name?: unknown }).name === 'string'
+                ? String((raw as { name?: unknown }).name).trim()
+                : '';
+            if (rawName) {
+              byName.set(rawName.toLowerCase(), raw);
+              restoredTagsCount += 1;
+            }
+          }
+          nextTags = mergeWithDefaultTags(Array.from(byName.values()));
+        };
+
+        const upsertThemeList = (rawThemes: unknown[]) => {
+          if (!Array.isArray(rawThemes) || rawThemes.length === 0) return;
+          const validIncoming: ContextTheme[] = [];
+          for (const raw of rawThemes) {
+            const normalized = normalizeIncomingTheme(raw);
+            if (normalized) {
+              validIncoming.push(normalized);
+              restoredThemesCount += 1;
+            }
+          }
+          if (validIncoming.length > 0) {
+            nextThemes = mergeWithDefaultThemes([
+              ...nextThemes,
+              ...validIncoming,
+            ]);
+          }
+        };
+
+        const upsertCharacterRaw = (
+          rawData: unknown,
+          fallbackFileName = 'Character.json'
+        ) => {
+          if (!rawData) return;
+          const usedCharFiles = new Set(
+            nextCharacters
+              .map((c) =>
+                (
+                  c.savedFileName ||
+                  charDiskFileNamesRef.current.get(c.id || '') ||
+                  ''
+                ).toLowerCase()
+              )
+              .filter(Boolean)
+          );
+          try {
+            const rawStr =
+              typeof rawData === 'string' ? rawData : JSON.stringify(rawData);
+            const parsedRes = parseImportedJsonString(
+              rawStr,
+              undefined,
+              fallbackFileName,
+              'character'
+            );
+            if (parsedRes.kind !== 'character') return;
+
+            const candidate = { ...parsedRes.character };
+            candidate.isNsfw = isCharacterNsfw(candidate, nextTags);
+
+            const existingIdx = candidate.id
+              ? nextCharacters.findIndex((c) => c.id === candidate.id)
+              : -1;
+
+            if (existingIdx >= 0) {
+              const existing = nextCharacters[existingIdx];
+              const otherNames = nextCharacters
+                .filter((_, idx) => idx !== existingIdx)
+                .map((c) => c.name || 'Character');
+              candidate.name = ensureUniqueEntityName(
+                candidate.name || existing.name || 'Character',
+                otherNames,
+                'Character'
+              );
+              const preservedFile =
+                existing.savedFileName ||
+                (existing.id
+                  ? charDiskFileNamesRef.current.get(existing.id)
+                  : undefined) ||
+                ensureUniqueSavedFileName(
+                  candidate.name,
+                  usedCharFiles,
+                  'character'
+                );
+              candidate.savedFileName = preservedFile;
+              if (candidate.id) {
+                charDiskFileNamesRef.current.set(candidate.id, preservedFile);
+              }
+              usedCharFiles.add(preservedFile.toLowerCase());
+              nextCharacters[existingIdx] = candidate;
+            } else {
+              candidate.name = ensureUniqueEntityName(
+                candidate.name || 'Restored Character',
+                nextCharacters.map((c) => c.name || 'Untitled'),
+                'Restored Character'
+              );
+              if (
+                !candidate.id ||
+                nextCharacters.some((c) => c.id === candidate.id)
+              ) {
+                candidate.id = `char-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+              }
+              const uniqueFile = ensureUniqueSavedFileName(
+                candidate.name,
+                usedCharFiles,
+                'character'
+              );
+              candidate.savedFileName = uniqueFile;
+              charDiskFileNamesRef.current.set(candidate.id, uniqueFile);
+              nextCharacters.push(candidate);
+            }
+            restoredChars += 1;
+          } catch {
+            // Skip malformed character entry
+          }
+        };
+
+        const upsertLorebookRaw = (
+          rawData: unknown,
+          fallbackFileName = 'Lorebook.json'
+        ) => {
+          if (!rawData) return;
+          const usedLoreFiles = new Set(
+            nextLorebooks
+              .map((l) =>
+                (
+                  l.savedFileName ||
+                  loreDiskFileNamesRef.current.get(l.id || '') ||
+                  ''
+                ).toLowerCase()
+              )
+              .filter(Boolean)
+          );
+          try {
+            const rawStr =
+              typeof rawData === 'string' ? rawData : JSON.stringify(rawData);
+            const parsedRes = parseImportedJsonString(
+              rawStr,
+              undefined,
+              fallbackFileName,
+              'lorebook'
+            );
+            if (parsedRes.kind !== 'lorebook') return;
+
+            const candidate = { ...parsedRes.lorebook };
+            candidate.isNsfw = isLorebookNsfw(candidate, nextTags);
+
+            const existingIdx = candidate.id
+              ? nextLorebooks.findIndex((l) => l.id === candidate.id)
+              : -1;
+
+            if (existingIdx >= 0) {
+              const existing = nextLorebooks[existingIdx];
+              const otherNames = nextLorebooks
+                .filter((_, idx) => idx !== existingIdx)
+                .map((l) => l.name || 'Lorebook');
+              candidate.name = ensureUniqueEntityName(
+                candidate.name || existing.name || 'Lorebook',
+                otherNames,
+                'Lorebook'
+              );
+              const preservedFile =
+                existing.savedFileName ||
+                (existing.id
+                  ? loreDiskFileNamesRef.current.get(existing.id)
+                  : undefined) ||
+                ensureUniqueSavedFileName(
+                  candidate.name,
+                  usedLoreFiles,
+                  'lorebook'
+                );
+              candidate.savedFileName = preservedFile;
+              if (candidate.id) {
+                loreDiskFileNamesRef.current.set(candidate.id, preservedFile);
+              }
+              usedLoreFiles.add(preservedFile.toLowerCase());
+              nextLorebooks[existingIdx] = candidate;
+            } else {
+              candidate.name = ensureUniqueEntityName(
+                candidate.name || 'Restored Lorebook',
+                nextLorebooks.map((l) => l.name || 'Untitled Lorebook'),
+                'Restored Lorebook'
+              );
+              if (
+                !candidate.id ||
+                nextLorebooks.some((l) => l.id === candidate.id)
+              ) {
+                candidate.id = `lorebook-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+              }
+              const uniqueFile = ensureUniqueSavedFileName(
+                candidate.name,
+                usedLoreFiles,
+                'lorebook'
+              );
+              candidate.savedFileName = uniqueFile;
+              loreDiskFileNamesRef.current.set(candidate.id, uniqueFile);
+              nextLorebooks.push(candidate);
+            }
+            restoredBooks += 1;
+          } catch {
+            // Skip malformed lorebook entry
+          }
+        };
+
+        for (const bundle of parsedBundles) {
+          if (bundle.kind === 'singular_v3') {
+            // Restore Tags & Themes first so Character/Lorebook NSFW checks and activeThemeId work accurately
+            if (bundle.tags.length > 0) {
+              upsertTagList(
+                bundle.tags as Array<Record<string, unknown> | TagDefinition>
+              );
+            }
+            if (bundle.themes.length > 0) {
+              upsertThemeList(bundle.themes);
+            }
+            if (
+              bundle.activeThemeId &&
+              nextThemes.some((t) => t.id === bundle.activeThemeId)
+            ) {
+              nextSettings = {
+                ...nextSettings,
+                activeThemeId: bundle.activeThemeId,
+              };
+            }
+            for (const rawChar of bundle.characters) {
+              upsertCharacterRaw(rawChar);
+            }
+            for (const rawBook of bundle.lorebooks) {
+              upsertLorebookRaw(rawBook);
+            }
+            continue;
+          }
+
+          // Legacy bundleVersion 2.0.0 (`files: [...]`)
+          // 1. Restore Meta (`_tavernsmith_meta.json`) & standalone Themes/Tags first
           for (const entry of bundle.files) {
             if (!entry || typeof entry !== 'object') continue;
             const isMeta =
@@ -4884,39 +6186,13 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
                   : (entry.data as Partial<TavernSmithMetaPayload>);
 
               if (Array.isArray(rawMeta.tags)) {
-                const byName = new Map<string, TagDefinition>();
-                for (const t of extractCustomUserTags(nextTags)) {
-                  if (t?.name) byName.set(t.name.trim().toLowerCase(), t);
-                }
-                for (const t of extractCustomUserTags(rawMeta.tags)) {
-                  if (t?.name) byName.set(t.name.trim().toLowerCase(), t);
-                }
-                nextTags = mergeWithDefaultTags(Array.from(byName.values()));
+                upsertTagList(rawMeta.tags);
               }
-
               if (
                 Array.isArray(rawMeta.contextThemes) &&
                 rawMeta.contextThemes.length > 0
               ) {
-                const mapByName = new Map<string, ContextTheme>();
-                for (const t of DEFAULT_CONTEXT_THEMES) {
-                  mapByName.set(t.name.trim().toLowerCase(), t);
-                }
-                for (const t of nextThemes) {
-                  if (t?.name) mapByName.set(t.name.trim().toLowerCase(), t);
-                }
-                for (const incoming of rawMeta.contextThemes) {
-                  if (incoming?.name) {
-                    const key = incoming.name.trim().toLowerCase();
-                    const existing = mapByName.get(key);
-                    mapByName.set(key, {
-                      ...existing,
-                      ...incoming,
-                      id: existing?.id || incoming.id || `theme-${Date.now()}`,
-                    });
-                  }
-                }
-                nextThemes = Array.from(mapByName.values());
+                upsertThemeList(rawMeta.contextThemes);
               }
 
               if (rawMeta.settings) {
@@ -4983,6 +6259,22 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
             }
           }
 
+          // Restore Themes/ and Tags/ entries from v2 bundle if present
+          const legacyThemeEntries = bundle.files.filter(
+            (e) => e && (e.kind === 'theme' || e.subfolder === 'Themes/') && e.data
+          );
+          if (legacyThemeEntries.length > 0) {
+            upsertThemeList(legacyThemeEntries.map((e) => e.data));
+          }
+          const legacyTagEntries = bundle.files.filter(
+            (e) => e && (e.kind === 'tag' || e.subfolder === 'Tags/') && e.data
+          );
+          if (legacyTagEntries.length > 0) {
+            upsertTagList(
+              legacyTagEntries.map((e) => e.data as Record<string, unknown>)
+            );
+          }
+
           // 2. Restore Encrypted Vault (`_tavernsmith_vault.enc`) if readable
           for (const entry of bundle.files) {
             if (!entry || typeof entry !== 'object') continue;
@@ -5030,189 +6322,51 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
           }
 
           // 3. Upsert Characters from `Characters/`
-          const usedCharFiles = new Set(
-            nextCharacters
-              .map((c) =>
-                (
-                  c.savedFileName ||
-                  charDiskFileNamesRef.current.get(c.id || '') ||
-                  ''
-                ).toLowerCase()
-              )
-              .filter(Boolean)
-          );
-
           for (const entry of bundle.files) {
             if (!entry || typeof entry !== 'object') continue;
             const isChar =
               entry.kind === 'character' || entry.subfolder === 'Characters/';
             if (!isChar || !entry.data) continue;
-
-            try {
-              const rawStr =
-                typeof entry.data === 'string'
-                  ? entry.data
-                  : JSON.stringify(entry.data);
-              const parsedRes = parseImportedJsonString(
-                rawStr,
-                undefined,
-                entry.fileName || 'Character.json',
-                'character'
-              );
-              if (parsedRes.kind !== 'character') continue;
-
-              const candidate = { ...parsedRes.character };
-              candidate.isNsfw = isCharacterNsfw(candidate, nextTags);
-
-              const existingIdx = candidate.id
-                ? nextCharacters.findIndex((c) => c.id === candidate.id)
-                : -1;
-
-              if (existingIdx >= 0) {
-                const existing = nextCharacters[existingIdx];
-                const otherNames = nextCharacters
-                  .filter((_, idx) => idx !== existingIdx)
-                  .map((c) => c.name || 'Character');
-                candidate.name = ensureUniqueEntityName(
-                  candidate.name || existing.name || 'Character',
-                  otherNames,
-                  'Character'
-                );
-                const preservedFile =
-                  existing.savedFileName ||
-                  (existing.id
-                    ? charDiskFileNamesRef.current.get(existing.id)
-                    : undefined) ||
-                  ensureUniqueSavedFileName(
-                    candidate.name,
-                    usedCharFiles,
-                    'character'
-                  );
-                candidate.savedFileName = preservedFile;
-                if (candidate.id) {
-                  charDiskFileNamesRef.current.set(candidate.id, preservedFile);
-                }
-                usedCharFiles.add(preservedFile.toLowerCase());
-                nextCharacters[existingIdx] = candidate;
-              } else {
-                candidate.name = ensureUniqueEntityName(
-                  candidate.name || 'Restored Character',
-                  nextCharacters.map((c) => c.name || 'Untitled'),
-                  'Restored Character'
-                );
-                if (
-                  !candidate.id ||
-                  nextCharacters.some((c) => c.id === candidate.id)
-                ) {
-                  candidate.id = `char-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
-                }
-                const uniqueFile = ensureUniqueSavedFileName(
-                  candidate.name,
-                  usedCharFiles,
-                  'character'
-                );
-                candidate.savedFileName = uniqueFile;
-                charDiskFileNamesRef.current.set(candidate.id, uniqueFile);
-                nextCharacters.push(candidate);
-              }
-              restoredChars += 1;
-            } catch {
-              // Skip malformed character entry
-            }
+            upsertCharacterRaw(entry.data, entry.fileName || 'Character.json');
           }
 
           // 4. Upsert Lorebooks from `Lorebooks/`
-          const usedLoreFiles = new Set(
-            nextLorebooks
-              .map((l) =>
-                (
-                  l.savedFileName ||
-                  loreDiskFileNamesRef.current.get(l.id || '') ||
-                  ''
-                ).toLowerCase()
-              )
-              .filter(Boolean)
-          );
-
           for (const entry of bundle.files) {
             if (!entry || typeof entry !== 'object') continue;
             const isBook =
               entry.kind === 'lorebook' || entry.subfolder === 'Lorebooks/';
             if (!isBook || !entry.data) continue;
-
-            try {
-              const rawStr =
-                typeof entry.data === 'string'
-                  ? entry.data
-                  : JSON.stringify(entry.data);
-              const parsedRes = parseImportedJsonString(
-                rawStr,
-                undefined,
-                entry.fileName || 'Lorebook.json',
-                'lorebook'
-              );
-              if (parsedRes.kind !== 'lorebook') continue;
-
-              const candidate = { ...parsedRes.lorebook };
-              candidate.isNsfw = isLorebookNsfw(candidate, nextTags);
-
-              const existingIdx = candidate.id
-                ? nextLorebooks.findIndex((l) => l.id === candidate.id)
-                : -1;
-
-              if (existingIdx >= 0) {
-                const existing = nextLorebooks[existingIdx];
-                const otherNames = nextLorebooks
-                  .filter((_, idx) => idx !== existingIdx)
-                  .map((l) => l.name || 'Lorebook');
-                candidate.name = ensureUniqueEntityName(
-                  candidate.name || existing.name || 'Lorebook',
-                  otherNames,
-                  'Lorebook'
-                );
-                const preservedFile =
-                  existing.savedFileName ||
-                  (existing.id
-                    ? loreDiskFileNamesRef.current.get(existing.id)
-                    : undefined) ||
-                  ensureUniqueSavedFileName(
-                    candidate.name,
-                    usedLoreFiles,
-                    'lorebook'
-                  );
-                candidate.savedFileName = preservedFile;
-                if (candidate.id) {
-                  loreDiskFileNamesRef.current.set(candidate.id, preservedFile);
-                }
-                usedLoreFiles.add(preservedFile.toLowerCase());
-                nextLorebooks[existingIdx] = candidate;
-              } else {
-                candidate.name = ensureUniqueEntityName(
-                  candidate.name || 'Restored Lorebook',
-                  nextLorebooks.map((l) => l.name || 'Untitled Lorebook'),
-                  'Restored Lorebook'
-                );
-                if (
-                  !candidate.id ||
-                  nextLorebooks.some((l) => l.id === candidate.id)
-                ) {
-                  candidate.id = `lorebook-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
-                }
-                const uniqueFile = ensureUniqueSavedFileName(
-                  candidate.name,
-                  usedLoreFiles,
-                  'lorebook'
-                );
-                candidate.savedFileName = uniqueFile;
-                loreDiskFileNamesRef.current.set(candidate.id, uniqueFile);
-                nextLorebooks.push(candidate);
-              }
-              restoredBooks += 1;
-            } catch {
-              // Skip malformed lorebook entry
-            }
+            upsertLorebookRaw(entry.data, entry.fileName || 'Lorebook.json');
           }
         }
+
+        // Ensure unique savedFileNames for custom themes and tags
+        const usedThemeFiles = new Set<string>();
+        nextThemes = nextThemes.map((th) => {
+          if (!isThemeModifiedFromBuiltIn(th)) return th;
+          const fileName = ensureUniqueSavedFileName(
+            th.savedFileName || th.name,
+            usedThemeFiles,
+            'theme'
+          );
+          themeDiskFileNamesRef.current.set(th.id, fileName);
+          return { ...th, savedFileName: fileName };
+        });
+
+        const usedTagFiles = new Set<string>();
+        const customTagsOnlyIds = new Set(
+          extractCustomUserTags(nextTags).map((t) => t.id)
+        );
+        nextTags = nextTags.map((tg) => {
+          if (!customTagsOnlyIds.has(tg.id)) return tg;
+          const fileName = ensureUniqueSavedFileName(
+            tg.savedFileName || tg.name,
+            usedTagFiles,
+            'tag'
+          );
+          tagDiskFileNamesRef.current.set(tg.id, fileName);
+          return { ...tg, savedFileName: fileName };
+        });
 
         // Synchronously commit all restored workspace refs & React states
         tagsRef.current = nextTags;
@@ -5266,6 +6420,8 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
         await executeDiskSaveAndRescan('manual', {
           characters: nextCharacters,
           lorebooks: nextLorebooks,
+          themes: nextThemes,
+          tags: nextTags,
         });
       }
 
@@ -5277,7 +6433,12 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
         standaloneSummary = res.summary;
       }
 
-      const totalRestored = restoredChars + restoredBooks + standaloneCount;
+      const totalRestored =
+        restoredChars +
+        restoredBooks +
+        restoredThemesCount +
+        restoredTagsCount +
+        standaloneCount;
       const parts: string[] = [];
       if (restoredChars > 0) {
         parts.push(
@@ -5289,7 +6450,17 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
           `${restoredBooks} lorebook${restoredBooks === 1 ? '' : 's'}`
         );
       }
-      if (restoredMeta) {
+      if (restoredThemesCount > 0) {
+        parts.push(
+          `${restoredThemesCount} theme${restoredThemesCount === 1 ? '' : 's'}`
+        );
+      }
+      if (restoredTagsCount > 0) {
+        parts.push(
+          `${restoredTagsCount} tag${restoredTagsCount === 1 ? '' : 's'}`
+        );
+      }
+      if (restoredMeta && restoredThemesCount === 0 && restoredTagsCount === 0) {
         parts.push('themes & tags');
       }
       if (restoredVault) {
@@ -5411,10 +6582,15 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
       setStatBlock,
       themes,
       setThemes,
+      createNewTheme,
+      deleteTheme,
       activeTheme,
       setActiveThemeId,
       tags,
       setTags,
+      upsertCustomTag,
+      toggleTagNsfw,
+      deleteTag,
       ensureTagRegistered,
       nameConflictRequest,
       checkAndTriggerNameConflict,
@@ -5481,9 +6657,14 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
       statBlock,
       setStatBlock,
       themes,
+      createNewTheme,
+      deleteTheme,
       activeTheme,
       setActiveThemeId,
       tags,
+      upsertCustomTag,
+      toggleTagNsfw,
+      deleteTag,
       ensureTagRegistered,
       nameConflictRequest,
       checkAndTriggerNameConflict,

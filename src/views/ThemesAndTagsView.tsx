@@ -58,10 +58,15 @@ export const ThemesAndTagsView: React.FC = () => {
   const {
     themes,
     setThemes,
+    createNewTheme,
+    deleteTheme,
     activeTheme,
     setActiveThemeId,
     tags,
     setTags,
+    upsertCustomTag,
+    toggleTagNsfw,
+    deleteTag,
     aiConfig,
     settings,
     setActiveTab,
@@ -160,30 +165,7 @@ export const ThemesAndTagsView: React.FC = () => {
 
   const handleCreateNewTheme = () => {
     setThemeAiError(null);
-    const existingNames = new Set(
-      themes.map((t) => t.name.trim().toLowerCase())
-    );
-    let suffix = 1;
-    let candidateName = 'Custom Theme';
-    while (existingNames.has(candidateName.toLowerCase())) {
-      suffix += 1;
-      candidateName = `Custom Theme ${suffix}`;
-    }
-
-    const nextColor =
-      QUICK_SWATCHES[themes.length % QUICK_SWATCHES.length] || '#ec4899';
-
-    const created: ContextTheme = {
-      id: `theme-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-      name: candidateName,
-      color: nextColor,
-      aiContextPrompt: `Write in a compelling ${candidateName} style with strong atmospheric detail.`,
-      associatedTags: [],
-      isBuiltIn: false,
-    };
-
-    setThemes((prev) => [...prev, created]);
-    setActiveThemeId(created.id);
+    createNewTheme();
 
     if (focusTimerRef.current !== null) {
       window.clearTimeout(focusTimerRef.current);
@@ -196,11 +178,7 @@ export const ThemesAndTagsView: React.FC = () => {
 
   const handleDeleteTheme = (id: string) => {
     if (themes.length <= 1) return;
-    const filtered = themes.filter((t) => t.id !== id);
-    setThemes(filtered);
-    if (activeTheme.id === id) {
-      setActiveThemeId(filtered[0].id);
-    }
+    deleteTheme(id);
   };
 
   const handleGenerateThemeWithAI = async () => {
@@ -347,43 +325,20 @@ export const ThemesAndTagsView: React.FC = () => {
     const clean = quickTagName.trim();
     if (!clean) return;
 
-    const existing = tags.find(
-      (t) => t.name.trim().toLowerCase() === clean.toLowerCase()
-    );
-    const desc =
-      quickTagAiDesc.trim() ||
-      (quickTagIsNsfw
-        ? `Explicit 18+ directive for "${clean}": incorporate vivid sensory and thematic elements consistent with "${clean}".`
-        : `Incorporate thematic, tonal, and character elements consistent with "${clean}".`);
+    const { updatedExisting } = upsertCustomTag({
+      name: clean,
+      color: quickTagColor,
+      category: quickTagCategory,
+      isNsfw: quickTagIsNsfw,
+      aiContextDescription: quickTagAiDesc,
+    });
 
-    if (existing) {
-      setTags((prev) =>
-        prev.map((t) =>
-          t.id === existing.id
-            ? {
-                ...t,
-                color: quickTagColor,
-                category: quickTagCategory,
-                isNsfw: quickTagIsNsfw,
-                aiContextDescription: desc,
-                aiDescription: desc,
-              }
-            : t
-        )
-      );
+    if (updatedExisting) {
       setQuickTagFeedback(`Updated existing tag "${clean}".`);
     } else {
-      const created: TagDefinition = {
-        id: `tag-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-        name: clean,
-        color: quickTagColor,
-        category: quickTagCategory,
-        isNsfw: quickTagIsNsfw,
-        aiContextDescription: desc,
-        aiDescription: desc,
-      };
-      setTags((prev) => [created, ...prev]);
-      setQuickTagFeedback(`Created tag "${clean}" (${quickTagIsNsfw ? 'NSFW 18+' : 'SFW'}).`);
+      setQuickTagFeedback(
+        `Created tag "${clean}" (${quickTagIsNsfw ? 'NSFW 18+' : 'SFW'}).`
+      );
     }
 
     updateThemesTagsDraft({
@@ -399,11 +354,7 @@ export const ThemesAndTagsView: React.FC = () => {
     tagId: string
   ) => {
     e.stopPropagation();
-    setTags((prev) =>
-      prev.map((t) =>
-        t.id === tagId ? { ...t, isNsfw: !isTagNsfwFlagged(t) } : t
-      )
-    );
+    toggleTagNsfw(tagId);
   };
 
   const handleOpenEditModal = (tag: TagDefinition) => {
@@ -422,30 +373,20 @@ export const ThemesAndTagsView: React.FC = () => {
     if (!editingTag) return;
     const cleanName = editTagName.trim();
     if (!cleanName) return;
-    const cleanDesc =
-      editTagAiDesc.trim() ||
-      `Incorporate thematic, tonal, and character elements consistent with "${cleanName}".`;
 
-    setTags((prev) =>
-      prev.map((t) =>
-        t.id === editingTag.id
-          ? {
-              ...t,
-              name: cleanName,
-              category: editTagCategory,
-              color: editTagColor,
-              isNsfw: editTagIsNsfw,
-              aiContextDescription: cleanDesc,
-              aiDescription: cleanDesc,
-            }
-          : t
-      )
-    );
+    upsertCustomTag({
+      id: editingTag.id,
+      name: cleanName,
+      category: editTagCategory,
+      color: editTagColor,
+      isNsfw: editTagIsNsfw,
+      aiContextDescription: editTagAiDesc,
+    });
     setEditingTag(null);
   };
 
   const handleDeleteTag = (id: string) => {
-    setTags((prev) => prev.filter((t) => t.id !== id));
+    deleteTag(id);
     if (editingTag?.id === id) {
       setEditingTag(null);
     }

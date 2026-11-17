@@ -23,6 +23,8 @@ function resolveSavesRoot(customSavePath?: string): {
   resolvedPath: string;
   charsDir: string;
   loreDir: string;
+  themesDir: string;
+  tagsDir: string;
 } {
   const trimmed = (customSavePath || '').trim();
   const useCustom =
@@ -36,27 +38,33 @@ function resolveSavesRoot(customSavePath?: string): {
   const diskRoot = useCustom ? trimmed : './Saves/';
   const charsDir = path.join(resolvedPath, 'Characters');
   const loreDir = path.join(resolvedPath, 'Lorebooks');
+  const themesDir = path.join(resolvedPath, 'Themes');
+  const tagsDir = path.join(resolvedPath, 'Tags');
 
   fs.mkdirSync(resolvedPath, { recursive: true });
   fs.mkdirSync(charsDir, { recursive: true });
   fs.mkdirSync(loreDir, { recursive: true });
+  fs.mkdirSync(themesDir, { recursive: true });
+  fs.mkdirSync(tagsDir, { recursive: true });
 
-  return { diskRoot, resolvedPath, charsDir, loreDir };
+  return { diskRoot, resolvedPath, charsDir, loreDir, themesDir, tagsDir };
 }
 
 export function scanSavesDirectoryOnDisk(customSavePath?: string) {
-  const { diskRoot, resolvedPath, charsDir, loreDir } =
+  const { diskRoot, resolvedPath, charsDir, loreDir, themesDir, tagsDir } =
     resolveSavesRoot(customSavePath);
 
   const characters: Record<string, unknown>[] = [];
   const lorebooks: Record<string, unknown>[] = [];
+  const themes: Record<string, unknown>[] = [];
+  const tags: Record<string, unknown>[] = [];
   let meta: Record<string, unknown> | null = null;
   let vault: Record<string, unknown> | null = null;
   const files: Array<{
     id: string;
     folderPath: string;
     fileName: string;
-    kind: 'character' | 'lorebook' | 'meta' | 'vault';
+    kind: 'character' | 'lorebook' | 'theme' | 'tag' | 'meta' | 'vault';
     sizeBytes: number;
     updatedAt: string;
     content: string;
@@ -135,7 +143,79 @@ export function scanSavesDirectoryOnDisk(customSavePath?: string) {
     }
   }
 
-  // 3. Read ./Saves/_tavernsmith_meta.json
+  // 3. Read all .json files inside ./Saves/Themes/ strictly as themes[]
+  if (fs.existsSync(themesDir)) {
+    const themeEntries = fs
+      .readdirSync(themesDir, { withFileTypes: true })
+      .filter((d) => d.isFile() && d.name.toLowerCase().endsWith('.json'))
+      .sort((a, b) => a.name.localeCompare(b.name));
+
+    for (const entry of themeEntries) {
+      const fullPath = path.join(themesDir, entry.name);
+      try {
+        const stat = fs.statSync(fullPath);
+        const content = fs.readFileSync(fullPath, 'utf8');
+        const parsed = JSON.parse(content) as Record<string, unknown>;
+        if (parsed && typeof parsed === 'object') {
+          themes.push({
+            ...parsed,
+            _tavernsmithType: 'theme',
+            _diskFileName: entry.name,
+            _diskUpdatedAt: stat.mtime.toISOString(),
+          });
+          files.push({
+            id: `Themes/${entry.name}`,
+            folderPath: 'Themes/',
+            fileName: entry.name,
+            kind: 'theme',
+            sizeBytes: stat.size,
+            updatedAt: stat.mtime.toISOString(),
+            content,
+          });
+        }
+      } catch {
+        // Ignore unreadable or corrupted JSON file
+      }
+    }
+  }
+
+  // 4. Read all .json files inside ./Saves/Tags/ strictly as tags[]
+  if (fs.existsSync(tagsDir)) {
+    const tagEntries = fs
+      .readdirSync(tagsDir, { withFileTypes: true })
+      .filter((d) => d.isFile() && d.name.toLowerCase().endsWith('.json'))
+      .sort((a, b) => a.name.localeCompare(b.name));
+
+    for (const entry of tagEntries) {
+      const fullPath = path.join(tagsDir, entry.name);
+      try {
+        const stat = fs.statSync(fullPath);
+        const content = fs.readFileSync(fullPath, 'utf8');
+        const parsed = JSON.parse(content) as Record<string, unknown>;
+        if (parsed && typeof parsed === 'object') {
+          tags.push({
+            ...parsed,
+            _tavernsmithType: 'tag',
+            _diskFileName: entry.name,
+            _diskUpdatedAt: stat.mtime.toISOString(),
+          });
+          files.push({
+            id: `Tags/${entry.name}`,
+            folderPath: 'Tags/',
+            fileName: entry.name,
+            kind: 'tag',
+            sizeBytes: stat.size,
+            updatedAt: stat.mtime.toISOString(),
+            content,
+          });
+        }
+      } catch {
+        // Ignore unreadable or corrupted JSON file
+      }
+    }
+  }
+
+  // 5. Read ./Saves/_tavernsmith_meta.json
   const metaPath = path.join(resolvedPath, META_FILENAME);
   if (fs.existsSync(metaPath)) {
     try {
@@ -156,7 +236,7 @@ export function scanSavesDirectoryOnDisk(customSavePath?: string) {
     }
   }
 
-  // 4. Read ./Saves/_tavernsmith_vault.enc
+  // 6. Read ./Saves/_tavernsmith_vault.enc
   const vaultPath = path.join(resolvedPath, VAULT_FILENAME);
   if (fs.existsSync(vaultPath)) {
     try {
@@ -183,6 +263,8 @@ export function scanSavesDirectoryOnDisk(customSavePath?: string) {
     resolvedPath,
     characters,
     lorebooks,
+    themes,
+    tags,
     meta,
     vault,
     files,
@@ -240,7 +322,8 @@ function reserveUniqueDiskFileName(
 export function saveToSavesDirectoryOnDisk(body: Record<string, unknown>) {
   const customSavePath =
     typeof body.customSavePath === 'string' ? body.customSavePath : undefined;
-  const { resolvedPath, charsDir, loreDir } = resolveSavesRoot(customSavePath);
+  const { resolvedPath, charsDir, loreDir, themesDir, tagsDir } =
+    resolveSavesRoot(customSavePath);
 
   // 1. Write characters strictly into ./Saves/Characters/[UniqueSanitizedName].json
   if (Array.isArray(body.characters)) {
@@ -362,7 +445,107 @@ export function saveToSavesDirectoryOnDisk(body: Record<string, unknown>) {
     }
   }
 
-  // 3. Write custom tags, themes, and app settings directly into ./Saves/_tavernsmith_meta.json
+  // 3. Write added/modified themes compactly into ./Saves/Themes/[UniqueSanitizedName].json
+  if (Array.isArray(body.themes)) {
+    const usedThemeTargets = new Set<string>();
+    const writtenThemeFiles = new Set<string>();
+
+    for (const item of body.themes) {
+      if (!item || typeof item !== 'object') continue;
+      const entry = item as {
+        fileName?: string;
+        content?: string;
+        payload?: Record<string, unknown>;
+      };
+      const payload = entry.payload || (item as Record<string, unknown>);
+      const rawName =
+        entry.fileName ||
+        (typeof payload.name === 'string' ? payload.name : 'custom_theme');
+      const targetFileName = reserveUniqueDiskFileName(rawName, usedThemeTargets);
+      // Minified JSON for space-efficient storage
+      const outContent =
+        typeof entry.content === 'string'
+          ? entry.content
+          : JSON.stringify({
+              ...payload,
+              _tavernsmithType: 'theme',
+            });
+
+      fs.writeFileSync(
+        path.join(themesDir, targetFileName),
+        outContent,
+        'utf8'
+      );
+      writtenThemeFiles.add(targetFileName.toLowerCase());
+    }
+
+    try {
+      const existingThemeFiles = fs.readdirSync(themesDir);
+      for (const fileName of existingThemeFiles) {
+        if (!fileName.toLowerCase().endsWith('.json')) continue;
+        if (!writtenThemeFiles.has(fileName.toLowerCase())) {
+          const orphanPath = path.join(themesDir, fileName);
+          if (fs.existsSync(orphanPath)) {
+            fs.unlinkSync(orphanPath);
+          }
+        }
+      }
+    } catch {
+      // Ignore directory prune errors
+    }
+  }
+
+  // 4. Write added/modified tags compactly into ./Saves/Tags/[UniqueSanitizedName].json
+  if (Array.isArray(body.tags)) {
+    const usedTagTargets = new Set<string>();
+    const writtenTagFiles = new Set<string>();
+
+    for (const item of body.tags) {
+      if (!item || typeof item !== 'object') continue;
+      const entry = item as {
+        fileName?: string;
+        content?: string;
+        payload?: Record<string, unknown>;
+      };
+      const payload = entry.payload || (item as Record<string, unknown>);
+      const rawName =
+        entry.fileName ||
+        (typeof payload.name === 'string' ? payload.name : 'custom_tag');
+      const targetFileName = reserveUniqueDiskFileName(rawName, usedTagTargets);
+      // Minified JSON for space-efficient storage
+      const outContent =
+        typeof entry.content === 'string'
+          ? entry.content
+          : JSON.stringify({
+              ...payload,
+              _tavernsmithType: 'tag',
+            });
+
+      fs.writeFileSync(
+        path.join(tagsDir, targetFileName),
+        outContent,
+        'utf8'
+      );
+      writtenTagFiles.add(targetFileName.toLowerCase());
+    }
+
+    try {
+      const existingTagFiles = fs.readdirSync(tagsDir);
+      for (const fileName of existingTagFiles) {
+        if (!fileName.toLowerCase().endsWith('.json')) continue;
+        if (!writtenTagFiles.has(fileName.toLowerCase())) {
+          const orphanPath = path.join(tagsDir, fileName);
+          if (fs.existsSync(orphanPath)) {
+            fs.unlinkSync(orphanPath);
+          }
+        }
+      }
+    } catch {
+      // Ignore directory prune errors
+    }
+  }
+
+  // 5. Write slim workspace settings & active IDs into ./Saves/_tavernsmith_meta.json
   if (body.meta && typeof body.meta === 'object') {
     fs.writeFileSync(
       path.join(resolvedPath, META_FILENAME),
@@ -371,7 +554,7 @@ export function saveToSavesDirectoryOnDisk(body: Record<string, unknown>) {
     );
   }
 
-  // 4. Write AES-256-GCM encrypted API keys into ./Saves/_tavernsmith_vault.enc
+  // 6. Write AES-256-GCM encrypted API keys into ./Saves/_tavernsmith_vault.enc
   if (body.vault && typeof body.vault === 'object') {
     fs.writeFileSync(
       path.join(resolvedPath, VAULT_FILENAME),
@@ -387,11 +570,18 @@ export function saveToSavesDirectoryOnDisk(body: Record<string, unknown>) {
 export function deleteFromSavesDirectoryOnDisk(body: Record<string, unknown>) {
   const customSavePath =
     typeof body.customSavePath === 'string' ? body.customSavePath : undefined;
-  const { charsDir, loreDir } = resolveSavesRoot(customSavePath);
+  const { charsDir, loreDir, themesDir, tagsDir } =
+    resolveSavesRoot(customSavePath);
 
   const rawFolder = String(body.folder || body.kind || '').toLowerCase();
   const targetDir =
-    rawFolder === 'lorebooks' || rawFolder === 'lorebook' ? loreDir : charsDir;
+    rawFolder === 'lorebooks' || rawFolder === 'lorebook'
+      ? loreDir
+      : rawFolder === 'themes' || rawFolder === 'theme'
+        ? themesDir
+        : rawFolder === 'tags' || rawFolder === 'tag'
+          ? tagsDir
+          : charsDir;
 
   const candidateNames = new Set<string>();
   const rawFileName =

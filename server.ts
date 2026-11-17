@@ -107,12 +107,12 @@ async function startServer() {
   const app = express();
   const PORT = Number(process.env.PORT) || 3000;
 
-  // Ensure ./Saves/, ./Saves/Characters/, and ./Saves/Lorebooks/ exist on server startup
+  // Ensure ./Saves/, Characters/, Lorebooks/, Themes/, and Tags/ exist on server startup
   scanSavesDirectoryOnDisk();
 
   app.use(express.json({ limit: '50mb' }));
 
-  // GET /api/disk/state — Auto-scan ./Saves/Characters/, ./Saves/Lorebooks/, _tavernsmith_meta.json, _tavernsmith_vault.enc
+  // GET /api/disk/state — Auto-scan ./Saves/Characters/, Lorebooks/, Themes/, Tags/, _tavernsmith_meta.json, _tavernsmith_vault.enc
   app.get('/api/disk/state', (req, res) => {
     try {
       const customSavePath =
@@ -142,7 +142,7 @@ async function startServer() {
     }
   });
 
-  // POST /api/disk/delete — Physically delete file from ./Saves/Characters/ or ./Saves/Lorebooks/ and re-scan
+  // POST /api/disk/delete — Physically delete file from ./Saves/Characters/, Lorebooks/, Themes/, or Tags/ and re-scan
   app.post('/api/disk/delete', (req, res) => {
     try {
       res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');

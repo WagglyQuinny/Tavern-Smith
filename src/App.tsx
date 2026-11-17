@@ -286,12 +286,26 @@ const DeleteConfirmationModal: React.FC = () => {
 
   if (!pendingDeleteTarget) return null;
 
-  const isChar =
-    pendingDeleteTarget.kind === 'character' ||
-    (pendingDeleteTarget.kind === 'savedFile' &&
-      pendingDeleteTarget.fileKind === 'character');
-  const label = isChar ? 'Character' : 'Lorebook';
-  const folderHint = isChar ? './Saves/Characters/' : './Saves/Lorebooks/';
+  const fileKind =
+    pendingDeleteTarget.kind === 'savedFile'
+      ? pendingDeleteTarget.fileKind
+      : pendingDeleteTarget.kind;
+  const label =
+    fileKind === 'character'
+      ? 'Character'
+      : fileKind === 'theme'
+        ? 'Theme'
+        : fileKind === 'tag'
+          ? 'Tag'
+          : 'Lorebook';
+  const folderHint =
+    fileKind === 'character'
+      ? './Saves/Characters/'
+      : fileKind === 'theme'
+        ? './Saves/Themes/'
+        : fileKind === 'tag'
+          ? './Saves/Tags/'
+          : './Saves/Lorebooks/';
 
   return (
     <div

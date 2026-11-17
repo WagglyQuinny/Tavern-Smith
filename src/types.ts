@@ -43,6 +43,7 @@ export type TagCategory =
 
 export interface TagDefinition {
   id: string;
+  savedFileName?: string;
   name: string;
   color: string;
   category: TagCategory;
@@ -54,6 +55,7 @@ export interface TagDefinition {
 
 export interface ContextTheme {
   id: string;
+  savedFileName?: string;
   name: string;
   color: string;
   aiContextPrompt: string;
@@ -262,7 +264,7 @@ export interface SavedFileEntry {
   id: string;
   folderPath: string;
   fileName: string;
-  kind: 'character' | 'lorebook' | 'meta' | 'vault';
+  kind: 'character' | 'lorebook' | 'theme' | 'tag' | 'meta' | 'vault';
   sizeBytes: number;
   updatedAt: string;
   content: string;
@@ -281,8 +283,8 @@ export interface TavernSmithMetaPayload {
   schema: 'tavernsmith_meta_v1';
   updatedAt: string;
   activeThemeId: string;
-  contextThemes: ContextTheme[];
-  tags: TagDefinition[];
+  contextThemes?: ContextTheme[];
+  tags?: TagDefinition[];
   settings?: Partial<AppSettings>;
   aiConfig?: Partial<AIBackendConfig>;
   activeCharacterId?: string;
@@ -295,6 +297,8 @@ export interface DiskStateResponse {
   resolvedPath: string;
   characters: Record<string, unknown>[];
   lorebooks: Record<string, unknown>[];
+  themes?: Record<string, unknown>[];
+  tags?: Record<string, unknown>[];
   meta: TavernSmithMetaPayload | null;
   vault: Record<string, unknown> | null;
   files: SavedFileEntry[];
@@ -315,8 +319,8 @@ export interface PendingDeleteTarget {
   displayName: string;
   fileName?: string;
   savedFileName?: string;
-  folder?: 'Characters' | 'Lorebooks';
-  fileKind?: 'character' | 'lorebook';
+  folder?: 'Characters' | 'Lorebooks' | 'Themes' | 'Tags';
+  fileKind?: 'character' | 'lorebook' | 'theme' | 'tag';
   entryCount?: number;
   subtitle?: string;
 }
