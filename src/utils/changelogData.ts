@@ -7,9 +7,36 @@ export interface ChangelogReleaseEntry {
   fileChanges: string[];
 }
 
-export const APP_VERSION = "4.2.1";
+export const APP_VERSION = "4.3.0";
 
 export const CHANGELOG_RELEASES: ChangelogReleaseEntry[] = [
+  {
+    "version": "v4.3.0",
+    "date": "2026-11-17",
+    "title": "Add inlineDataList support to generate endpoint (a1c048b)",
+    "highlights": [
+      "Add inlineDataList support to generate endpoint (a1c048b)"
+    ],
+    "fixes": [
+      "Verified TypeScript compilation, zero-crash sandbox storage guards, and cross-platform standalone launcher compatibility."
+    ],
+    "fileChanges": [
+      "public/assets/aistudio/image_38f3372f.png — Added Project Configuration & Metadata (+0 / -0 lines)",
+      "public/assets/aistudio/image_7f03481d.png — Added Project Configuration & Metadata (+0 / -0 lines)",
+      "public/assets/aistudio/image_dffe1b4e.png — Added Project Configuration & Metadata (+0 / -0 lines)",
+      "public/assets/aistudio/image_ec020d63.png — Added Project Configuration & Metadata (+0 / -0 lines)",
+      "server.ts — Updated Project Configuration & Metadata (+41 / -20 lines)",
+      "src/components/CharacterEditor.tsx — Updated Character Card Workbench & Wizard (+891 / -441 lines)",
+      "src/components/ContextImagesBar.tsx — Added UI Workbench Component (+222 / -0 lines)",
+      "src/components/LorebookEditor.tsx — Updated Lorebook / World Info Workbench & Wizard (+138 / -190 lines)",
+      "src/components/SmartEditor.tsx — Updated Synchronized Macro & Ghost-Text SmartEditor (+138 / -301 lines)",
+      "src/context/StoreContext.tsx — Updated Workspace State, Auto-Save & Provider Credential Vault (+19 / -5 lines)",
+      "src/services/aiService.ts — Updated AI Backend Service & Model Format Engine (+78 / -40 lines)",
+      "src/types.ts — Updated Project Configuration & Metadata (+12 / -2 lines)",
+      "src/utils/tokenCounter.ts — Updated Core Utility Module (+170 / -34 lines)",
+      "src/views/ThemesAndTagsView.tsx — Updated Context Themes & Global Tag/Sub-Tag Manager (+3 / -0 lines)"
+    ]
+  },
   {
     "version": "v4.2.1",
     "date": "2026-11-17",
@@ -286,22 +313,6 @@ export const CHANGELOG_RELEASES: ChangelogReleaseEntry[] = [
       "src/components/TagSelector.tsx & src/views/ThemesAndTagsView.tsx — Sub-Tag drawers, custom sub-tag creator & 🔞 Hide NSFW Tags toggle",
       "src/App.tsx & src/utils/folderDb.ts — Top-level React Error Boundary & zero-crash IndexedDB / FileSystemDirectoryHandle guards",
       ".github/workflows/release.yml & .github/workflows/version-update.yml — Non-admin Windows launcher & automated git diff changelog generator"
-    ]
-  },
-  {
-    "version": "v2.0.0",
-    "date": "2026-11-11",
-    "title": "Branding Redesign, Expanded Tag Library & Roster UX",
-    "highlights": [
-      "Redesigned application branding and enhanced Character & Lorebook Roster filtering and sorting.",
-      "Expanded built-in genre, trope, anatomy, and dynamic roleplay tag definitions."
-    ],
-    "fixes": [
-      "Improved character card import/export handling and roster state synchronization."
-    ],
-    "fileChanges": [
-      "src/components/CharacterEditor.tsx & src/components/LorebookEditor.tsx — Roster UX & tag filtering",
-      "src/context/StoreContext.tsx — Expanded default tag definitions"
     ]
   }
 ];

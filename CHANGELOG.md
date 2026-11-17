@@ -2,6 +2,31 @@
 
 All notable changes to **TavernSmith** are documented in this file. This file is synced with the in-app **About & Changelog** modal (`src/utils/changelogData.ts`) and the automated GitHub Release workflows (`.github/workflows/version-update.yml` & `.github/workflows/release.yml`).
 
+## [v4.3.0] - 2026-11-17
+
+### 🚀 Highlights & Feature Additions
+- Add inlineDataList support to generate endpoint (a1c048b)
+
+### 🛠️ Bug Fixes, AI & Stability Improvements
+- Verified TypeScript compilation, zero-crash sandbox storage guards, and cross-platform standalone launcher compatibility.
+
+### 📂 Detailed Component & File Changes
+- **Repository Diff Summary**: 14 files changed, 1712 insertions(+), 1033 deletions(-)
+- `public/assets/aistudio/image_38f3372f.png — Added Project Configuration & Metadata (+0 / -0 lines)`
+- `public/assets/aistudio/image_7f03481d.png — Added Project Configuration & Metadata (+0 / -0 lines)`
+- `public/assets/aistudio/image_dffe1b4e.png — Added Project Configuration & Metadata (+0 / -0 lines)`
+- `public/assets/aistudio/image_ec020d63.png — Added Project Configuration & Metadata (+0 / -0 lines)`
+- `server.ts — Updated Project Configuration & Metadata (+41 / -20 lines)`
+- `src/components/CharacterEditor.tsx — Updated Character Card Workbench & Wizard (+891 / -441 lines)`
+- `src/components/ContextImagesBar.tsx — Added UI Workbench Component (+222 / -0 lines)`
+- `src/components/LorebookEditor.tsx — Updated Lorebook / World Info Workbench & Wizard (+138 / -190 lines)`
+- `src/components/SmartEditor.tsx — Updated Synchronized Macro & Ghost-Text SmartEditor (+138 / -301 lines)`
+- `src/context/StoreContext.tsx — Updated Workspace State, Auto-Save & Provider Credential Vault (+19 / -5 lines)`
+- `src/services/aiService.ts — Updated AI Backend Service & Model Format Engine (+78 / -40 lines)`
+- `src/types.ts — Updated Project Configuration & Metadata (+12 / -2 lines)`
+- `src/utils/tokenCounter.ts — Updated Core Utility Module (+170 / -34 lines)`
+- `src/views/ThemesAndTagsView.tsx — Updated Context Themes & Global Tag/Sub-Tag Manager (+3 / -0 lines)`
+
 ## [v4.2.1] - 2026-11-17
 
 ### 🚀 Highlights & Feature Additions
