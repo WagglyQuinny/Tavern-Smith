@@ -301,11 +301,14 @@ export function compileStatBlockPrompt(statBlock: StatBlockConfig): string {
   ].join('\n');
 }
 
-export function calculateLorebookTokens(lorebook: Lorebook): {
+export function calculateLorebookTokens(lorebook?: Lorebook): {
   constant: number;
   triggered: number;
   total: number;
 } {
+  if (!lorebook || !Array.isArray(lorebook.entries)) {
+    return { constant: 0, triggered: 0, total: 0 };
+  }
   let constant = 0;
   let triggered = 0;
   for (const entry of lorebook.entries) {
@@ -321,11 +324,11 @@ export function calculateLorebookTokens(lorebook: Lorebook): {
 }
 
 /**
- * Calculates a complete token breakdown for a Character Card, Lorebook, and StatBlock.
+ * Calculates a complete token breakdown for a Character Card, optional linked Lorebook, and StatBlock.
  */
 export function calculateCardTokenBreakdown(
   character: CharacterCardData,
-  lorebook: Lorebook,
+  lorebook: Lorebook | undefined,
   statBlock: StatBlockConfig
 ): TokenBreakdown {
   const name = estimateTokens(character.name);

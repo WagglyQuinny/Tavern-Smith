@@ -1,17 +1,663 @@
 import 'dotenv/config';
 import express from 'express';
+import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { createServer as createViteServer } from 'vite';
 import { GoogleGenAI, GenerateContentResponse } from '@google/genai';
-import {
-  scanSavesDirectoryOnDisk,
-  saveToSavesDirectoryOnDisk,
-  deleteFromSavesDirectoryOnDisk,
-} from './vite.config';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+
+const META_FILENAME = '_tavernsmith_meta.json';
+const VAULT_FILENAME = '_tavernsmith_vault.enc';
+
+function sanitizeDiskFileName(raw: string): string {
+  const base = path.basename(String(raw || 'untitled')).replace(/\.json$/i, '');
+  const clean =
+    base
+      .trim()
+      .replace(/[^a-zA-Z0-9_-]+/g, '_')
+      .replace(/^_+|_+$/g, '') || 'untitled';
+  return `${clean}.json`;
+}
+
+function resolveSavesRoot(customSavePath?: string): {
+  diskRoot: string;
+  resolvedPath: string;
+  charsDir: string;
+  loreDir: string;
+  themesDir: string;
+  tagsDir: string;
+} {
+  const trimmed = (customSavePath || '').trim();
+  const useCustom =
+    trimmed &&
+    trimmed !== './Saves' &&
+    trimmed !== './Saves/' &&
+    trimmed !== '/Saves/';
+  const resolvedPath = useCustom
+    ? path.resolve(process.cwd(), trimmed)
+    : path.resolve(process.cwd(), 'Saves');
+  const diskRoot = useCustom ? trimmed : './Saves/';
+  const charsDir = path.join(resolvedPath, 'Characters');
+  const loreDir = path.join(resolvedPath, 'Lorebooks');
+  const themesDir = path.join(resolvedPath, 'Themes');
+  const tagsDir = path.join(resolvedPath, 'Tags');
+
+  fs.mkdirSync(resolvedPath, { recursive: true });
+  fs.mkdirSync(charsDir, { recursive: true });
+  fs.mkdirSync(loreDir, { recursive: true });
+  fs.mkdirSync(themesDir, { recursive: true });
+  fs.mkdirSync(tagsDir, { recursive: true });
+
+  return { diskRoot, resolvedPath, charsDir, loreDir, themesDir, tagsDir };
+}
+
+function extractEntityIdFromJson(parsed: Record<string, unknown>): string {
+  const source =
+    parsed.payload &&
+    typeof parsed.payload === 'object' &&
+    !Array.isArray(parsed.payload)
+      ? (parsed.payload as Record<string, unknown>)
+      : parsed;
+
+  if (typeof source.id === 'string' && source.id.trim()) {
+    return source.id.trim();
+  }
+  if (source.data && typeof source.data === 'object') {
+    const dataObj = source.data as Record<string, unknown>;
+    if (typeof dataObj.id === 'string' && dataObj.id.trim()) {
+      return dataObj.id.trim();
+    }
+    if (dataObj.extensions && typeof dataObj.extensions === 'object') {
+      const extObj = dataObj.extensions as Record<string, unknown>;
+      if (extObj.tavernsmith && typeof extObj.tavernsmith === 'object') {
+        const tsObj = extObj.tavernsmith as Record<string, unknown>;
+        if (typeof tsObj.id === 'string' && tsObj.id.trim()) {
+          return tsObj.id.trim();
+        }
+      }
+    }
+  }
+  if (source.extensions && typeof source.extensions === 'object') {
+    const extObj = source.extensions as Record<string, unknown>;
+    if (extObj.tavernsmith && typeof extObj.tavernsmith === 'object') {
+      const tsObj = extObj.tavernsmith as Record<string, unknown>;
+      if (typeof tsObj.id === 'string' && tsObj.id.trim()) {
+        return tsObj.id.trim();
+      }
+    }
+  }
+  return '';
+}
+
+function reserveUniqueDiskFileName(
+  preferredName: string,
+  usedNamesLower: Set<string>
+): string {
+  const initial = sanitizeDiskFileName(preferredName);
+  const stem = initial.replace(/\.json$/i, '');
+  let candidate = initial;
+  let suffix = 2;
+  while (usedNamesLower.has(candidate.toLowerCase())) {
+    candidate = `${stem}_${suffix}.json`;
+    suffix++;
+  }
+  usedNamesLower.add(candidate.toLowerCase());
+  return candidate;
+}
+
+function scanSavesDirectoryOnDisk(customSavePath?: string) {
+  const { diskRoot, resolvedPath, charsDir, loreDir, themesDir, tagsDir } =
+    resolveSavesRoot(customSavePath);
+
+  const characters: Record<string, unknown>[] = [];
+  const lorebooks: Record<string, unknown>[] = [];
+  const themes: Record<string, unknown>[] = [];
+  const tags: Record<string, unknown>[] = [];
+  let meta: Record<string, unknown> | null = null;
+  let vault: Record<string, unknown> | null = null;
+  const files: Array<{
+    id: string;
+    folderPath: string;
+    fileName: string;
+    kind: 'character' | 'lorebook' | 'theme' | 'tag' | 'meta' | 'vault';
+    sizeBytes: number;
+    updatedAt: string;
+    content: string;
+  }> = [];
+
+  // 1. Read all .json files inside ./Saves/Characters/ strictly as characters[]
+  if (fs.existsSync(charsDir)) {
+    const charEntries = fs
+      .readdirSync(charsDir, { withFileTypes: true })
+      .filter((d) => d.isFile() && d.name.toLowerCase().endsWith('.json'))
+      .sort((a, b) => a.name.localeCompare(b.name));
+
+    for (const entry of charEntries) {
+      const fullPath = path.join(charsDir, entry.name);
+      try {
+        const stat = fs.statSync(fullPath);
+        const content = fs.readFileSync(fullPath, 'utf8');
+        const parsed = JSON.parse(content) as Record<string, unknown>;
+        if (parsed._tavernsmithType === 'lorebook') {
+          continue;
+        }
+        characters.push({
+          ...parsed,
+          _diskFileName: entry.name,
+          _diskUpdatedAt: stat.mtime.toISOString(),
+        });
+        files.push({
+          id: `Characters/${entry.name}`,
+          folderPath: 'Characters/',
+          fileName: entry.name,
+          kind: 'character',
+          sizeBytes: stat.size,
+          updatedAt: stat.mtime.toISOString(),
+          content,
+        });
+      } catch {
+        // Ignore unreadable or corrupted JSON file
+      }
+    }
+  }
+
+  // 2. Read all .json files inside ./Saves/Lorebooks/ strictly as lorebooks[]
+  if (fs.existsSync(loreDir)) {
+    const loreEntries = fs
+      .readdirSync(loreDir, { withFileTypes: true })
+      .filter((d) => d.isFile() && d.name.toLowerCase().endsWith('.json'))
+      .sort((a, b) => a.name.localeCompare(b.name));
+
+    for (const entry of loreEntries) {
+      const fullPath = path.join(loreDir, entry.name);
+      try {
+        const stat = fs.statSync(fullPath);
+        const content = fs.readFileSync(fullPath, 'utf8');
+        const parsed = JSON.parse(content) as Record<string, unknown>;
+        if (parsed._tavernsmithType === 'character') {
+          continue;
+        }
+        lorebooks.push({
+          ...parsed,
+          _tavernsmithType: 'lorebook',
+          _diskFileName: entry.name,
+          _diskUpdatedAt: stat.mtime.toISOString(),
+        });
+        files.push({
+          id: `Lorebooks/${entry.name}`,
+          folderPath: 'Lorebooks/',
+          fileName: entry.name,
+          kind: 'lorebook',
+          sizeBytes: stat.size,
+          updatedAt: stat.mtime.toISOString(),
+          content,
+        });
+      } catch {
+        // Ignore unreadable or corrupted JSON file
+      }
+    }
+  }
+
+  // 3. Read all .json files inside ./Saves/Themes/ strictly as themes[]
+  if (fs.existsSync(themesDir)) {
+    const themeEntries = fs
+      .readdirSync(themesDir, { withFileTypes: true })
+      .filter((d) => d.isFile() && d.name.toLowerCase().endsWith('.json'))
+      .sort((a, b) => a.name.localeCompare(b.name));
+
+    for (const entry of themeEntries) {
+      const fullPath = path.join(themesDir, entry.name);
+      try {
+        const stat = fs.statSync(fullPath);
+        const content = fs.readFileSync(fullPath, 'utf8');
+        const parsed = JSON.parse(content) as Record<string, unknown>;
+        if (parsed && typeof parsed === 'object') {
+          themes.push({
+            ...parsed,
+            _tavernsmithType: 'theme',
+            _diskFileName: entry.name,
+            _diskUpdatedAt: stat.mtime.toISOString(),
+          });
+          files.push({
+            id: `Themes/${entry.name}`,
+            folderPath: 'Themes/',
+            fileName: entry.name,
+            kind: 'theme',
+            sizeBytes: stat.size,
+            updatedAt: stat.mtime.toISOString(),
+            content,
+          });
+        }
+      } catch {
+        // Ignore unreadable or corrupted JSON file
+      }
+    }
+  }
+
+  // 4. Read all .json files inside ./Saves/Tags/ strictly as tags[]
+  if (fs.existsSync(tagsDir)) {
+    const tagEntries = fs
+      .readdirSync(tagsDir, { withFileTypes: true })
+      .filter((d) => d.isFile() && d.name.toLowerCase().endsWith('.json'))
+      .sort((a, b) => a.name.localeCompare(b.name));
+
+    for (const entry of tagEntries) {
+      const fullPath = path.join(tagsDir, entry.name);
+      try {
+        const stat = fs.statSync(fullPath);
+        const content = fs.readFileSync(fullPath, 'utf8');
+        const parsed = JSON.parse(content) as Record<string, unknown>;
+        if (parsed && typeof parsed === 'object') {
+          tags.push({
+            ...parsed,
+            _tavernsmithType: 'tag',
+            _diskFileName: entry.name,
+            _diskUpdatedAt: stat.mtime.toISOString(),
+          });
+          files.push({
+            id: `Tags/${entry.name}`,
+            folderPath: 'Tags/',
+            fileName: entry.name,
+            kind: 'tag',
+            sizeBytes: stat.size,
+            updatedAt: stat.mtime.toISOString(),
+            content,
+          });
+        }
+      } catch {
+        // Ignore unreadable or corrupted JSON file
+      }
+    }
+  }
+
+  // 5. Read ./Saves/_tavernsmith_meta.json
+  const metaPath = path.join(resolvedPath, META_FILENAME);
+  if (fs.existsSync(metaPath)) {
+    try {
+      const stat = fs.statSync(metaPath);
+      const content = fs.readFileSync(metaPath, 'utf8');
+      meta = JSON.parse(content) as Record<string, unknown>;
+      files.push({
+        id: `/${META_FILENAME}`,
+        folderPath: '/',
+        fileName: META_FILENAME,
+        kind: 'meta',
+        sizeBytes: stat.size,
+        updatedAt: stat.mtime.toISOString(),
+        content,
+      });
+    } catch {
+      // Ignore malformed meta
+    }
+  }
+
+  // 6. Read ./Saves/_tavernsmith_vault.enc
+  const vaultPath = path.join(resolvedPath, VAULT_FILENAME);
+  if (fs.existsSync(vaultPath)) {
+    try {
+      const stat = fs.statSync(vaultPath);
+      const content = fs.readFileSync(vaultPath, 'utf8');
+      vault = JSON.parse(content) as Record<string, unknown>;
+      files.push({
+        id: `/${VAULT_FILENAME}`,
+        folderPath: '/',
+        fileName: VAULT_FILENAME,
+        kind: 'vault',
+        sizeBytes: stat.size,
+        updatedAt: stat.mtime.toISOString(),
+        content,
+      });
+    } catch {
+      // Ignore malformed vault
+    }
+  }
+
+  return {
+    ok: true,
+    diskRoot,
+    resolvedPath,
+    characters,
+    lorebooks,
+    themes,
+    tags,
+    meta,
+    vault,
+    files,
+    updatedAt: new Date().toISOString(),
+  };
+}
+
+function saveToSavesDirectoryOnDisk(body: Record<string, unknown>) {
+  const customSavePath =
+    typeof body.customSavePath === 'string'
+      ? body.customSavePath
+      : typeof body.savesDir === 'string'
+        ? body.savesDir
+        : undefined;
+  const { resolvedPath, charsDir, loreDir, themesDir, tagsDir } =
+    resolveSavesRoot(customSavePath);
+
+  // 1. Write characters strictly into ./Saves/Characters/[UniqueSanitizedName].json
+  if (Array.isArray(body.characters)) {
+    const usedCharTargets = new Set<string>();
+    const writtenCharFiles = new Set<string>();
+
+    for (const item of body.characters) {
+      if (!item || typeof item !== 'object') continue;
+      const entry = item as {
+        fileName?: string;
+        content?: string;
+        payload?: Record<string, unknown>;
+      };
+      const payload = entry.payload || (item as Record<string, unknown>);
+      if (payload._tavernsmithType === 'lorebook') {
+        continue;
+      }
+      const rawName =
+        entry.fileName ||
+        (payload.data &&
+        typeof payload.data === 'object' &&
+        typeof (payload.data as Record<string, unknown>).name === 'string'
+          ? String((payload.data as Record<string, unknown>).name)
+          : typeof payload.name === 'string'
+            ? payload.name
+            : 'untitled');
+      const targetFileName = reserveUniqueDiskFileName(rawName, usedCharTargets);
+      const outContent =
+        typeof entry.content === 'string'
+          ? entry.content
+          : JSON.stringify(
+              {
+                ...payload,
+                _tavernsmithType: 'character',
+              },
+              null,
+              2
+            );
+
+      fs.writeFileSync(
+        path.join(charsDir, targetFileName),
+        outContent,
+        'utf8'
+      );
+      writtenCharFiles.add(targetFileName.toLowerCase());
+    }
+
+    try {
+      const existingCharFiles = fs.readdirSync(charsDir);
+      for (const fileName of existingCharFiles) {
+        if (!fileName.toLowerCase().endsWith('.json')) continue;
+        if (!writtenCharFiles.has(fileName.toLowerCase())) {
+          const orphanPath = path.join(charsDir, fileName);
+          if (fs.existsSync(orphanPath)) {
+            fs.unlinkSync(orphanPath);
+          }
+        }
+      }
+    } catch {
+      // Ignore directory prune errors
+    }
+  }
+
+  // 2. Write lorebooks strictly into ./Saves/Lorebooks/[UniqueSanitizedName].json
+  if (Array.isArray(body.lorebooks)) {
+    const usedLoreTargets = new Set<string>();
+    const writtenBookFiles = new Set<string>();
+
+    for (const item of body.lorebooks) {
+      if (!item || typeof item !== 'object') continue;
+      const entry = item as {
+        fileName?: string;
+        content?: string;
+        payload?: Record<string, unknown>;
+      };
+      const payload = entry.payload || (item as Record<string, unknown>);
+      if (payload._tavernsmithType === 'character') {
+        continue;
+      }
+      const rawName =
+        entry.fileName ||
+        (typeof payload.name === 'string' ? payload.name : 'untitled_lorebook');
+      const targetFileName = reserveUniqueDiskFileName(rawName, usedLoreTargets);
+      const outContent =
+        typeof entry.content === 'string'
+          ? entry.content
+          : JSON.stringify(
+              {
+                ...payload,
+                _tavernsmithType: 'lorebook',
+              },
+              null,
+              2
+            );
+
+      fs.writeFileSync(
+        path.join(loreDir, targetFileName),
+        outContent,
+        'utf8'
+      );
+      writtenBookFiles.add(targetFileName.toLowerCase());
+    }
+
+    try {
+      const existingLoreFiles = fs.readdirSync(loreDir);
+      for (const fileName of existingLoreFiles) {
+        if (!fileName.toLowerCase().endsWith('.json')) continue;
+        if (!writtenBookFiles.has(fileName.toLowerCase())) {
+          const orphanPath = path.join(loreDir, fileName);
+          if (fs.existsSync(orphanPath)) {
+            fs.unlinkSync(orphanPath);
+          }
+        }
+      }
+    } catch {
+      // Ignore directory prune errors
+    }
+  }
+
+  // 3. Write added/modified themes compactly into ./Saves/Themes/[UniqueSanitizedName].json
+  if (Array.isArray(body.themes)) {
+    const usedThemeTargets = new Set<string>();
+    const writtenThemeFiles = new Set<string>();
+
+    for (const item of body.themes) {
+      if (!item || typeof item !== 'object') continue;
+      const entry = item as {
+        fileName?: string;
+        content?: string;
+        payload?: Record<string, unknown>;
+      };
+      const payload = entry.payload || (item as Record<string, unknown>);
+      const rawName =
+        entry.fileName ||
+        (typeof payload.name === 'string' ? payload.name : 'custom_theme');
+      const targetFileName = reserveUniqueDiskFileName(rawName, usedThemeTargets);
+      const outContent =
+        typeof entry.content === 'string'
+          ? entry.content
+          : JSON.stringify({
+              ...payload,
+              _tavernsmithType: 'theme',
+            });
+
+      fs.writeFileSync(
+        path.join(themesDir, targetFileName),
+        outContent,
+        'utf8'
+      );
+      writtenThemeFiles.add(targetFileName.toLowerCase());
+    }
+
+    try {
+      const existingThemeFiles = fs.readdirSync(themesDir);
+      for (const fileName of existingThemeFiles) {
+        if (!fileName.toLowerCase().endsWith('.json')) continue;
+        if (!writtenThemeFiles.has(fileName.toLowerCase())) {
+          const orphanPath = path.join(themesDir, fileName);
+          if (fs.existsSync(orphanPath)) {
+            fs.unlinkSync(orphanPath);
+          }
+        }
+      }
+    } catch {
+      // Ignore directory prune errors
+    }
+  }
+
+  // 4. Write added/modified tags compactly into ./Saves/Tags/[UniqueSanitizedName].json
+  if (Array.isArray(body.tags)) {
+    const usedTagTargets = new Set<string>();
+    const writtenTagFiles = new Set<string>();
+
+    for (const item of body.tags) {
+      if (!item || typeof item !== 'object') continue;
+      const entry = item as {
+        fileName?: string;
+        content?: string;
+        payload?: Record<string, unknown>;
+      };
+      const payload = entry.payload || (item as Record<string, unknown>);
+      const rawName =
+        entry.fileName ||
+        (typeof payload.name === 'string' ? payload.name : 'custom_tag');
+      const targetFileName = reserveUniqueDiskFileName(rawName, usedTagTargets);
+      const outContent =
+        typeof entry.content === 'string'
+          ? entry.content
+          : JSON.stringify({
+              ...payload,
+              _tavernsmithType: 'tag',
+            });
+
+      fs.writeFileSync(
+        path.join(tagsDir, targetFileName),
+        outContent,
+        'utf8'
+      );
+      writtenTagFiles.add(targetFileName.toLowerCase());
+    }
+
+    try {
+      const existingTagFiles = fs.readdirSync(tagsDir);
+      for (const fileName of existingTagFiles) {
+        if (!fileName.toLowerCase().endsWith('.json')) continue;
+        if (!writtenTagFiles.has(fileName.toLowerCase())) {
+          const orphanPath = path.join(tagsDir, fileName);
+          if (fs.existsSync(orphanPath)) {
+            fs.unlinkSync(orphanPath);
+          }
+        }
+      }
+    } catch {
+      // Ignore directory prune errors
+    }
+  }
+
+  // 5. Write workspace settings & active IDs into ./Saves/_tavernsmith_meta.json
+  if (body.meta && typeof body.meta === 'object') {
+    fs.writeFileSync(
+      path.join(resolvedPath, META_FILENAME),
+      JSON.stringify(body.meta, null, 2),
+      'utf8'
+    );
+  }
+
+  // 6. Write AES-256-GCM encrypted API keys into ./Saves/_tavernsmith_vault.enc
+  if (body.vault && typeof body.vault === 'object') {
+    fs.writeFileSync(
+      path.join(resolvedPath, VAULT_FILENAME),
+      JSON.stringify(body.vault, null, 2),
+      'utf8'
+    );
+  }
+
+  return scanSavesDirectoryOnDisk(customSavePath);
+}
+
+function deleteFromSavesDirectoryOnDisk(body: Record<string, unknown>) {
+  const customSavePath =
+    typeof body.customSavePath === 'string'
+      ? body.customSavePath
+      : typeof body.savesDir === 'string'
+        ? body.savesDir
+        : undefined;
+  const { charsDir, loreDir, themesDir, tagsDir } =
+    resolveSavesRoot(customSavePath);
+
+  const rawFolder = String(body.folder || body.kind || '').toLowerCase();
+  const targetDir =
+    rawFolder === 'lorebooks' || rawFolder === 'lorebook'
+      ? loreDir
+      : rawFolder === 'themes' || rawFolder === 'theme'
+        ? themesDir
+        : rawFolder === 'tags' || rawFolder === 'tag'
+          ? tagsDir
+          : charsDir;
+
+  const candidateNames = new Set<string>();
+  const rawFileName =
+    typeof body.fileName === 'string' ? body.fileName.trim() : '';
+  const rawSavedFileName =
+    typeof body.savedFileName === 'string' ? body.savedFileName.trim() : '';
+  const rawName = typeof body.name === 'string' ? body.name.trim() : '';
+  const rawId = typeof body.id === 'string' ? body.id.trim() : '';
+
+  if (rawFileName) {
+    candidateNames.add(path.basename(rawFileName));
+  }
+  if (rawSavedFileName) {
+    candidateNames.add(path.basename(rawSavedFileName));
+  }
+
+  let deletedAny = false;
+  for (const name of candidateNames) {
+    const targetPath = path.join(targetDir, name);
+    if (fs.existsSync(targetPath)) {
+      try {
+        fs.unlinkSync(targetPath);
+        deletedAny = true;
+      } catch {
+        // Ignore if already removed
+      }
+    }
+  }
+
+  if (rawId && fs.existsSync(targetDir)) {
+    const entries = fs
+      .readdirSync(targetDir, { withFileTypes: true })
+      .filter((d) => d.isFile() && d.name.toLowerCase().endsWith('.json'));
+    for (const entry of entries) {
+      const fullPath = path.join(targetDir, entry.name);
+      try {
+        const parsed = JSON.parse(
+          fs.readFileSync(fullPath, 'utf8')
+        ) as Record<string, unknown>;
+        if (extractEntityIdFromJson(parsed) === rawId) {
+          fs.unlinkSync(fullPath);
+          deletedAny = true;
+        }
+      } catch {
+        // Ignore unreadable file
+      }
+    }
+  }
+
+  if (!deletedAny && rawName) {
+    const sanitizedTarget = path.join(targetDir, sanitizeDiskFileName(rawName));
+    if (fs.existsSync(sanitizedTarget)) {
+      try {
+        fs.unlinkSync(sanitizedTarget);
+      } catch {
+        // Ignore if already removed
+      }
+    }
+  }
+
+  return scanSavesDirectoryOnDisk(customSavePath);
+}
 
 const SUPPORTED_GEMINI_MODELS = [
   'gemini-4-hydrogen',
@@ -108,7 +754,7 @@ async function startServer() {
   const PORT = Number(process.env.PORT) || 3000;
 
   // Ensure ./Saves/, Characters/, Lorebooks/, Themes/, and Tags/ exist on server startup
-  scanSavesDirectoryOnDisk();
+  resolveSavesRoot();
 
   app.use(express.json({ limit: '50mb' }));
 
@@ -118,7 +764,9 @@ async function startServer() {
       const customSavePath =
         typeof req.query.customSavePath === 'string'
           ? req.query.customSavePath
-          : undefined;
+          : typeof req.query.savesDir === 'string'
+            ? req.query.savesDir
+            : undefined;
       res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
       res.json(scanSavesDirectoryOnDisk(customSavePath));
     } catch (err: unknown) {

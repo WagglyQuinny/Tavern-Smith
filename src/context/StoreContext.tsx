@@ -3171,6 +3171,7 @@ interface StoreContextValue {
   themes: ContextTheme[];
   setThemes: React.Dispatch<React.SetStateAction<ContextTheme[]>>;
   createNewTheme: (partial?: Partial<ContextTheme>) => ContextTheme;
+  updateTheme: (id: string, partial: Partial<ContextTheme>) => void;
   deleteTheme: (id: string) => void;
   activeTheme: ContextTheme;
   setActiveThemeId: (id: string) => void;
@@ -3356,6 +3357,7 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
   const [aiConnectionResult, setAiConnectionResult] =
     useState<ConnectionTestResult | null>(null);
   const aiTestAbortRef = useRef<AbortController | null>(null);
+  const themeSaveTimerRef = useRef<number | null>(null);
   const [settings, setSettingsState] = useState<AppSettings>(DEFAULT_SETTINGS);
   const [lastSavedAt, setLastSavedAt] = useState<string | null>(null);
   const [isDirty, setIsDirty] = useState<boolean>(false);
@@ -3527,6 +3529,9 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
       if (aiTestAbortRef.current) {
         aiTestAbortRef.current.abort();
       }
+      if (themeSaveTimerRef.current !== null) {
+        window.clearTimeout(themeSaveTimerRef.current);
+      }
     };
   }, []);
 
@@ -3694,6 +3699,7 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
 
   useEffect(() => {
     if (initialDiskHydrationDoneRef.current) {
+      latestWorkspaceRef.current.isDirty = true;
       setIsDirty(true);
     }
   }, [
@@ -4002,18 +4008,33 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
       const nextCharFileNames = new Map<string, string>();
       const parsedCharacters: CharacterCardData[] = [];
       if (Array.isArray(diskState.characters)) {
-        for (const rawCharObj of diskState.characters) {
-          if (!rawCharObj || typeof rawCharObj !== 'object') continue;
-          if (rawCharObj._tavernsmithType === 'lorebook') continue;
+        for (const rawEntry of diskState.characters) {
+          if (!rawEntry || typeof rawEntry !== 'object') continue;
+          const outerObj = rawEntry as Record<string, unknown>;
+          const diskFileName =
+            typeof outerObj._diskFileName === 'string' && outerObj._diskFileName
+              ? outerObj._diskFileName
+              : typeof outerObj.fileName === 'string' && outerObj.fileName
+                ? outerObj.fileName
+                : typeof outerObj.savedFileName === 'string' &&
+                    outerObj.savedFileName
+                  ? outerObj.savedFileName
+                  : '';
+          const candidateCharObj =
+            outerObj.parsed &&
+            typeof outerObj.parsed === 'object' &&
+            !Array.isArray(outerObj.parsed)
+              ? ({
+                  ...(outerObj.parsed as Record<string, unknown>),
+                  ...(diskFileName ? { _diskFileName: diskFileName } : {}),
+                } as Record<string, unknown>)
+              : outerObj;
+          if (candidateCharObj._tavernsmithType === 'lorebook') continue;
           try {
-            const diskFileName =
-              typeof rawCharObj._diskFileName === 'string'
-                ? rawCharObj._diskFileName
-                : 'Character.json';
             const parsedRes = parseImportedJsonString(
-              JSON.stringify(rawCharObj),
+              JSON.stringify(candidateCharObj),
               undefined,
-              diskFileName,
+              diskFileName || 'Character.json',
               'character'
             );
             if (parsedRes.kind === 'character') {
@@ -4021,14 +4042,35 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
                 parsedRes.character,
                 mergedTags
               );
-              parsedRes.character.savedFileName = diskFileName;
+              const resolvedName =
+                diskFileName || parsedRes.character.savedFileName || '';
+              if (resolvedName) {
+                parsedRes.character.savedFileName = resolvedName;
+              }
               parsedCharacters.push(parsedRes.character);
-              if (parsedRes.character.id) {
-                nextCharFileNames.set(parsedRes.character.id, diskFileName);
+              if (parsedRes.character.id && resolvedName) {
+                nextCharFileNames.set(parsedRes.character.id, resolvedName);
               }
             }
           } catch {
-            // Skip malformed character JSON
+            // Even if the file on disk is empty or corrupted, bind its real disk filename so it stays deletable
+            if (diskFileName) {
+              const fallbackName =
+                diskFileName.replace(/\.json$/i, '').trim() ||
+                'Recovered Character';
+              const fallbackChar = createBlankCharacter({
+                id:
+                  typeof candidateCharObj.id === 'string' && candidateCharObj.id
+                    ? candidateCharObj.id
+                    : `char-corrupt-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+                name: fallbackName,
+                savedFileName: diskFileName,
+              });
+              parsedCharacters.push(fallbackChar);
+              if (fallbackChar.id) {
+                nextCharFileNames.set(fallbackChar.id, diskFileName);
+              }
+            }
           }
         }
       }
@@ -4058,27 +4100,65 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
       const nextLoreFileNames = new Map<string, string>();
       const parsedLorebooks: Lorebook[] = [];
       if (Array.isArray(diskState.lorebooks)) {
-        for (const rawLoreObj of diskState.lorebooks) {
-          if (!rawLoreObj || typeof rawLoreObj !== 'object') continue;
-          if (rawLoreObj._tavernsmithType === 'character') continue;
+        for (const rawEntry of diskState.lorebooks) {
+          if (!rawEntry || typeof rawEntry !== 'object') continue;
+          const outerObj = rawEntry as Record<string, unknown>;
+          const diskFileName =
+            typeof outerObj._diskFileName === 'string' && outerObj._diskFileName
+              ? outerObj._diskFileName
+              : typeof outerObj.fileName === 'string' && outerObj.fileName
+                ? outerObj.fileName
+                : typeof outerObj.savedFileName === 'string' &&
+                    outerObj.savedFileName
+                  ? outerObj.savedFileName
+                  : '';
+          const candidateLoreObj =
+            outerObj.parsed &&
+            typeof outerObj.parsed === 'object' &&
+            !Array.isArray(outerObj.parsed)
+              ? ({
+                  ...(outerObj.parsed as Record<string, unknown>),
+                  ...(diskFileName ? { _diskFileName: diskFileName } : {}),
+                } as Record<string, unknown>)
+              : outerObj;
+          if (candidateLoreObj._tavernsmithType === 'character') continue;
           try {
-            const diskFileName =
-              typeof rawLoreObj._diskFileName === 'string'
-                ? rawLoreObj._diskFileName
-                : 'Lorebook.json';
-            const fallbackTitle = diskFileName.replace(/\.json$/i, '');
+            const fallbackTitle =
+              (diskFileName || 'Lorebook.json').replace(/\.json$/i, '') ||
+              'Lorebook';
             const normalizedBook = normalizeLorebookObject(
-              rawLoreObj,
+              candidateLoreObj,
               fallbackTitle
             );
             normalizedBook.isNsfw = isLorebookNsfw(normalizedBook, mergedTags);
-            normalizedBook.savedFileName = diskFileName;
+            const resolvedName =
+              diskFileName || normalizedBook.savedFileName || '';
+            if (resolvedName) {
+              normalizedBook.savedFileName = resolvedName;
+            }
             parsedLorebooks.push(normalizedBook);
-            if (normalizedBook.id) {
-              nextLoreFileNames.set(normalizedBook.id, diskFileName);
+            if (normalizedBook.id && resolvedName) {
+              nextLoreFileNames.set(normalizedBook.id, resolvedName);
             }
           } catch {
-            // Skip malformed lorebook JSON
+            // Even if the lorebook JSON is empty or corrupted, bind its real disk filename so it stays deletable
+            if (diskFileName) {
+              const fallbackTitle =
+                diskFileName.replace(/\.json$/i, '').trim() ||
+                'Recovered Lorebook';
+              const fallbackBook = createBlankLorebook({
+                id:
+                  typeof candidateLoreObj.id === 'string' && candidateLoreObj.id
+                    ? candidateLoreObj.id
+                    : `lore-corrupt-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+                name: fallbackTitle,
+                savedFileName: diskFileName,
+              });
+              parsedLorebooks.push(fallbackBook);
+              if (fallbackBook.id) {
+                nextLoreFileNames.set(fallbackBook.id, diskFileName);
+              }
+            }
           }
         }
       }
@@ -4172,7 +4252,9 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
       } finally {
         if (!cancelled) {
           initialDiskHydrationDoneRef.current = true;
-          setIsDirty(diskMutationVersionRef.current > 0);
+          const hasPendingMutations = diskMutationVersionRef.current > 0;
+          latestWorkspaceRef.current.isDirty = hasPendingMutations;
+          setIsDirty(hasPendingMutations);
         }
       }
     })();
@@ -4597,7 +4679,7 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
           charDiskFileNamesRef.current.set(c.id, fileName);
         }
         const payload = serializeCharacterCard(
-          c,
+          { ...c, savedFileName: fileName },
           settingsToSave.cardSpecVersion,
           c.character_book
         );
@@ -4620,7 +4702,10 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
         if (lb.id) {
           loreDiskFileNamesRef.current.set(lb.id, fileName);
         }
-        const payload = serializeLorebookCard(lb);
+        const payload = serializeLorebookCard({
+          ...lb,
+          savedFileName: fileName,
+        });
         return {
           fileName,
           oldFileName,
@@ -4681,7 +4766,7 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
         };
       });
 
-      // Keep _tavernsmith_meta.json slim by not duplicating Themes and Tags arrays inside it
+      // Include custom/modified Themes and Tags in _tavernsmith_meta.json as a fallback mirror alongside ./Saves/Themes/ & ./Saves/Tags/
       const metaPayload: TavernSmithMetaPayload = {
         schema: 'tavernsmith_meta_v1',
         updatedAt: nowIso,
@@ -4690,6 +4775,8 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
         aiConfig: stripApiKeysForStorage(aiConfigToSave),
         activeCharacterId: activeCharId,
         activeLorebookId: activeBookId,
+        contextThemes: customThemesToSave,
+        tags: customTagsToSave,
       };
 
       let vaultEnvelope = readEncryptedVaultEnvelope();
@@ -4736,6 +4823,7 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
           }
         }
         if (noConcurrentMutation) {
+          latestWorkspaceRef.current.isDirty = false;
           setIsDirty(false);
         }
 
@@ -5160,6 +5248,78 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
     [THEME_SWATCHES, enqueueDiskOperation, runDiskSaveRequest]
   );
 
+  const updateTheme = useCallback(
+    (id: string, partial: Partial<ContextTheme>) => {
+      const currentThemes = themesRef.current;
+      const target = currentThemes.find((t) => t.id === id);
+      if (!target) return;
+
+      diskMutationVersionRef.current += 1;
+      latestWorkspaceRef.current.isDirty = true;
+      setIsDirty(true);
+
+      const usedThemeFiles = new Set(
+        currentThemes
+          .filter((t) => t.id !== id)
+          .map((t) =>
+            (
+              t.savedFileName ||
+              themeDiskFileNamesRef.current.get(t.id) ||
+              ''
+            ).toLowerCase()
+          )
+          .filter(Boolean)
+      );
+
+      const candidateName =
+        typeof partial.name === 'string' && partial.name.trim()
+          ? partial.name.trim()
+          : target.name;
+      const assignedFile =
+        partial.savedFileName ||
+        target.savedFileName ||
+        themeDiskFileNamesRef.current.get(id) ||
+        ensureUniqueSavedFileName(candidateName, usedThemeFiles, 'theme');
+
+      themeDiskFileNamesRef.current.set(id, assignedFile);
+
+      const nextThemes = currentThemes.map((t) =>
+        t.id === id
+          ? {
+              ...t,
+              ...partial,
+              savedFileName: assignedFile,
+            }
+          : t
+      );
+
+      themesRef.current = nextThemes;
+      latestWorkspaceRef.current.themes = nextThemes;
+      setThemesState(nextThemes);
+
+      if (themeSaveTimerRef.current !== null) {
+        window.clearTimeout(themeSaveTimerRef.current);
+      }
+      const opVersion = diskMutationVersionRef.current;
+      themeSaveTimerRef.current = window.setTimeout(() => {
+        themeSaveTimerRef.current = null;
+        void enqueueDiskOperation(() =>
+          runDiskSaveRequest(
+            'autosave',
+            {
+              characters: charactersRef.current,
+              lorebooks: lorebooksRef.current,
+              themes: themesRef.current,
+              tags: tagsRef.current,
+            },
+            opVersion
+          )
+        );
+      }, 300);
+    },
+    [enqueueDiskOperation, runDiskSaveRequest]
+  );
+
   const deleteTheme = useCallback(
     (id: string) => {
       const currentThemes = themesRef.current;
@@ -5490,19 +5650,84 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
     return executeDiskSaveAndRescan('manual');
   }, [executeDiskSaveAndRescan]);
 
-  // Auto-Save Timer -> Saves current React state to `./Saves/` without overwriting in-memory state
+  // Auto-Save Timer & Blur/Visibility Flush -> Uses Web Worker so switching windows never throttles or pauses Auto-Save
   useEffect(() => {
     if (!settings.autoSaveEnabled) return;
     const intervalMs = Math.max(5, settings.autoSaveIntervalSec) * 1000;
 
-    const timerId = window.setInterval(() => {
+    const triggerAutoSaveIfDirty = () => {
       if (latestWorkspaceRef.current.isDirty) {
         void executeDiskSaveAndRescan('autosave');
       }
-    }, intervalMs);
+    };
+
+    let worker: Worker | null = null;
+    let workerBlobUrl: string | null = null;
+    let fallbackTimerId: number | null = null;
+
+    if (typeof Worker !== 'undefined' && typeof Blob !== 'undefined') {
+      try {
+        const workerScript = `const ms = ${intervalMs}; const id = setInterval(() => self.postMessage('tick'), ms); self.onmessage = (e) => { if (e.data === 'stop') { clearInterval(id); self.close(); } };`;
+        const blob = new Blob([workerScript], {
+          type: 'application/javascript',
+        });
+        workerBlobUrl = URL.createObjectURL(blob);
+        worker = new Worker(workerBlobUrl);
+        worker.onmessage = () => {
+          triggerAutoSaveIfDirty();
+        };
+        worker.onerror = () => {
+          if (fallbackTimerId === null) {
+            fallbackTimerId = window.setInterval(
+              triggerAutoSaveIfDirty,
+              intervalMs
+            );
+          }
+        };
+      } catch {
+        fallbackTimerId = window.setInterval(
+          triggerAutoSaveIfDirty,
+          intervalMs
+        );
+      }
+    } else {
+      fallbackTimerId = window.setInterval(triggerAutoSaveIfDirty, intervalMs);
+    }
+
+    const handleWindowBlur = () => {
+      triggerAutoSaveIfDirty();
+    };
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'hidden') {
+        triggerAutoSaveIfDirty();
+      }
+    };
+
+    window.addEventListener('blur', handleWindowBlur);
+    document.addEventListener('visibilitychange', handleVisibilityChange);
 
     return () => {
-      window.clearInterval(timerId);
+      window.removeEventListener('blur', handleWindowBlur);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      if (worker) {
+        try {
+          worker.postMessage('stop');
+          worker.terminate();
+        } catch {
+          // Ignore Worker termination errors
+        }
+      }
+      if (workerBlobUrl) {
+        try {
+          URL.revokeObjectURL(workerBlobUrl);
+        } catch {
+          // Ignore URL revoke errors
+        }
+      }
+      if (fallbackTimerId !== null) {
+        window.clearInterval(fallbackTimerId);
+      }
     };
   }, [
     settings.autoSaveEnabled,
@@ -6997,6 +7222,7 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
     setSettings(DEFAULT_SETTINGS);
     const nowDisplay = formatSafeTimestamp(new Date().toISOString());
     setLastSavedAt(nowDisplay);
+    latestWorkspaceRef.current.isDirty = false;
     setIsDirty(false);
   }, []);
 
@@ -7004,10 +7230,10 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
     () =>
       calculateCardTokenBreakdown(
         character,
-        character.character_book || lorebook,
+        character.character_book,
         statBlock
       ),
-    [character, lorebook, statBlock]
+    [character, statBlock]
   );
 
   const value = useMemo<StoreContextValue>(
@@ -7038,6 +7264,7 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
       themes,
       setThemes,
       createNewTheme,
+      updateTheme,
       deleteTheme,
       activeTheme,
       setActiveThemeId,
@@ -7113,6 +7340,7 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
       setStatBlock,
       themes,
       createNewTheme,
+      updateTheme,
       deleteTheme,
       activeTheme,
       setActiveThemeId,

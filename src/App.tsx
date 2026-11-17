@@ -393,15 +393,33 @@ const WorkspaceShell: React.FC = () => {
         <SidebarNav />
 
         <main className="flex-1 min-w-0 w-full p-4 md:p-6 lg:p-7">
-          {activeTab === 'character' && <CharacterView />}
-          {activeTab === 'lorebook' && <LorebookView />}
-          {(activeTab === 'themes' || activeTab === 'themes_tags') && (
+          <div className={activeTab === 'character' ? 'block' : 'hidden'}>
+            <CharacterView />
+          </div>
+          <div className={activeTab === 'lorebook' ? 'block' : 'hidden'}>
+            <LorebookView />
+          </div>
+          <div
+            className={
+              activeTab === 'themes' || activeTab === 'themes_tags'
+                ? 'block'
+                : 'hidden'
+            }
+          >
             <ThemesAndTagsView />
-          )}
-          {(activeTab === 'inspector' || activeTab === 'json_inspector') && (
+          </div>
+          <div
+            className={
+              activeTab === 'inspector' || activeTab === 'json_inspector'
+                ? 'block'
+                : 'hidden'
+            }
+          >
             <JsonInspectorView />
-          )}
-          {activeTab === 'options' && <OptionsView />}
+          </div>
+          <div className={activeTab === 'options' ? 'block' : 'hidden'}>
+            <OptionsView />
+          </div>
         </main>
       </div>
 

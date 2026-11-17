@@ -52,7 +52,7 @@ jobs:
 
       - name: Generate Zero-Dependency Local Disk Servers (server.cjs + server.py) & Launchers Inside dist/
         run: |
-          cat << 'EOF' > dist/server.cjs
+          sed 's/^          //' << 'EOF' > dist/server.cjs
           #!/usr/bin/env node
           const http = require('http');
           const fs = require('fs');
@@ -61,7 +61,6 @@ jobs:
           const PORT = Number(process.env.PORT || 4173);
           const HOST = '127.0.0.1';
           const ROOT_DIR = __dirname;
-          const DEFAULT_SAVES_REL = './Saves/';
           const META_FILENAME = '_tavernsmith_meta.json';
           const VAULT_FILENAME = '_tavernsmith_vault.enc';
 
@@ -79,141 +78,551 @@ jobs:
             '.ico': 'image/x-icon',
           };
 
-          function sanitizeFileName(rawName, fallbackBase = 'Untitled') {
-            const trimmed = (rawName || '').trim().replace(/\.json$/i, '');
-            const safeBase =
-              trimmed
-                .replace(/[<>:"/\\|?*\x00-\x1F]/g, '_')
-                .replace(/\s+/g, '_')
-                .replace(/_+/g, '_')
-                .replace(/^_+|_+$/g, '') || fallbackBase;
-            return `${safeBase}.json`;
+          function sanitizeDiskFileName(raw) {
+            const base = path.basename(String(raw || 'untitled')).replace(/\.json$/i, '');
+            const clean =
+              base
+                .trim()
+                .replace(/[^a-zA-Z0-9_-]+/g, '_')
+                .replace(/^_+|_+$/g, '') || 'untitled';
+            return `${clean}.json`;
           }
 
-          function resolveSavesDirectories(customSavesDir) {
-            const cleanCustom = (customSavesDir || '').trim();
-            const baseRel = cleanCustom || DEFAULT_SAVES_REL;
-            const rootDir = path.isAbsolute(baseRel)
-              ? baseRel
-              : path.resolve(ROOT_DIR, baseRel);
-            const charactersDir = path.join(rootDir, 'Characters');
-            const lorebooksDir = path.join(rootDir, 'Lorebooks');
-            const metaFilePath = path.join(rootDir, META_FILENAME);
-            const vaultFilePath = path.join(rootDir, VAULT_FILENAME);
+          function resolveSavesRoot(customSavePath) {
+            const trimmed = (customSavePath || '').trim();
+            const useCustom =
+              trimmed &&
+              trimmed !== './Saves' &&
+              trimmed !== './Saves/' &&
+              trimmed !== '/Saves/';
+            const resolvedPath = useCustom
+              ? (path.isAbsolute(trimmed) ? trimmed : path.resolve(ROOT_DIR, trimmed))
+              : path.resolve(ROOT_DIR, 'Saves');
+            const diskRoot = useCustom ? trimmed : './Saves/';
+            const charsDir = path.join(resolvedPath, 'Characters');
+            const loreDir = path.join(resolvedPath, 'Lorebooks');
+            const themesDir = path.join(resolvedPath, 'Themes');
+            const tagsDir = path.join(resolvedPath, 'Tags');
 
-            fs.mkdirSync(rootDir, { recursive: true });
-            fs.mkdirSync(charactersDir, { recursive: true });
-            fs.mkdirSync(lorebooksDir, { recursive: true });
+            fs.mkdirSync(resolvedPath, { recursive: true });
+            fs.mkdirSync(charsDir, { recursive: true });
+            fs.mkdirSync(loreDir, { recursive: true });
+            fs.mkdirSync(themesDir, { recursive: true });
+            fs.mkdirSync(tagsDir, { recursive: true });
 
-            return {
-              savesPath: baseRel,
-              resolvedPath: rootDir,
-              charactersDir,
-              lorebooksDir,
-              metaFilePath,
-              vaultFilePath,
-            };
+            return { diskRoot, resolvedPath, charsDir, loreDir, themesDir, tagsDir };
           }
 
-          function scanDiskState(customSavesDir) {
-            const dirs = resolveSavesDirectories(customSavesDir);
+          function extractEntityIdFromJson(parsed) {
+            if (!parsed || typeof parsed !== 'object') return '';
+            const source =
+              parsed.payload && typeof parsed.payload === 'object' && !Array.isArray(parsed.payload)
+                ? parsed.payload
+                : parsed;
+            if (typeof source.id === 'string' && source.id.trim()) {
+              return source.id.trim();
+            }
+            if (source.data && typeof source.data === 'object') {
+              if (typeof source.data.id === 'string' && source.data.id.trim()) {
+                return source.data.id.trim();
+              }
+              if (
+                source.data.extensions &&
+                typeof source.data.extensions === 'object' &&
+                source.data.extensions.tavernsmith &&
+                typeof source.data.extensions.tavernsmith === 'object' &&
+                typeof source.data.extensions.tavernsmith.id === 'string' &&
+                source.data.extensions.tavernsmith.id.trim()
+              ) {
+                return source.data.extensions.tavernsmith.id.trim();
+              }
+            }
+            if (
+              source.extensions &&
+              typeof source.extensions === 'object' &&
+              source.extensions.tavernsmith &&
+              typeof source.extensions.tavernsmith === 'object' &&
+              typeof source.extensions.tavernsmith.id === 'string' &&
+              source.extensions.tavernsmith.id.trim()
+            ) {
+              return source.extensions.tavernsmith.id.trim();
+            }
+            return '';
+          }
+
+          function reserveUniqueDiskFileName(preferredName, usedNamesLower) {
+            const initial = sanitizeDiskFileName(preferredName);
+            const stem = initial.replace(/\.json$/i, '');
+            let candidate = initial;
+            let suffix = 2;
+            while (usedNamesLower.has(candidate.toLowerCase())) {
+              candidate = `${stem}_${suffix}.json`;
+              suffix++;
+            }
+            usedNamesLower.add(candidate.toLowerCase());
+            return candidate;
+          }
+
+          function scanSavesDirectoryOnDisk(customSavePath) {
+            const { diskRoot, resolvedPath, charsDir, loreDir, themesDir, tagsDir } =
+              resolveSavesRoot(customSavePath);
+
             const characters = [];
             const lorebooks = [];
-
-            if (fs.existsSync(dirs.charactersDir)) {
-              const charFiles = fs
-                .readdirSync(dirs.charactersDir, { withFileTypes: true })
-                .filter((d) => d.isFile() && d.name.toLowerCase().endsWith('.json'))
-                .sort((a, b) => a.name.localeCompare(b.name));
-
-              for (const entry of charFiles) {
-                const fullPath = path.join(dirs.charactersDir, entry.name);
-                try {
-                  const content = fs.readFileSync(fullPath, 'utf-8');
-                  const stat = fs.statSync(fullPath);
-                  const parsed = JSON.parse(content);
-                  characters.push({
-                    fileName: entry.name,
-                    content,
-                    updatedAt: Math.round(stat.mtimeMs || Date.now()),
-                    sizeBytes: stat.size || Buffer.byteLength(content, 'utf-8'),
-                    parsed,
-                  });
-                } catch {
-                  // Ignore unreadable file
-                }
-              }
-            }
-
-            if (fs.existsSync(dirs.lorebooksDir)) {
-              const loreFiles = fs
-                .readdirSync(dirs.lorebooksDir, { withFileTypes: true })
-                .filter((d) => d.isFile() && d.name.toLowerCase().endsWith('.json'))
-                .sort((a, b) => a.name.localeCompare(b.name));
-
-              for (const entry of loreFiles) {
-                const fullPath = path.join(dirs.lorebooksDir, entry.name);
-                try {
-                  const content = fs.readFileSync(fullPath, 'utf-8');
-                  const stat = fs.statSync(fullPath);
-                  const parsed = JSON.parse(content);
-                  lorebooks.push({
-                    fileName: entry.name,
-                    content,
-                    updatedAt: Math.round(stat.mtimeMs || Date.now()),
-                    sizeBytes: stat.size || Buffer.byteLength(content, 'utf-8'),
-                    parsed,
-                  });
-                } catch {
-                  // Ignore unreadable file
-                }
-              }
-            }
-
+            const themes = [];
+            const tags = [];
             let meta = null;
-            if (fs.existsSync(dirs.metaFilePath)) {
-              try {
-                const content = fs.readFileSync(dirs.metaFilePath, 'utf-8');
-                const stat = fs.statSync(dirs.metaFilePath);
-                const parsed = JSON.parse(content);
-                meta = {
-                  fileName: META_FILENAME,
-                  content,
-                  updatedAt: Math.round(stat.mtimeMs || Date.now()),
-                  sizeBytes: stat.size || Buffer.byteLength(content, 'utf-8'),
-                  parsed,
-                };
-              } catch {
-                meta = null;
+            let vault = null;
+            const files = [];
+
+            if (fs.existsSync(charsDir)) {
+              const charEntries = fs
+                .readdirSync(charsDir, { withFileTypes: true })
+                .filter((d) => d.isFile() && d.name.toLowerCase().endsWith('.json'))
+                .sort((a, b) => a.name.localeCompare(b.name));
+
+              for (const entry of charEntries) {
+                const fullPath = path.join(charsDir, entry.name);
+                try {
+                  const stat = fs.statSync(fullPath);
+                  const content = fs.readFileSync(fullPath, 'utf8');
+                  const parsed = JSON.parse(content);
+                  if (parsed._tavernsmithType === 'lorebook') continue;
+                  characters.push({
+                    ...parsed,
+                    _diskFileName: entry.name,
+                    _diskUpdatedAt: stat.mtime.toISOString(),
+                  });
+                  files.push({
+                    id: `Characters/${entry.name}`,
+                    folderPath: 'Characters/',
+                    fileName: entry.name,
+                    kind: 'character',
+                    sizeBytes: stat.size,
+                    updatedAt: stat.mtime.toISOString(),
+                    content,
+                  });
+                } catch {
+                  // Ignore unreadable or corrupted JSON file
+                }
               }
             }
 
-            let vaultEnc = null;
-            if (fs.existsSync(dirs.vaultFilePath)) {
+            if (fs.existsSync(loreDir)) {
+              const loreEntries = fs
+                .readdirSync(loreDir, { withFileTypes: true })
+                .filter((d) => d.isFile() && d.name.toLowerCase().endsWith('.json'))
+                .sort((a, b) => a.name.localeCompare(b.name));
+
+              for (const entry of loreEntries) {
+                const fullPath = path.join(loreDir, entry.name);
+                try {
+                  const stat = fs.statSync(fullPath);
+                  const content = fs.readFileSync(fullPath, 'utf8');
+                  const parsed = JSON.parse(content);
+                  if (parsed._tavernsmithType === 'character') continue;
+                  lorebooks.push({
+                    ...parsed,
+                    _tavernsmithType: 'lorebook',
+                    _diskFileName: entry.name,
+                    _diskUpdatedAt: stat.mtime.toISOString(),
+                  });
+                  files.push({
+                    id: `Lorebooks/${entry.name}`,
+                    folderPath: 'Lorebooks/',
+                    fileName: entry.name,
+                    kind: 'lorebook',
+                    sizeBytes: stat.size,
+                    updatedAt: stat.mtime.toISOString(),
+                    content,
+                  });
+                } catch {
+                  // Ignore unreadable or corrupted JSON file
+                }
+              }
+            }
+
+            if (fs.existsSync(themesDir)) {
+              const themeEntries = fs
+                .readdirSync(themesDir, { withFileTypes: true })
+                .filter((d) => d.isFile() && d.name.toLowerCase().endsWith('.json'))
+                .sort((a, b) => a.name.localeCompare(b.name));
+
+              for (const entry of themeEntries) {
+                const fullPath = path.join(themesDir, entry.name);
+                try {
+                  const stat = fs.statSync(fullPath);
+                  const content = fs.readFileSync(fullPath, 'utf8');
+                  const parsed = JSON.parse(content);
+                  if (parsed && typeof parsed === 'object') {
+                    themes.push({
+                      ...parsed,
+                      _tavernsmithType: 'theme',
+                      _diskFileName: entry.name,
+                      _diskUpdatedAt: stat.mtime.toISOString(),
+                    });
+                    files.push({
+                      id: `Themes/${entry.name}`,
+                      folderPath: 'Themes/',
+                      fileName: entry.name,
+                      kind: 'theme',
+                      sizeBytes: stat.size,
+                      updatedAt: stat.mtime.toISOString(),
+                      content,
+                    });
+                  }
+                } catch {
+                  // Ignore unreadable or corrupted JSON file
+                }
+              }
+            }
+
+            if (fs.existsSync(tagsDir)) {
+              const tagEntries = fs
+                .readdirSync(tagsDir, { withFileTypes: true })
+                .filter((d) => d.isFile() && d.name.toLowerCase().endsWith('.json'))
+                .sort((a, b) => a.name.localeCompare(b.name));
+
+              for (const entry of tagEntries) {
+                const fullPath = path.join(tagsDir, entry.name);
+                try {
+                  const stat = fs.statSync(fullPath);
+                  const content = fs.readFileSync(fullPath, 'utf8');
+                  const parsed = JSON.parse(content);
+                  if (parsed && typeof parsed === 'object') {
+                    tags.push({
+                      ...parsed,
+                      _tavernsmithType: 'tag',
+                      _diskFileName: entry.name,
+                      _diskUpdatedAt: stat.mtime.toISOString(),
+                    });
+                    files.push({
+                      id: `Tags/${entry.name}`,
+                      folderPath: 'Tags/',
+                      fileName: entry.name,
+                      kind: 'tag',
+                      sizeBytes: stat.size,
+                      updatedAt: stat.mtime.toISOString(),
+                      content,
+                    });
+                  }
+                } catch {
+                  // Ignore unreadable or corrupted JSON file
+                }
+              }
+            }
+
+            const metaPath = path.join(resolvedPath, META_FILENAME);
+            if (fs.existsSync(metaPath)) {
               try {
-                const rawVault = fs.readFileSync(dirs.vaultFilePath, 'utf-8').trim();
-                if (rawVault) vaultEnc = rawVault;
+                const stat = fs.statSync(metaPath);
+                const content = fs.readFileSync(metaPath, 'utf8');
+                meta = JSON.parse(content);
+                files.push({
+                  id: `/${META_FILENAME}`,
+                  folderPath: '/',
+                  fileName: META_FILENAME,
+                  kind: 'meta',
+                  sizeBytes: stat.size,
+                  updatedAt: stat.mtime.toISOString(),
+                  content,
+                });
               } catch {
-                vaultEnc = null;
+                // Ignore malformed meta
+              }
+            }
+
+            const vaultPath = path.join(resolvedPath, VAULT_FILENAME);
+            if (fs.existsSync(vaultPath)) {
+              try {
+                const stat = fs.statSync(vaultPath);
+                const content = fs.readFileSync(vaultPath, 'utf8');
+                vault = JSON.parse(content);
+                files.push({
+                  id: `/${VAULT_FILENAME}`,
+                  folderPath: '/',
+                  fileName: VAULT_FILENAME,
+                  kind: 'vault',
+                  sizeBytes: stat.size,
+                  updatedAt: stat.mtime.toISOString(),
+                  content,
+                });
+              } catch {
+                // Ignore malformed vault
               }
             }
 
             return {
               ok: true,
-              savesPath: dirs.savesPath,
-              resolvedPath: dirs.resolvedPath,
+              diskRoot,
+              resolvedPath,
               characters,
               lorebooks,
+              themes,
+              tags,
               meta,
-              vaultEnc,
+              vault,
+              files,
+              updatedAt: new Date().toISOString(),
             };
+          }
+
+          function saveToSavesDirectoryOnDisk(body) {
+            const customSavePath =
+              typeof body.customSavePath === 'string'
+                ? body.customSavePath
+                : typeof body.savesDir === 'string'
+                  ? body.savesDir
+                  : undefined;
+            const { resolvedPath, charsDir, loreDir, themesDir, tagsDir } =
+              resolveSavesRoot(customSavePath);
+
+            if (Array.isArray(body.characters)) {
+              const usedCharTargets = new Set();
+              const writtenCharFiles = new Set();
+
+              for (const item of body.characters) {
+                if (!item || typeof item !== 'object') continue;
+                const payload = item.payload || item;
+                if (payload._tavernsmithType === 'lorebook') continue;
+                const rawName =
+                  item.fileName ||
+                  (payload.data &&
+                  typeof payload.data === 'object' &&
+                  typeof payload.data.name === 'string'
+                    ? String(payload.data.name)
+                    : typeof payload.name === 'string'
+                      ? payload.name
+                      : 'untitled');
+                const targetFileName = reserveUniqueDiskFileName(rawName, usedCharTargets);
+                const outContent =
+                  typeof item.content === 'string'
+                    ? item.content
+                    : JSON.stringify(
+                        {
+                          ...payload,
+                          _tavernsmithType: 'character',
+                        },
+                        null,
+                        2
+                      );
+
+                fs.writeFileSync(path.join(charsDir, targetFileName), outContent, 'utf8');
+                writtenCharFiles.add(targetFileName.toLowerCase());
+              }
+
+              try {
+                for (const fileName of fs.readdirSync(charsDir)) {
+                  if (!fileName.toLowerCase().endsWith('.json')) continue;
+                  if (!writtenCharFiles.has(fileName.toLowerCase())) {
+                    const orphanPath = path.join(charsDir, fileName);
+                    if (fs.existsSync(orphanPath)) fs.unlinkSync(orphanPath);
+                  }
+                }
+              } catch {}
+            }
+
+            if (Array.isArray(body.lorebooks)) {
+              const usedLoreTargets = new Set();
+              const writtenBookFiles = new Set();
+
+              for (const item of body.lorebooks) {
+                if (!item || typeof item !== 'object') continue;
+                const payload = item.payload || item;
+                if (payload._tavernsmithType === 'character') continue;
+                const rawName =
+                  item.fileName ||
+                  (typeof payload.name === 'string' ? payload.name : 'untitled_lorebook');
+                const targetFileName = reserveUniqueDiskFileName(rawName, usedLoreTargets);
+                const outContent =
+                  typeof item.content === 'string'
+                    ? item.content
+                    : JSON.stringify(
+                        {
+                          ...payload,
+                          _tavernsmithType: 'lorebook',
+                        },
+                        null,
+                        2
+                      );
+
+                fs.writeFileSync(path.join(loreDir, targetFileName), outContent, 'utf8');
+                writtenBookFiles.add(targetFileName.toLowerCase());
+              }
+
+              try {
+                for (const fileName of fs.readdirSync(loreDir)) {
+                  if (!fileName.toLowerCase().endsWith('.json')) continue;
+                  if (!writtenBookFiles.has(fileName.toLowerCase())) {
+                    const orphanPath = path.join(loreDir, fileName);
+                    if (fs.existsSync(orphanPath)) fs.unlinkSync(orphanPath);
+                  }
+                }
+              } catch {}
+            }
+
+            if (Array.isArray(body.themes)) {
+              const usedThemeTargets = new Set();
+              const writtenThemeFiles = new Set();
+
+              for (const item of body.themes) {
+                if (!item || typeof item !== 'object') continue;
+                const payload = item.payload || item;
+                const rawName =
+                  item.fileName ||
+                  (typeof payload.name === 'string' ? payload.name : 'custom_theme');
+                const targetFileName = reserveUniqueDiskFileName(rawName, usedThemeTargets);
+                const outContent =
+                  typeof item.content === 'string'
+                    ? item.content
+                    : JSON.stringify({
+                        ...payload,
+                        _tavernsmithType: 'theme',
+                      });
+
+                fs.writeFileSync(path.join(themesDir, targetFileName), outContent, 'utf8');
+                writtenThemeFiles.add(targetFileName.toLowerCase());
+              }
+
+              try {
+                for (const fileName of fs.readdirSync(themesDir)) {
+                  if (!fileName.toLowerCase().endsWith('.json')) continue;
+                  if (!writtenThemeFiles.has(fileName.toLowerCase())) {
+                    const orphanPath = path.join(themesDir, fileName);
+                    if (fs.existsSync(orphanPath)) fs.unlinkSync(orphanPath);
+                  }
+                }
+              } catch {}
+            }
+
+            if (Array.isArray(body.tags)) {
+              const usedTagTargets = new Set();
+              const writtenTagFiles = new Set();
+
+              for (const item of body.tags) {
+                if (!item || typeof item !== 'object') continue;
+                const payload = item.payload || item;
+                const rawName =
+                  item.fileName ||
+                  (typeof payload.name === 'string' ? payload.name : 'custom_tag');
+                const targetFileName = reserveUniqueDiskFileName(rawName, usedTagTargets);
+                const outContent =
+                  typeof item.content === 'string'
+                    ? item.content
+                    : JSON.stringify({
+                        ...payload,
+                        _tavernsmithType: 'tag',
+                      });
+
+                fs.writeFileSync(path.join(tagsDir, targetFileName), outContent, 'utf8');
+                writtenTagFiles.add(targetFileName.toLowerCase());
+              }
+
+              try {
+                for (const fileName of fs.readdirSync(tagsDir)) {
+                  if (!fileName.toLowerCase().endsWith('.json')) continue;
+                  if (!writtenTagFiles.has(fileName.toLowerCase())) {
+                    const orphanPath = path.join(tagsDir, fileName);
+                    if (fs.existsSync(orphanPath)) fs.unlinkSync(orphanPath);
+                  }
+                }
+              } catch {}
+            }
+
+            if (body.meta && typeof body.meta === 'object') {
+              fs.writeFileSync(
+                path.join(resolvedPath, META_FILENAME),
+                JSON.stringify(body.meta, null, 2),
+                'utf8'
+              );
+            }
+
+            if (body.vault && typeof body.vault === 'object') {
+              fs.writeFileSync(
+                path.join(resolvedPath, VAULT_FILENAME),
+                JSON.stringify(body.vault, null, 2),
+                'utf8'
+              );
+            }
+
+            return scanSavesDirectoryOnDisk(customSavePath);
+          }
+
+          function deleteFromSavesDirectoryOnDisk(body) {
+            const customSavePath =
+              typeof body.customSavePath === 'string'
+                ? body.customSavePath
+                : typeof body.savesDir === 'string'
+                  ? body.savesDir
+                  : undefined;
+            const { charsDir, loreDir, themesDir, tagsDir } =
+              resolveSavesRoot(customSavePath);
+
+            const rawFolder = String(body.folder || body.kind || '').toLowerCase();
+            const targetDir =
+              rawFolder === 'lorebooks' || rawFolder === 'lorebook'
+                ? loreDir
+                : rawFolder === 'themes' || rawFolder === 'theme'
+                  ? themesDir
+                  : rawFolder === 'tags' || rawFolder === 'tag'
+                    ? tagsDir
+                    : charsDir;
+
+            const candidateNames = new Set();
+            const rawFileName =
+              typeof body.fileName === 'string' ? body.fileName.trim() : '';
+            const rawSavedFileName =
+              typeof body.savedFileName === 'string' ? body.savedFileName.trim() : '';
+            const rawName = typeof body.name === 'string' ? body.name.trim() : '';
+            const rawId = typeof body.id === 'string' ? body.id.trim() : '';
+
+            if (rawFileName) candidateNames.add(path.basename(rawFileName));
+            if (rawSavedFileName) candidateNames.add(path.basename(rawSavedFileName));
+
+            let deletedAny = false;
+            for (const name of candidateNames) {
+              const targetPath = path.join(targetDir, name);
+              if (fs.existsSync(targetPath)) {
+                try {
+                  fs.unlinkSync(targetPath);
+                  deletedAny = true;
+                } catch {}
+              }
+            }
+
+            if (rawId && fs.existsSync(targetDir)) {
+              const entries = fs
+                .readdirSync(targetDir, { withFileTypes: true })
+                .filter((d) => d.isFile() && d.name.toLowerCase().endsWith('.json'));
+              for (const entry of entries) {
+                const fullPath = path.join(targetDir, entry.name);
+                try {
+                  const parsed = JSON.parse(fs.readFileSync(fullPath, 'utf8'));
+                  if (extractEntityIdFromJson(parsed) === rawId) {
+                    fs.unlinkSync(fullPath);
+                    deletedAny = true;
+                  }
+                } catch {}
+              }
+            }
+
+            if (!deletedAny && rawName) {
+              const sanitizedTarget = path.join(targetDir, sanitizeDiskFileName(rawName));
+              if (fs.existsSync(sanitizedTarget)) {
+                try {
+                  fs.unlinkSync(sanitizedTarget);
+                } catch {}
+              }
+            }
+
+            return scanSavesDirectoryOnDisk(customSavePath);
           }
 
           function readRequestBody(req) {
             return new Promise((resolve, reject) => {
               const chunks = [];
               req.on('data', (c) => chunks.push(Buffer.isBuffer(c) ? c : Buffer.from(c)));
-              req.on('end', () => resolve(Buffer.concat(chunks).toString('utf-8')));
+              req.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')));
               req.on('error', reject);
             });
           }
@@ -222,12 +631,12 @@ jobs:
             const body = JSON.stringify(payload);
             res.statusCode = status;
             res.setHeader('Content-Type', 'application/json; charset=utf-8');
-            res.setHeader('Cache-Control', 'no-store');
+            res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
             res.end(body);
           }
 
-          // Ensure ./Saves/ exists on startup
-          resolveSavesDirectories(DEFAULT_SAVES_REL);
+          // Ensure ./Saves/, Characters/, Lorebooks/, Themes/, and Tags/ exist on startup
+          resolveSavesRoot();
 
           const server = http.createServer(async (req, res) => {
             try {
@@ -235,120 +644,25 @@ jobs:
               const pathname = parsedUrl.pathname;
 
               if (req.method === 'GET' && pathname === '/api/disk/state') {
-                const customDir = parsedUrl.searchParams.get('savesDir') || DEFAULT_SAVES_REL;
-                sendJson(res, 200, scanDiskState(customDir));
+                const customPath =
+                  parsedUrl.searchParams.get('customSavePath') ||
+                  parsedUrl.searchParams.get('savesDir') ||
+                  undefined;
+                sendJson(res, 200, scanSavesDirectoryOnDisk(customPath));
                 return;
               }
 
               if (req.method === 'POST' && pathname === '/api/disk/save') {
                 const rawBody = await readRequestBody(req);
                 const body = rawBody ? JSON.parse(rawBody) : {};
-                const customDir = body.customSavePath || body.savesDir;
-                const dirs = resolveSavesDirectories(customDir);
-
-                if (Array.isArray(body.characters)) {
-                  const writtenCharFiles = new Set();
-                  for (const item of body.characters) {
-                    if (!item || typeof item !== 'object') continue;
-                    const payload = item.payload || item;
-                    const rawName =
-                      item.fileName ||
-                      (payload && payload.data && typeof payload.data.name === 'string'
-                        ? payload.data.name
-                        : payload && typeof payload.name === 'string'
-                          ? payload.name
-                          : item.name) ||
-                      'Character';
-                    let targetFile = sanitizeFileName(rawName, 'Character');
-                    let stem = targetFile.replace(/\.json$/i, '');
-                    let idx = 2;
-                    while (writtenCharFiles.has(targetFile.toLowerCase())) {
-                      targetFile = `${stem}_${idx}.json`;
-                      idx += 1;
-                    }
-                    const outContent =
-                      typeof item.content === 'string'
-                        ? item.content
-                        : JSON.stringify({ ...payload, _tavernsmithType: 'character' }, null, 2);
-                    fs.writeFileSync(path.join(dirs.charactersDir, targetFile), outContent, 'utf-8');
-                    writtenCharFiles.add(targetFile.toLowerCase());
-                  }
-                  try {
-                    for (const existingFile of fs.readdirSync(dirs.charactersDir)) {
-                      if (!existingFile.toLowerCase().endsWith('.json')) continue;
-                      if (!writtenCharFiles.has(existingFile.toLowerCase())) {
-                        fs.unlinkSync(path.join(dirs.charactersDir, existingFile));
-                      }
-                    }
-                  } catch {}
-                }
-
-                if (Array.isArray(body.lorebooks)) {
-                  const writtenBookFiles = new Set();
-                  for (const item of body.lorebooks) {
-                    if (!item || typeof item !== 'object') continue;
-                    const payload = item.payload || item;
-                    const rawName =
-                      item.fileName ||
-                      (payload && typeof payload.name === 'string' ? payload.name : item.name) ||
-                      'Lorebook';
-                    let targetFile = sanitizeFileName(rawName, 'Lorebook');
-                    let stem = targetFile.replace(/\.json$/i, '');
-                    let idx = 2;
-                    while (writtenBookFiles.has(targetFile.toLowerCase())) {
-                      targetFile = `${stem}_${idx}.json`;
-                      idx += 1;
-                    }
-                    const outContent =
-                      typeof item.content === 'string'
-                        ? item.content
-                        : JSON.stringify({ ...payload, _tavernsmithType: 'lorebook' }, null, 2);
-                    fs.writeFileSync(path.join(dirs.lorebooksDir, targetFile), outContent, 'utf-8');
-                    writtenBookFiles.add(targetFile.toLowerCase());
-                  }
-                  try {
-                    for (const existingFile of fs.readdirSync(dirs.lorebooksDir)) {
-                      if (!existingFile.toLowerCase().endsWith('.json')) continue;
-                      if (!writtenBookFiles.has(existingFile.toLowerCase())) {
-                        fs.unlinkSync(path.join(dirs.lorebooksDir, existingFile));
-                      }
-                    }
-                  } catch {}
-                }
-
-                if (body.meta !== undefined && body.meta !== null) {
-                  const metaContent = typeof body.meta === 'string' ? body.meta : JSON.stringify(body.meta, null, 2);
-                  fs.writeFileSync(dirs.metaFilePath, metaContent, 'utf-8');
-                }
-
-                if (body.vault && typeof body.vault === 'object') {
-                  fs.writeFileSync(dirs.vaultFilePath, JSON.stringify(body.vault, null, 2), 'utf-8');
-                } else if (typeof body.vaultEnc === 'string') {
-                  if (body.vaultEnc.trim()) {
-                    fs.writeFileSync(dirs.vaultFilePath, body.vaultEnc.trim(), 'utf-8');
-                  } else if (fs.existsSync(dirs.vaultFilePath)) {
-                    try { fs.unlinkSync(dirs.vaultFilePath); } catch {}
-                  }
-                }
-
-                sendJson(res, 200, scanDiskState(customDir));
+                sendJson(res, 200, saveToSavesDirectoryOnDisk(body));
                 return;
               }
 
               if (req.method === 'POST' && pathname === '/api/disk/delete') {
                 const rawBody = await readRequestBody(req);
                 const body = rawBody ? JSON.parse(rawBody) : {};
-                const dirs = resolveSavesDirectories(body.savesDir);
-                const kind = body.kind === 'lorebook' ? 'lorebook' : 'character';
-                const targetFile = path.basename(String(body.fileName || '')).trim();
-                if (targetFile && targetFile.toLowerCase().endsWith('.json')) {
-                  const folderPath = kind === 'lorebook' ? dirs.lorebooksDir : dirs.charactersDir;
-                  const fullPath = path.join(folderPath, targetFile);
-                  if (fs.existsSync(fullPath)) {
-                    fs.unlinkSync(fullPath);
-                  }
-                }
-                sendJson(res, 200, scanDiskState(body.savesDir));
+                sendJson(res, 200, deleteFromSavesDirectoryOnDisk(body));
                 return;
               }
 
@@ -372,148 +686,488 @@ jobs:
 
           server.listen(PORT, HOST, () => {
             console.log(`TavernSmith local disk server running at http://${HOST}:${PORT}`);
-            console.log(`Direct disk storage active in: ${path.resolve(ROOT_DIR, DEFAULT_SAVES_REL)}`);
+            console.log(`Direct disk storage active in: ${path.resolve(ROOT_DIR, 'Saves')}`);
           });
           EOF
 
-          cat << 'EOF' > dist/server.py
+          sed 's/^          //' << 'EOF' > dist/server.py
           #!/usr/bin/env python3
+          from datetime import datetime, timezone
           import http.server
           import json
           import os
           import re
-          import time
           import urllib.parse
 
           PORT = int(os.environ.get("PORT", "4173"))
           HOST = "127.0.0.1"
           ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
-          DEFAULT_SAVES_REL = "./Saves/"
           META_FILENAME = "_tavernsmith_meta.json"
           VAULT_FILENAME = "_tavernsmith_vault.enc"
 
-          def sanitize_file_name(raw_name, fallback_base="Untitled"):
-              trimmed = re.sub(r"\.json$", "", (raw_name or "").strip(), flags=re.IGNORECASE)
-              safe_base = re.sub(r'[<>:"/\\|?*\x00-\x1F]', "_", trimmed)
-              safe_base = re.sub(r"\s+", "_", safe_base)
-              safe_base = re.sub(r"_+", "_", safe_base).strip("_") or fallback_base
-              return f"{safe_base}.json"
+          def sanitize_disk_file_name(raw):
+              base = os.path.basename(str(raw or "untitled"))
+              base = re.sub(r"\.json$", "", base, flags=re.IGNORECASE).strip()
+              clean = re.sub(r"[^a-zA-Z0-9_-]+", "_", base).strip("_") or "untitled"
+              return f"{clean}.json"
 
-          def resolve_saves_directories(custom_saves_dir=None):
-              clean_custom = (custom_saves_dir or "").strip() or DEFAULT_SAVES_REL
-              root_dir = clean_custom if os.path.isabs(clean_custom) else os.path.abspath(os.path.join(ROOT_DIR, clean_custom))
-              characters_dir = os.path.join(root_dir, "Characters")
-              lorebooks_dir = os.path.join(root_dir, "Lorebooks")
-              meta_file_path = os.path.join(root_dir, META_FILENAME)
-              vault_file_path = os.path.join(root_dir, VAULT_FILENAME)
+          def resolve_saves_root(custom_save_path=None):
+              trimmed = (custom_save_path or "").strip()
+              use_custom = bool(trimmed and trimmed not in ("./Saves", "./Saves/", "/Saves/"))
+              if use_custom:
+                  resolved_path = trimmed if os.path.isabs(trimmed) else os.path.abspath(os.path.join(ROOT_DIR, trimmed))
+                  disk_root = trimmed
+              else:
+                  resolved_path = os.path.abspath(os.path.join(ROOT_DIR, "Saves"))
+                  disk_root = "./Saves/"
 
-              os.makedirs(root_dir, exist_ok=True)
-              os.makedirs(characters_dir, exist_ok=True)
-              os.makedirs(lorebooks_dir, exist_ok=True)
+              chars_dir = os.path.join(resolved_path, "Characters")
+              lore_dir = os.path.join(resolved_path, "Lorebooks")
+              themes_dir = os.path.join(resolved_path, "Themes")
+              tags_dir = os.path.join(resolved_path, "Tags")
+
+              os.makedirs(resolved_path, exist_ok=True)
+              os.makedirs(chars_dir, exist_ok=True)
+              os.makedirs(lore_dir, exist_ok=True)
+              os.makedirs(themes_dir, exist_ok=True)
+              os.makedirs(tags_dir, exist_ok=True)
 
               return {
-                  "savesPath": clean_custom,
-                  "resolvedPath": root_dir,
-                  "charactersDir": characters_dir,
-                  "lorebooksDir": lorebooks_dir,
-                  "metaFilePath": meta_file_path,
-                  "vaultFilePath": vault_file_path,
+                  "diskRoot": disk_root,
+                  "resolvedPath": resolved_path,
+                  "charsDir": chars_dir,
+                  "loreDir": lore_dir,
+                  "themesDir": themes_dir,
+                  "tagsDir": tags_dir,
               }
 
-          def scan_disk_state(custom_saves_dir=None):
-              dirs = resolve_saves_directories(custom_saves_dir)
+          def extract_entity_id_from_json(parsed):
+              if not isinstance(parsed, dict):
+                  return ""
+              source = parsed.get("payload") if isinstance(parsed.get("payload"), dict) else parsed
+              if isinstance(source.get("id"), str) and source["id"].strip():
+                  return source["id"].strip()
+              data_obj = source.get("data")
+              if isinstance(data_obj, dict):
+                  if isinstance(data_obj.get("id"), str) and data_obj["id"].strip():
+                      return data_obj["id"].strip()
+                  ext_obj = data_obj.get("extensions")
+                  if isinstance(ext_obj, dict):
+                      ts_obj = ext_obj.get("tavernsmith")
+                      if isinstance(ts_obj, dict) and isinstance(ts_obj.get("id"), str) and ts_obj["id"].strip():
+                          return ts_obj["id"].strip()
+              ext_obj = source.get("extensions")
+              if isinstance(ext_obj, dict):
+                  ts_obj = ext_obj.get("tavernsmith")
+                  if isinstance(ts_obj, dict) and isinstance(ts_obj.get("id"), str) and ts_obj["id"].strip():
+                      return ts_obj["id"].strip()
+              return ""
+
+          def reserve_unique_disk_file_name(preferred_name, used_names_lower):
+              initial = sanitize_disk_file_name(preferred_name)
+              stem = re.sub(r"\.json$", "", initial, flags=re.IGNORECASE)
+              candidate = initial
+              suffix = 2
+              while candidate.lower() in used_names_lower:
+                  candidate = f"{stem}_{suffix}.json"
+                  suffix += 1
+              used_names_lower.add(candidate.lower())
+              return candidate
+
+          def iso_from_mtime(mtime_ts):
+              return datetime.fromtimestamp(mtime_ts, tz=timezone.utc).isoformat().replace("+00:00", "Z")
+
+          def scan_saves_directory_on_disk(custom_save_path=None):
+              dirs = resolve_saves_root(custom_save_path)
               characters = []
               lorebooks = []
-
-              if os.path.isdir(dirs["charactersDir"]):
-                  for name in sorted(os.listdir(dirs["charactersDir"])):
-                      if not name.lower().endswith(".json"):
-                          continue
-                      full_path = os.path.join(dirs["charactersDir"], name)
-                      if not os.path.isfile(full_path):
-                          continue
-                      try:
-                          with open(full_path, "r", encoding="utf-8") as f:
-                              content = f.read()
-                          stat = os.stat(full_path)
-                          parsed = json.loads(content)
-                          characters.append({
-                              "fileName": name,
-                              "content": content,
-                              "updatedAt": int(stat.st_mtime * 1000),
-                              "sizeBytes": stat.st_size,
-                              "parsed": parsed,
-                          })
-                      except Exception:
-                          pass
-
-              if os.path.isdir(dirs["lorebooksDir"]):
-                  for name in sorted(os.listdir(dirs["lorebooksDir"])):
-                      if not name.lower().endswith(".json"):
-                          continue
-                      full_path = os.path.join(dirs["lorebooksDir"], name)
-                      if not os.path.isfile(full_path):
-                          continue
-                      try:
-                          with open(full_path, "r", encoding="utf-8") as f:
-                              content = f.read()
-                          stat = os.stat(full_path)
-                          parsed = json.loads(content)
-                          lorebooks.append({
-                              "fileName": name,
-                              "content": content,
-                              "updatedAt": int(stat.st_mtime * 1000),
-                              "sizeBytes": stat.st_size,
-                              "parsed": parsed,
-                          })
-                      except Exception:
-                          pass
-
+              themes = []
+              tags = []
               meta = None
-              if os.path.isfile(dirs["metaFilePath"]):
+              vault = None
+              files = []
+
+              if os.path.isdir(dirs["charsDir"]):
+                  for name in sorted(os.listdir(dirs["charsDir"])):
+                      if not name.lower().endswith(".json"):
+                          continue
+                      full_path = os.path.join(dirs["charsDir"], name)
+                      if not os.path.isfile(full_path):
+                          continue
+                      try:
+                          stat = os.stat(full_path)
+                          with open(full_path, "r", encoding="utf-8") as f:
+                              content = f.read()
+                          parsed = json.loads(content)
+                          if not isinstance(parsed, dict) or parsed.get("_tavernsmithType") == "lorebook":
+                              continue
+                          updated_iso = iso_from_mtime(stat.st_mtime)
+                          obj = dict(parsed)
+                          obj["_diskFileName"] = name
+                          obj["_diskUpdatedAt"] = updated_iso
+                          characters.append(obj)
+                          files.append({
+                              "id": f"Characters/{name}",
+                              "folderPath": "Characters/",
+                              "fileName": name,
+                              "kind": "character",
+                              "sizeBytes": stat.st_size,
+                              "updatedAt": updated_iso,
+                              "content": content,
+                          })
+                      except Exception:
+                          pass
+
+              if os.path.isdir(dirs["loreDir"]):
+                  for name in sorted(os.listdir(dirs["loreDir"])):
+                      if not name.lower().endswith(".json"):
+                          continue
+                      full_path = os.path.join(dirs["loreDir"], name)
+                      if not os.path.isfile(full_path):
+                          continue
+                      try:
+                          stat = os.stat(full_path)
+                          with open(full_path, "r", encoding="utf-8") as f:
+                              content = f.read()
+                          parsed = json.loads(content)
+                          if not isinstance(parsed, dict) or parsed.get("_tavernsmithType") == "character":
+                              continue
+                          updated_iso = iso_from_mtime(stat.st_mtime)
+                          obj = dict(parsed)
+                          obj["_tavernsmithType"] = "lorebook"
+                          obj["_diskFileName"] = name
+                          obj["_diskUpdatedAt"] = updated_iso
+                          lorebooks.append(obj)
+                          files.append({
+                              "id": f"Lorebooks/{name}",
+                              "folderPath": "Lorebooks/",
+                              "fileName": name,
+                              "kind": "lorebook",
+                              "sizeBytes": stat.st_size,
+                              "updatedAt": updated_iso,
+                              "content": content,
+                          })
+                      except Exception:
+                          pass
+
+              if os.path.isdir(dirs["themesDir"]):
+                  for name in sorted(os.listdir(dirs["themesDir"])):
+                      if not name.lower().endswith(".json"):
+                          continue
+                      full_path = os.path.join(dirs["themesDir"], name)
+                      if not os.path.isfile(full_path):
+                          continue
+                      try:
+                          stat = os.stat(full_path)
+                          with open(full_path, "r", encoding="utf-8") as f:
+                              content = f.read()
+                          parsed = json.loads(content)
+                          if isinstance(parsed, dict):
+                              updated_iso = iso_from_mtime(stat.st_mtime)
+                              obj = dict(parsed)
+                              obj["_tavernsmithType"] = "theme"
+                              obj["_diskFileName"] = name
+                              obj["_diskUpdatedAt"] = updated_iso
+                              themes.append(obj)
+                              files.append({
+                                  "id": f"Themes/{name}",
+                                  "folderPath": "Themes/",
+                                  "fileName": name,
+                                  "kind": "theme",
+                                  "sizeBytes": stat.st_size,
+                                  "updatedAt": updated_iso,
+                                  "content": content,
+                              })
+                      except Exception:
+                          pass
+
+              if os.path.isdir(dirs["tagsDir"]):
+                  for name in sorted(os.listdir(dirs["tagsDir"])):
+                      if not name.lower().endswith(".json"):
+                          continue
+                      full_path = os.path.join(dirs["tagsDir"], name)
+                      if not os.path.isfile(full_path):
+                          continue
+                      try:
+                          stat = os.stat(full_path)
+                          with open(full_path, "r", encoding="utf-8") as f:
+                              content = f.read()
+                          parsed = json.loads(content)
+                          if isinstance(parsed, dict):
+                              updated_iso = iso_from_mtime(stat.st_mtime)
+                              obj = dict(parsed)
+                              obj["_tavernsmithType"] = "tag"
+                              obj["_diskFileName"] = name
+                              obj["_diskUpdatedAt"] = updated_iso
+                              tags.append(obj)
+                              files.append({
+                                  "id": f"Tags/{name}",
+                                  "folderPath": "Tags/",
+                                  "fileName": name,
+                                  "kind": "tag",
+                                  "sizeBytes": stat.st_size,
+                                  "updatedAt": updated_iso,
+                                  "content": content,
+                              })
+                      except Exception:
+                          pass
+
+              meta_path = os.path.join(dirs["resolvedPath"], META_FILENAME)
+              if os.path.isfile(meta_path):
                   try:
-                      with open(dirs["metaFilePath"], "r", encoding="utf-8") as f:
+                      stat = os.stat(meta_path)
+                      with open(meta_path, "r", encoding="utf-8") as f:
                           content = f.read()
-                      stat = os.stat(dirs["metaFilePath"])
-                      parsed = json.loads(content)
-                      meta = {
+                      meta = json.loads(content)
+                      files.append({
+                          "id": f"/{META_FILENAME}",
+                          "folderPath": "/",
                           "fileName": META_FILENAME,
-                          "content": content,
-                          "updatedAt": int(stat.st_mtime * 1000),
+                          "kind": "meta",
                           "sizeBytes": stat.st_size,
-                          "parsed": parsed,
-                      }
+                          "updatedAt": iso_from_mtime(stat.st_mtime),
+                          "content": content,
+                      })
                   except Exception:
                       meta = None
 
-              vault_enc = None
-              if os.path.isfile(dirs["vaultFilePath"]):
+              vault_path = os.path.join(dirs["resolvedPath"], VAULT_FILENAME)
+              if os.path.isfile(vault_path):
                   try:
-                      with open(dirs["vaultFilePath"], "r", encoding="utf-8") as f:
-                          raw_vault = f.read().strip()
-                      if raw_vault:
-                          vault_enc = raw_vault
+                      stat = os.stat(vault_path)
+                      with open(vault_path, "r", encoding="utf-8") as f:
+                          content = f.read()
+                      vault = json.loads(content)
+                      files.append({
+                          "id": f"/{VAULT_FILENAME}",
+                          "folderPath": "/",
+                          "fileName": VAULT_FILENAME,
+                          "kind": "vault",
+                          "sizeBytes": stat.st_size,
+                          "updatedAt": iso_from_mtime(stat.st_mtime),
+                          "content": content,
+                      })
                   except Exception:
-                      vault_enc = None
+                      vault = None
 
               return {
                   "ok": True,
-                  "savesPath": dirs["savesPath"],
+                  "diskRoot": dirs["diskRoot"],
                   "resolvedPath": dirs["resolvedPath"],
                   "characters": characters,
                   "lorebooks": lorebooks,
+                  "themes": themes,
+                  "tags": tags,
                   "meta": meta,
-                  "vaultEnc": vault_enc,
+                  "vault": vault,
+                  "files": files,
+                  "updatedAt": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
               }
 
-          resolve_saves_directories(DEFAULT_SAVES_REL)
+          def save_to_saves_directory_on_disk(body):
+              custom_save_path = body.get("customSavePath") or body.get("savesDir")
+              dirs = resolve_saves_root(custom_save_path)
+
+              if isinstance(body.get("characters"), list):
+                  used_char_targets = set()
+                  written_char_files = set()
+                  for item in body["characters"]:
+                      if not isinstance(item, dict):
+                          continue
+                      payload = item.get("payload") if isinstance(item.get("payload"), dict) else item
+                      if payload.get("_tavernsmithType") == "lorebook":
+                          continue
+                      data_node = payload.get("data") if isinstance(payload.get("data"), dict) else {}
+                      raw_name = item.get("fileName") or data_node.get("name") or payload.get("name") or "untitled"
+                      target_file = reserve_unique_disk_file_name(raw_name, used_char_targets)
+                      if isinstance(item.get("content"), str):
+                          out_content = item["content"]
+                      else:
+                          out_obj = dict(payload)
+                          out_obj["_tavernsmithType"] = "character"
+                          out_content = json.dumps(out_obj, indent=2)
+                      with open(os.path.join(dirs["charsDir"], target_file), "w", encoding="utf-8") as f:
+                          f.write(out_content)
+                      written_char_files.add(target_file.lower())
+                  try:
+                      for file_name in os.listdir(dirs["charsDir"]):
+                          if not file_name.lower().endswith(".json"):
+                              continue
+                          if file_name.lower() not in written_char_files:
+                              orphan_path = os.path.join(dirs["charsDir"], file_name)
+                              if os.path.isfile(orphan_path):
+                                  os.unlink(orphan_path)
+                  except Exception:
+                      pass
+
+              if isinstance(body.get("lorebooks"), list):
+                  used_lore_targets = set()
+                  written_book_files = set()
+                  for item in body["lorebooks"]:
+                      if not isinstance(item, dict):
+                          continue
+                      payload = item.get("payload") if isinstance(item.get("payload"), dict) else item
+                      if payload.get("_tavernsmithType") == "character":
+                          continue
+                      raw_name = item.get("fileName") or payload.get("name") or "untitled_lorebook"
+                      target_file = reserve_unique_disk_file_name(raw_name, used_lore_targets)
+                      if isinstance(item.get("content"), str):
+                          out_content = item["content"]
+                      else:
+                          out_obj = dict(payload)
+                          out_obj["_tavernsmithType"] = "lorebook"
+                          out_content = json.dumps(out_obj, indent=2)
+                      with open(os.path.join(dirs["loreDir"], target_file), "w", encoding="utf-8") as f:
+                          f.write(out_content)
+                      written_book_files.add(target_file.lower())
+                  try:
+                      for file_name in os.listdir(dirs["loreDir"]):
+                          if not file_name.lower().endswith(".json"):
+                              continue
+                          if file_name.lower() not in written_book_files:
+                              orphan_path = os.path.join(dirs["loreDir"], file_name)
+                              if os.path.isfile(orphan_path):
+                                  os.unlink(orphan_path)
+                  except Exception:
+                      pass
+
+              if isinstance(body.get("themes"), list):
+                  used_theme_targets = set()
+                  written_theme_files = set()
+                  for item in body["themes"]:
+                      if not isinstance(item, dict):
+                          continue
+                      payload = item.get("payload") if isinstance(item.get("payload"), dict) else item
+                      raw_name = item.get("fileName") or payload.get("name") or "custom_theme"
+                      target_file = reserve_unique_disk_file_name(raw_name, used_theme_targets)
+                      if isinstance(item.get("content"), str):
+                          out_content = item["content"]
+                      else:
+                          out_obj = dict(payload)
+                          out_obj["_tavernsmithType"] = "theme"
+                          out_content = json.dumps(out_obj)
+                      with open(os.path.join(dirs["themesDir"], target_file), "w", encoding="utf-8") as f:
+                          f.write(out_content)
+                      written_theme_files.add(target_file.lower())
+                  try:
+                      for file_name in os.listdir(dirs["themesDir"]):
+                          if not file_name.lower().endswith(".json"):
+                              continue
+                          if file_name.lower() not in written_theme_files:
+                              orphan_path = os.path.join(dirs["themesDir"], file_name)
+                              if os.path.isfile(orphan_path):
+                                  os.unlink(orphan_path)
+                  except Exception:
+                      pass
+
+              if isinstance(body.get("tags"), list):
+                  used_tag_targets = set()
+                  written_tag_files = set()
+                  for item in body["tags"]:
+                      if not isinstance(item, dict):
+                          continue
+                      payload = item.get("payload") if isinstance(item.get("payload"), dict) else item
+                      raw_name = item.get("fileName") or payload.get("name") or "custom_tag"
+                      target_file = reserve_unique_disk_file_name(raw_name, used_tag_targets)
+                      if isinstance(item.get("content"), str):
+                          out_content = item["content"]
+                      else:
+                          out_obj = dict(payload)
+                          out_obj["_tavernsmithType"] = "tag"
+                          out_content = json.dumps(out_obj)
+                      with open(os.path.join(dirs["tagsDir"], target_file), "w", encoding="utf-8") as f:
+                          f.write(out_content)
+                      written_tag_files.add(target_file.lower())
+                  try:
+                      for file_name in os.listdir(dirs["tagsDir"]):
+                          if not file_name.lower().endswith(".json"):
+                              continue
+                          if file_name.lower() not in written_tag_files:
+                              orphan_path = os.path.join(dirs["tagsDir"], file_name)
+                              if os.path.isfile(orphan_path):
+                                  os.unlink(orphan_path)
+                  except Exception:
+                      pass
+
+              if isinstance(body.get("meta"), dict):
+                  with open(os.path.join(dirs["resolvedPath"], META_FILENAME), "w", encoding="utf-8") as f:
+                      f.write(json.dumps(body["meta"], indent=2))
+
+              if isinstance(body.get("vault"), dict):
+                  with open(os.path.join(dirs["resolvedPath"], VAULT_FILENAME), "w", encoding="utf-8") as f:
+                      f.write(json.dumps(body["vault"], indent=2))
+
+              return scan_saves_directory_on_disk(custom_save_path)
+
+          def delete_from_saves_directory_on_disk(body):
+              custom_save_path = body.get("customSavePath") or body.get("savesDir")
+              dirs = resolve_saves_root(custom_save_path)
+
+              raw_folder = str(body.get("folder") or body.get("kind") or "").lower()
+              if raw_folder in ("lorebooks", "lorebook"):
+                  target_dir = dirs["loreDir"]
+              elif raw_folder in ("themes", "theme"):
+                  target_dir = dirs["themesDir"]
+              elif raw_folder in ("tags", "tag"):
+                  target_dir = dirs["tagsDir"]
+              else:
+                  target_dir = dirs["charsDir"]
+
+              candidate_names = set()
+              raw_file_name = body.get("fileName").strip() if isinstance(body.get("fileName"), str) else ""
+              raw_saved_file_name = body.get("savedFileName").strip() if isinstance(body.get("savedFileName"), str) else ""
+              raw_name = body.get("name").strip() if isinstance(body.get("name"), str) else ""
+              raw_id = body.get("id").strip() if isinstance(body.get("id"), str) else ""
+
+              if raw_file_name:
+                  candidate_names.add(os.path.basename(raw_file_name))
+              if raw_saved_file_name:
+                  candidate_names.add(os.path.basename(raw_saved_file_name))
+
+              deleted_any = False
+              for name in candidate_names:
+                  target_path = os.path.join(target_dir, name)
+                  if os.path.isfile(target_path):
+                      try:
+                          os.unlink(target_path)
+                          deleted_any = True
+                      except Exception:
+                          pass
+
+              if raw_id and os.path.isdir(target_dir):
+                  for entry_name in os.listdir(target_dir):
+                      if not entry_name.lower().endswith(".json"):
+                          continue
+                      full_path = os.path.join(target_dir, entry_name)
+                      if not os.path.isfile(full_path):
+                          continue
+                      try:
+                          with open(full_path, "r", encoding="utf-8") as f:
+                              parsed = json.load(f)
+                          if extract_entity_id_from_json(parsed) == raw_id:
+                              os.unlink(full_path)
+                              deleted_any = True
+                      except Exception:
+                          pass
+
+              if not deleted_any and raw_name:
+                  sanitized_target = os.path.join(target_dir, sanitize_disk_file_name(raw_name))
+                  if os.path.isfile(sanitized_target):
+                      try:
+                          os.unlink(sanitized_target)
+                      except Exception:
+                          pass
+
+              return scan_saves_directory_on_disk(custom_save_path)
+
+          resolve_saves_root()
 
           class TavernSmithHandler(http.server.SimpleHTTPRequestHandler):
               def __init__(self, *args, **kwargs):
                   super().__init__(*args, directory=ROOT_DIR, **kwargs)
 
               def end_headers(self):
-                  self.send_header("Cache-Control", "no-store")
+                  self.send_header("Cache-Control", "no-store, no-cache, must-revalidate")
                   super().end_headers()
 
               def send_json(self, status, payload):
@@ -528,8 +1182,8 @@ jobs:
                   parsed_url = urllib.parse.urlparse(self.path)
                   if parsed_url.path == "/api/disk/state":
                       qs = urllib.parse.parse_qs(parsed_url.query)
-                      custom_dir = qs.get("savesDir", [DEFAULT_SAVES_REL])[0]
-                      self.send_json(200, scan_disk_state(custom_dir))
+                      custom_path = (qs.get("customSavePath") or qs.get("savesDir") or [None])[0]
+                      self.send_json(200, scan_saves_directory_on_disk(custom_path))
                       return
                   return super().do_GET()
 
@@ -540,126 +1194,25 @@ jobs:
                   body = json.loads(raw_body or "{}")
 
                   if parsed_url.path == "/api/disk/save":
-                      custom_dir = body.get("customSavePath") or body.get("savesDir")
-                      dirs = resolve_saves_directories(custom_dir)
-                      if isinstance(body.get("characters"), list):
-                          written_char_files = set()
-                          for item in body.get("characters"):
-                              if not isinstance(item, dict):
-                                  continue
-                              payload = item.get("payload") if isinstance(item.get("payload"), dict) else item
-                              data_node = payload.get("data") if isinstance(payload.get("data"), dict) else {}
-                              raw_name = item.get("fileName") or data_node.get("name") or payload.get("name") or item.get("name") or "Character"
-                              target_file = sanitize_file_name(raw_name, "Character")
-                              stem = re.sub(r"\.json$", "", target_file, flags=re.IGNORECASE)
-                              idx = 2
-                              while target_file.lower() in written_char_files:
-                                  target_file = f"{stem}_{idx}.json"
-                                  idx += 1
-                              if isinstance(item.get("content"), str):
-                                  out_content = item["content"]
-                              else:
-                                  out_obj = dict(payload)
-                                  out_obj["_tavernsmithType"] = "character"
-                                  out_content = json.dumps(out_obj, indent=2)
-                              with open(os.path.join(dirs["charactersDir"], target_file), "w", encoding="utf-8") as f:
-                                  f.write(out_content)
-                              written_char_files.add(target_file.lower())
-                          try:
-                              for existing_file in os.listdir(dirs["charactersDir"]):
-                                  if not existing_file.lower().endswith(".json"):
-                                      continue
-                                  if existing_file.lower() not in written_char_files:
-                                      orphan_path = os.path.join(dirs["charactersDir"], existing_file)
-                                      if os.path.isfile(orphan_path):
-                                          os.unlink(orphan_path)
-                          except Exception:
-                              pass
-
-                      if isinstance(body.get("lorebooks"), list):
-                          written_book_files = set()
-                          for item in body.get("lorebooks"):
-                              if not isinstance(item, dict):
-                                  continue
-                              payload = item.get("payload") if isinstance(item.get("payload"), dict) else item
-                              raw_name = item.get("fileName") or payload.get("name") or item.get("name") or "Lorebook"
-                              target_file = sanitize_file_name(raw_name, "Lorebook")
-                              stem = re.sub(r"\.json$", "", target_file, flags=re.IGNORECASE)
-                              idx = 2
-                              while target_file.lower() in written_book_files:
-                                  target_file = f"{stem}_{idx}.json"
-                                  idx += 1
-                              if isinstance(item.get("content"), str):
-                                  out_content = item["content"]
-                              else:
-                                  out_obj = dict(payload)
-                                  out_obj["_tavernsmithType"] = "lorebook"
-                                  out_content = json.dumps(out_obj, indent=2)
-                              with open(os.path.join(dirs["lorebooksDir"], target_file), "w", encoding="utf-8") as f:
-                                  f.write(out_content)
-                              written_book_files.add(target_file.lower())
-                          try:
-                              for existing_file in os.listdir(dirs["lorebooksDir"]):
-                                  if not existing_file.lower().endswith(".json"):
-                                      continue
-                                  if existing_file.lower() not in written_book_files:
-                                      orphan_path = os.path.join(dirs["lorebooksDir"], existing_file)
-                                      if os.path.isfile(orphan_path):
-                                          os.unlink(orphan_path)
-                          except Exception:
-                              pass
-
-                      if body.get("meta") is not None:
-                          meta_val = body["meta"]
-                          meta_content = meta_val if isinstance(meta_val, str) else json.dumps(meta_val, indent=2)
-                          with open(dirs["metaFilePath"], "w", encoding="utf-8") as f:
-                              f.write(meta_content)
-
-                      if isinstance(body.get("vault"), dict):
-                          with open(dirs["vaultFilePath"], "w", encoding="utf-8") as f:
-                              f.write(json.dumps(body["vault"], indent=2))
-                      else:
-                          vault_enc = body.get("vaultEnc")
-                          if isinstance(vault_enc, str):
-                              if vault_enc.strip():
-                                  with open(dirs["vaultFilePath"], "w", encoding="utf-8") as f:
-                                      f.write(vault_enc.strip())
-                              elif os.path.isfile(dirs["vaultFilePath"]):
-                                  try:
-                                      os.unlink(dirs["vaultFilePath"])
-                                  except Exception:
-                                      pass
-
-                      self.send_json(200, scan_disk_state(custom_dir))
+                      self.send_json(200, save_to_saves_directory_on_disk(body))
                       return
 
                   if parsed_url.path == "/api/disk/delete":
-                      dirs = resolve_saves_directories(body.get("savesDir"))
-                      kind = "lorebook" if body.get("kind") == "lorebook" else "character"
-                      target_file = os.path.basename(str(body.get("fileName") or "")).strip()
-                      if target_file and target_file.lower().endswith(".json"):
-                          folder_path = dirs["lorebooksDir"] if kind == "lorebook" else dirs["charactersDir"]
-                          full_path = os.path.join(folder_path, target_file)
-                          if os.path.isfile(full_path):
-                              try:
-                                  os.unlink(full_path)
-                              except Exception:
-                                  pass
-                      self.send_json(200, scan_disk_state(body.get("savesDir")))
+                      self.send_json(200, delete_from_saves_directory_on_disk(body))
                       return
 
                   self.send_json(404, {"ok": False, "error": "Not found"})
 
           if __name__ == "__main__":
               print(f"TavernSmith local disk server running at http://{HOST}:{PORT}")
-              print(f"Direct disk storage active in: {os.path.abspath(os.path.join(ROOT_DIR, DEFAULT_SAVES_REL))}")
+              print(f"Direct disk storage active in: {os.path.abspath(os.path.join(ROOT_DIR, 'Saves'))}")
               with http.server.ThreadingHTTPServer((HOST, PORT), TavernSmithHandler) as httpd:
                   httpd.serve_forever()
           EOF
 
           chmod +x dist/server.cjs dist/server.py
 
-          cat << 'EOF' > dist/Launch-TavernSmith-Windows.bat
+          sed 's/^          //' << 'EOF' > dist/Launch-TavernSmith-Windows.bat
           @echo off
           cd /d "%~dp0"
           setlocal
@@ -669,6 +1222,8 @@ jobs:
 
           if not exist "Saves\Characters" mkdir "Saves\Characters"
           if not exist "Saves\Lorebooks" mkdir "Saves\Lorebooks"
+          if not exist "Saves\Themes" mkdir "Saves\Themes"
+          if not exist "Saves\Tags" mkdir "Saves\Tags"
 
           echo ===================================================
           echo   TavernSmith - SillyTavern V2/V3 Character IDE
@@ -704,13 +1259,13 @@ jobs:
           pause
           EOF
 
-          cat << 'EOF' > dist/Launch-TavernSmith-Mac-Linux.command
+          sed 's/^          //' << 'EOF' > dist/Launch-TavernSmith-Mac-Linux.command
           #!/usr/bin/env bash
           cd "$(dirname "$0")" || exit 1
           PORT=4173
           URL="http://127.0.0.1:${PORT}/?nocache=$(date +%s)"
 
-          mkdir -p "./Saves/Characters" "./Saves/Lorebooks"
+          mkdir -p "./Saves/Characters" "./Saves/Lorebooks" "./Saves/Themes" "./Saves/Tags"
 
           echo "==================================================="
           echo "  TavernSmith — SillyTavern V2/V3 Character IDE"
@@ -744,13 +1299,15 @@ jobs:
 
           chmod +x dist/Launch-TavernSmith-Mac-Linux.command
 
-          cat << 'EOF' > dist/README-PORTABLE.txt
+          sed 's/^          //' << 'EOF' > dist/README-PORTABLE.txt
           TavernSmith — Portable Ready-to-Run Application
           ===============================================
           100% of your Characters, Lorebooks, Custom Tags, Context Themes, Settings, and
           AES-256-GCM Encrypted API Keys are stored directly on disk in `./Saves/`:
             - ./Saves/Characters/
             - ./Saves/Lorebooks/
+            - ./Saves/Themes/
+            - ./Saves/Tags/
             - ./Saves/_tavernsmith_meta.json
             - ./Saves/_tavernsmith_vault.enc
 

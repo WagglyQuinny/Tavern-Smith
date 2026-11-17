@@ -456,6 +456,9 @@ export function serializeCharacterCard(
 
   const losslessSnapshot: CharacterCardData = {
     id: character.id,
+    ...(character.savedFileName
+      ? { savedFileName: character.savedFileName }
+      : {}),
     name: character.name || 'Untitled Character',
     nickname: character.nickname || '',
     description: character.description || '',
@@ -521,6 +524,7 @@ export function serializeCharacterCard(
 export function serializeLorebookCard(lorebook: Lorebook): Record<string, unknown> {
   const losslessBook: Lorebook = {
     id: lorebook.id,
+    ...(lorebook.savedFileName ? { savedFileName: lorebook.savedFileName } : {}),
     name: lorebook.name || 'Untitled Lorebook',
     description: lorebook.description || '',
     scan_depth: Number(lorebook.scan_depth ?? 4),
@@ -570,17 +574,54 @@ export function normalizeLorebookObject(
   rawBook: Record<string, unknown>,
   fallbackName = 'Imported World Book'
 ): Lorebook {
+  let unwrappedBook = rawBook;
+  if (
+    unwrappedBook.payload &&
+    typeof unwrappedBook.payload === 'object' &&
+    !Array.isArray(unwrappedBook.payload)
+  ) {
+    const innerPayload = unwrappedBook.payload as Record<string, unknown>;
+    unwrappedBook = {
+      ...innerPayload,
+      ...(typeof unwrappedBook._diskFileName === 'string' &&
+      !innerPayload._diskFileName
+        ? { _diskFileName: unwrappedBook._diskFileName }
+        : {}),
+      ...(typeof unwrappedBook.fileName === 'string' &&
+      !innerPayload.savedFileName
+        ? { savedFileName: unwrappedBook.fileName }
+        : {}),
+    };
+  } else if (
+    unwrappedBook.parsed &&
+    typeof unwrappedBook.parsed === 'object' &&
+    !Array.isArray(unwrappedBook.parsed)
+  ) {
+    const innerParsed = unwrappedBook.parsed as Record<string, unknown>;
+    unwrappedBook = {
+      ...innerParsed,
+      ...(typeof unwrappedBook._diskFileName === 'string' &&
+      !innerParsed._diskFileName
+        ? { _diskFileName: unwrappedBook._diskFileName }
+        : {}),
+      ...(typeof unwrappedBook.fileName === 'string' &&
+      !innerParsed.savedFileName
+        ? { savedFileName: unwrappedBook.fileName }
+        : {}),
+    };
+  }
+
   const extObj =
-    rawBook.extensions && typeof rawBook.extensions === 'object'
-      ? (rawBook.extensions as Record<string, unknown>)
+    unwrappedBook.extensions && typeof unwrappedBook.extensions === 'object'
+      ? (unwrappedBook.extensions as Record<string, unknown>)
       : null;
   const tsSnapshot =
     extObj && extObj.tavernsmith && typeof extObj.tavernsmith === 'object'
       ? (extObj.tavernsmith as Record<string, unknown>)
       : null;
 
-  const source = tsSnapshot ? { ...rawBook, ...tsSnapshot } : rawBook;
-  const rawEntries = source.entries ?? rawBook.entries;
+  const source = tsSnapshot ? { ...unwrappedBook, ...tsSnapshot } : unwrappedBook;
+  const rawEntries = source.entries ?? unwrappedBook.entries;
   const entriesList: LorebookEntry[] = [];
 
   if (Array.isArray(rawEntries)) {
@@ -654,8 +695,20 @@ export function normalizeLorebookObject(
     );
   }
 
+  const resolvedSavedFileName =
+    typeof source.savedFileName === 'string' && source.savedFileName
+      ? source.savedFileName
+      : typeof unwrappedBook.savedFileName === 'string' &&
+          unwrappedBook.savedFileName
+        ? unwrappedBook.savedFileName
+        : typeof unwrappedBook._diskFileName === 'string' &&
+            unwrappedBook._diskFileName
+          ? unwrappedBook._diskFileName
+          : undefined;
+
   return createBlankLorebook({
     id: typeof source.id === 'string' && source.id ? source.id : undefined,
+    ...(resolvedSavedFileName ? { savedFileName: resolvedSavedFileName } : {}),
     name: String(source.name || fallbackName),
     description:
       source.description !== undefined
@@ -681,7 +734,44 @@ export function parseImportedJsonString(
   fallbackFileName = 'Imported',
   forcedKind?: 'character' | 'lorebook'
 ): ImportedAssetResult {
-  const parsed = JSON.parse(jsonStr) as Record<string, unknown>;
+  let parsed = JSON.parse(jsonStr) as Record<string, unknown>;
+  if (
+    parsed &&
+    typeof parsed === 'object' &&
+    parsed.payload &&
+    typeof parsed.payload === 'object' &&
+    !Array.isArray(parsed.payload)
+  ) {
+    const innerPayload = parsed.payload as Record<string, unknown>;
+    parsed = {
+      ...innerPayload,
+      ...(typeof parsed._diskFileName === 'string' &&
+      !innerPayload._diskFileName
+        ? { _diskFileName: parsed._diskFileName }
+        : {}),
+      ...(typeof parsed.fileName === 'string' && !innerPayload.savedFileName
+        ? { savedFileName: parsed.fileName }
+        : {}),
+    };
+  } else if (
+    parsed &&
+    typeof parsed === 'object' &&
+    parsed.parsed &&
+    typeof parsed.parsed === 'object' &&
+    !Array.isArray(parsed.parsed)
+  ) {
+    const innerParsed = parsed.parsed as Record<string, unknown>;
+    parsed = {
+      ...innerParsed,
+      ...(typeof parsed._diskFileName === 'string' &&
+      !innerParsed._diskFileName
+        ? { _diskFileName: parsed._diskFileName }
+        : {}),
+      ...(typeof parsed.fileName === 'string' && !innerParsed.savedFileName
+        ? { savedFileName: parsed.fileName }
+        : {}),
+    };
+  }
   const cleanFallbackName = fallbackFileName.replace(/\.(json|png)$/i, '');
 
   const topExtensions =
@@ -811,8 +901,18 @@ export function parseImportedJsonString(
       }));
   }
 
+  const resolvedSavedFileName =
+    typeof inner.savedFileName === 'string' && inner.savedFileName
+      ? inner.savedFileName
+      : typeof parsed.savedFileName === 'string' && parsed.savedFileName
+        ? parsed.savedFileName
+        : typeof parsed._diskFileName === 'string' && parsed._diskFileName
+          ? parsed._diskFileName
+          : undefined;
+
   const character = createBlankCharacter({
     id: typeof inner.id === 'string' && inner.id ? inner.id : undefined,
+    ...(resolvedSavedFileName ? { savedFileName: resolvedSavedFileName } : {}),
     name: String(inner.name || parsed.name || cleanFallbackName || 'Imported Character'),
     nickname: String(inner.nickname || ''),
     description: String(inner.description ?? parsed.description ?? ''),

@@ -57,8 +57,8 @@ const QUICK_SWATCHES = [
 export const ThemesAndTagsView: React.FC = () => {
   const {
     themes,
-    setThemes,
     createNewTheme,
+    updateTheme,
     deleteTheme,
     activeTheme,
     setActiveThemeId,
@@ -157,10 +157,7 @@ export const ThemesAndTagsView: React.FC = () => {
   const hideNsfw = Boolean(settings.hideNsfwTags);
 
   const handleUpdateActiveTheme = (partial: Partial<ContextTheme>) => {
-    const targetId = activeTheme.id;
-    setThemes((prev) =>
-      prev.map((t) => (t.id === targetId ? { ...t, ...partial } : t))
-    );
+    updateTheme(activeTheme.id, partial);
   };
 
   const handleCreateNewTheme = () => {
@@ -230,11 +227,7 @@ export const ThemesAndTagsView: React.FC = () => {
       );
       const cleaned = res.content.trim();
       if (cleaned) {
-        setThemes((prev) =>
-          prev.map((t) =>
-            t.id === targetId ? { ...t, aiContextPrompt: cleaned } : t
-          )
-        );
+        updateTheme(targetId, { aiContextPrompt: cleaned });
       }
     } catch (err) {
       setThemeAiError(

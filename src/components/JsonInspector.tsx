@@ -60,21 +60,21 @@ export const JsonInspector: React.FC = () => {
   const v2JsonString = useMemo(
     () =>
       JSON.stringify(
-        serializeCharacterCard(character, 'v2', lorebook),
+        serializeCharacterCard(character, 'v2', character.character_book),
         null,
         2
       ),
-    [character, lorebook]
+    [character]
   );
 
   const v3JsonString = useMemo(
     () =>
       JSON.stringify(
-        serializeCharacterCard(character, 'v3', lorebook),
+        serializeCharacterCard(character, 'v3', character.character_book),
         null,
         2
       ),
-    [character, lorebook]
+    [character]
   );
 
   const lorebookJsonString = useMemo(
@@ -89,8 +89,13 @@ export const JsonInspector: React.FC = () => {
   }, [activeTab, v2JsonString, v3JsonString, lorebookJsonString]);
 
   const tokenBreakdown = useMemo(
-    () => calculateCardTokenBreakdown(character, lorebook, statBlock),
-    [character, lorebook, statBlock]
+    () =>
+      calculateCardTokenBreakdown(
+        character,
+        character.character_book,
+        statBlock
+      ),
+    [character, statBlock]
   );
 
   const validationIssues = useMemo<ValidationIssue[]>(() => {
@@ -166,22 +171,32 @@ export const JsonInspector: React.FC = () => {
       });
     }
 
-    // Check Lorebook entries
-    const invalidEntries = lorebook.entries.filter(
-      (e) => e.enabled && !e.constant && e.keys.length === 0
-    );
-    if (invalidEntries.length === 0) {
+    // Check Linked Lorebook entries (or active Lorebook when inspecting Lorebook JSON)
+    const validationBook =
+      activeTab === 'lorebook' ? lorebook : character.character_book;
+    if (!validationBook) {
       issues.push({
         level: 'ok',
-        label: 'Lorebook Keywords',
-        detail: `${lorebook.entries.length} entries checked (${lorebook.entries.filter((e) => e.enabled).length} enabled).`,
+        label: 'Linked Lorebook',
+        detail: 'None linked (standalone character card).',
       });
     } else {
-      issues.push({
-        level: 'warn',
-        label: 'Entries Missing Keywords',
-        detail: `${invalidEntries.length} enabled entry has no trigger keywords and isn't Always Active.`,
-      });
+      const invalidEntries = validationBook.entries.filter(
+        (e) => e.enabled && !e.constant && e.keys.length === 0
+      );
+      if (invalidEntries.length === 0) {
+        issues.push({
+          level: 'ok',
+          label: 'Lorebook Keywords',
+          detail: `${validationBook.entries.length} entries checked (${validationBook.entries.filter((e) => e.enabled).length} enabled).`,
+        });
+      } else {
+        issues.push({
+          level: 'warn',
+          label: 'Entries Missing Keywords',
+          detail: `${invalidEntries.length} enabled entry has no trigger keywords and isn't Always Active.`,
+        });
+      }
     }
 
     // Verify no secret leakage
@@ -196,7 +211,7 @@ export const JsonInspector: React.FC = () => {
     }
 
     return issues;
-  }, [character, lorebook, tokenBreakdown, v3JsonString]);
+  }, [activeTab, character, lorebook, tokenBreakdown, v3JsonString]);
 
   const handleSwitchTab = (tab: InspectorTab) => {
     setActiveTab(tab);
@@ -341,7 +356,7 @@ export const JsonInspector: React.FC = () => {
 
   const handleDownloadCurrent = async () => {
     if (activeTab === 'v2' || activeTab === 'v3') {
-      exportCharacterAsJson(character, activeTab, lorebook);
+      exportCharacterAsJson(character, activeTab, character.character_book);
       setStatusNotice(
         `Downloaded ${character.name} (${activeTab.toUpperCase()}) JSON.`
       );
@@ -354,7 +369,11 @@ export const JsonInspector: React.FC = () => {
   };
 
   const handleExportPng = async () => {
-    await exportCharacterAsPng(character, lorebook, activeTheme.color);
+    await exportCharacterAsPng(
+      character,
+      character.character_book,
+      activeTheme.color
+    );
     setStatusNotice(
       `Exported ${character.name}.png with embedded V2 (chara) + V3 (ccv3) tEXt chunks.`
     );

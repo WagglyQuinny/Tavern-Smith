@@ -145,7 +145,6 @@ export const CharacterEditor: React.FC = () => {
     setCharacter,
     updateCharacterField,
     lorebooks,
-    lorebook,
     statBlock,
     setStatBlock,
     tags,
@@ -446,7 +445,7 @@ export const CharacterEditor: React.FC = () => {
   const characterWithMetrics = useMemo(() => {
     return characters.map((charItem) => {
       const charStatBlock = charItem.extensions?.statBlock || statBlock;
-      const charLorebook = charItem.character_book || lorebook;
+      const charLorebook = charItem.character_book;
       const breakdown = calculateCardTokenBreakdown(
         charItem,
         charLorebook,
@@ -457,7 +456,7 @@ export const CharacterEditor: React.FC = () => {
         totalTokens: breakdown.totalCardTokens,
       };
     });
-  }, [characters, lorebook, statBlock]);
+  }, [characters, statBlock]);
 
   const filteredAndSortedRoster = useMemo(() => {
     const q = rosterSearch.trim().toLowerCase();
@@ -1512,10 +1511,10 @@ export const CharacterEditor: React.FC = () => {
         (item.triggerRule || '').trim() ||
         `Shows when ${character.name || '{{char}}'} expresses ${cleanName}.`;
       const isExternalUrl = /^https?:\/\//i.test(item.uri);
-      const cue = isExternalUrl
-        ? `![${cleanName}](${item.uri})`
-        : `[${cleanName}] / ![${cleanName}](${cleanName}.${item.ext || 'webp'})`;
-      return `- ${cleanName} | Trigger: ${cleanRule} | Cue: ${cue}`;
+      if (isExternalUrl) {
+        return `- ${cleanName} | Trigger: ${cleanRule} | Cue: ![${cleanName}](${item.uri})`;
+      }
+      return `- Expression Asset: "${cleanName}" | Trigger: ${cleanRule} | Cue: [Expression: ${cleanName}]`;
     });
 
     const compiledBlock = [
@@ -2527,14 +2526,8 @@ export const CharacterEditor: React.FC = () => {
 
       {reactionsExpanded && (
         <div className="space-y-4">
-          {/* 1. Add Reactions Toolbar: Dropzone + External URL Form */}
-          <div
-            style={{
-              gridTemplateColumns:
-                'repeat(auto-fit, minmax(min(100%, 300px), 1fr))',
-            }}
-            className="grid gap-3"
-          >
+          {/* 1. Add Reactions Toolbar: Primary Embedded V3 Upload/Dropzone + Secondary External URL Form */}
+          <div className="space-y-2.5">
             <div
               onDragOver={(e) => {
                 e.preventDefault();
@@ -2554,64 +2547,70 @@ export const CharacterEditor: React.FC = () => {
                 }
               }}
               onClick={() => reactionFileInputRef.current?.click()}
-              style={
-                isDraggingReactionFiles
-                  ? { borderColor: 'var(--theme-accent)' }
-                  : undefined
-              }
-              className={`flex flex-col items-center justify-center rounded-xl border border-dashed p-4 text-center transition-colors cursor-pointer ${
+              style={{
+                borderColor: isDraggingReactionFiles
+                  ? 'var(--theme-accent)'
+                  : 'color-mix(in srgb, var(--theme-accent) 45%, transparent)',
+              }}
+              className={`flex flex-col items-center justify-center rounded-xl border-2 border-dashed px-4 py-5 text-center transition-colors cursor-pointer ${
                 isDraggingReactionFiles
                   ? 'bg-slate-100 dark:bg-slate-800/80 text-slate-900 dark:text-white'
-                  : 'border-slate-300 dark:border-slate-800 bg-slate-50/60 dark:bg-slate-950/60 text-slate-500 dark:text-slate-400 hover:border-slate-400'
+                  : 'bg-slate-50/80 dark:bg-slate-950/70 text-slate-600 dark:text-slate-300 hover:bg-slate-100/70 dark:hover:bg-slate-900/70'
               }`}
             >
               <Upload
-                className="h-4 w-4 mb-1.5"
+                className="h-5 w-5 mb-1.5"
                 style={{ color: 'var(--theme-accent)' }}
               />
-              <span className="text-xs font-semibold text-slate-800 dark:text-slate-200">
-                Upload / Drop Reaction Images (.png, .jpg, .webp)
-              </span>
-              <span className="mt-0.5 text-[11px] text-slate-500">
-                Multi-select supported · Auto-named from filename &amp; compressed to ≤640px WebP
+              <div className="flex flex-wrap items-center justify-center gap-2">
+                <span className="text-xs font-bold text-slate-900 dark:text-white">
+                  Upload / Drop Embedded V3 Reaction Images (.png, .jpg, .webp)
+                </span>
+                <span
+                  style={{
+                    borderColor:
+                      'color-mix(in srgb, var(--theme-accent) 40%, transparent)',
+                    color: 'var(--theme-accent)',
+                  }}
+                  className="rounded border bg-white/80 dark:bg-slate-900/80 px-1.5 py-0.5 font-mono text-[10px] font-semibold"
+                >
+                  Embedded in V3 data.assets
+                </span>
+              </div>
+              <span className="mt-1 text-[11px] text-slate-500">
+                Primary method · Multi-select supported · Auto-named from filename &amp; compressed to ≤640px WebP inside the exported card
               </span>
             </div>
 
             <form
               onSubmit={handleAddReactionUrl}
-              className="flex flex-col justify-between gap-2.5 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50/60 dark:bg-slate-950/60 p-3.5"
+              className="flex flex-col sm:flex-row sm:items-center gap-2 rounded-lg border border-slate-200/80 dark:border-slate-800/80 bg-slate-50/40 dark:bg-slate-950/40 px-3 py-2"
             >
-              <div className="flex items-center gap-1.5 text-xs font-semibold text-slate-800 dark:text-slate-200">
-                <Link
-                  className="h-3.5 w-3.5"
-                  style={{ color: 'var(--theme-accent)' }}
-                />
-                <span>Add Image URL</span>
+              <div className="flex items-center gap-1.5 text-[11px] font-medium text-slate-500 dark:text-slate-400 shrink-0">
+                <Link className="h-3 w-3" />
+                <span>Or link external URL:</span>
               </div>
-              <div className="flex flex-col sm:flex-row gap-2">
-                <input
-                  type="text"
-                  value={reactionUrlName}
-                  onChange={(e) => setReactionUrlName(e.target.value)}
-                  placeholder="Name (e.g., blush)"
-                  className="theme-focus-ring sm:w-32 rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-2.5 py-1.5 text-xs text-slate-900 dark:text-white"
-                />
-                <input
-                  type="url"
-                  value={reactionUrlInput}
-                  onChange={(e) => setReactionUrlInput(e.target.value)}
-                  placeholder="https://example.com/sprites/blush.webp"
-                  className="theme-focus-ring flex-1 rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-2.5 py-1.5 text-xs text-slate-900 dark:text-white"
-                />
-                <button
-                  type="submit"
-                  disabled={!reactionUrlInput.trim()}
-                  style={{ borderColor: 'var(--theme-accent)' }}
-                  className="theme-hover-outline rounded-lg border bg-white dark:bg-slate-900 px-3 py-1.5 text-xs font-semibold text-slate-900 dark:text-white disabled:opacity-45 cursor-pointer whitespace-nowrap"
-                >
-                  Add URL
-                </button>
-              </div>
+              <input
+                type="text"
+                value={reactionUrlName}
+                onChange={(e) => setReactionUrlName(e.target.value)}
+                placeholder="Name (e.g., blush)"
+                className="theme-focus-ring sm:w-32 rounded-md border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-2.5 py-1 text-xs text-slate-900 dark:text-white"
+              />
+              <input
+                type="url"
+                value={reactionUrlInput}
+                onChange={(e) => setReactionUrlInput(e.target.value)}
+                placeholder="https://example.com/sprites/blush.webp"
+                className="theme-focus-ring flex-1 rounded-md border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-2.5 py-1 text-xs text-slate-900 dark:text-white"
+              />
+              <button
+                type="submit"
+                disabled={!reactionUrlInput.trim()}
+                className="theme-hover-outline rounded-md border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 px-2.5 py-1 text-xs font-medium text-slate-700 dark:text-slate-200 disabled:opacity-45 cursor-pointer whitespace-nowrap"
+              >
+                Add URL
+              </button>
             </form>
           </div>
 
@@ -3384,7 +3383,11 @@ export const CharacterEditor: React.FC = () => {
             <button
               type="button"
               onClick={() =>
-                exportCharacterAsPng(character, lorebook, activeTheme.color)
+                exportCharacterAsPng(
+                  character,
+                  character.character_book,
+                  activeTheme.color
+                )
               }
               style={{ borderColor: 'var(--theme-accent)' }}
               className="theme-hover-outline flex items-center gap-1.5 rounded-lg border bg-white dark:bg-zinc-900 px-3 py-1.5 text-xs font-semibold text-slate-900 dark:text-white cursor-pointer"
@@ -3403,7 +3406,7 @@ export const CharacterEditor: React.FC = () => {
                 exportCharacterAsJson(
                   character,
                   settings.cardSpecVersion,
-                  lorebook
+                  character.character_book
                 )
               }
               className="theme-hover-outline flex items-center gap-1.5 rounded-lg border border-slate-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 px-3 py-1.5 text-xs font-medium text-slate-700 dark:text-slate-200 cursor-pointer"
@@ -3954,8 +3957,12 @@ export const CharacterEditor: React.FC = () => {
                 <div className="flex items-center gap-2 text-xs">
                   <span className="text-slate-500">Linked Lorebook:</span>
                   <select
-                    value={character.character_book?.id || lorebook.id || ''}
+                    value={character.character_book?.id || ''}
                     onChange={(e) => {
+                      if (e.target.value === '') {
+                        updateCharacterField('character_book', undefined);
+                        return;
+                      }
                       const found = lorebooks.find(
                         (l) => l.id === e.target.value
                       );
@@ -3965,6 +3972,20 @@ export const CharacterEditor: React.FC = () => {
                     }}
                     className="theme-focus-ring rounded-md border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 px-2.5 py-1 text-xs font-medium text-slate-800 dark:text-slate-200 cursor-pointer"
                   >
+                    <option value="">None (Unlinked)</option>
+                    {character.character_book &&
+                      !lorebooks.some(
+                        (lb) => lb.id === character.character_book?.id
+                      ) && (
+                        <option
+                          value={character.character_book.id || '__embedded__'}
+                        >
+                          {character.character_book.name ||
+                            'Embedded Lorebook'}{' '}
+                          ({character.character_book.entries?.length ?? 0}{' '}
+                          entries)
+                        </option>
+                      )}
                     {lorebooks.map((lb) => (
                       <option key={lb.id} value={lb.id}>
                         {lb.name} ({lb.entries.length} entries)

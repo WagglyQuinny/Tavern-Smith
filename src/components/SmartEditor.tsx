@@ -542,8 +542,8 @@ export const SmartEditor: React.FC<SmartEditorProps> = ({
     providedImageUrls.length,
   ]);
 
-  // Keep latest ambient context in a ref so background auto-save or tag re-renders
-  // never cancel an active paused-typing AI suggestion request.
+  // Keep latest ambient context in a ref so background auto-save, tag re-renders,
+  // or clicking off-screen into another window never cancels an active AI suggestion request.
   const suggestionContextRef = useRef({
     aiConfig,
     activeTheme,
@@ -551,6 +551,9 @@ export const SmartEditor: React.FC<SmartEditorProps> = ({
     cardContextSnapshot,
     combinedActiveTagNames,
     label,
+    macroMenuOpen,
+    isGeneratingField,
+    setGhostText,
   });
   suggestionContextRef.current = {
     aiConfig,
@@ -559,105 +562,117 @@ export const SmartEditor: React.FC<SmartEditorProps> = ({
     cardContextSnapshot,
     combinedActiveTagNames,
     label,
+    macroMenuOpen,
+    isGeneratingField,
+    setGhostText,
   };
 
-  // Trigger debounced 1-shot AI Suggestion when user pauses typing
+  // Schedule debounced 1-shot AI Suggestion ONLY when the user edits text.
+  // Clicking off-screen / losing focus (onBlur) will NEVER abort or pause an active AI suggestion.
   // CRITICAL RULE: NEVER send images during background autocomplete requests!
-  useEffect(() => {
-    cancelPendingGhostRequest();
+  const scheduleGhostSuggestion = useCallback(
+    (nextText: string) => {
+      cancelPendingGhostRequest();
 
-    if (
-      !isFocused ||
-      !aiConfig.ghostTextEnabled ||
-      macroMenuOpen ||
-      isGeneratingField ||
-      value.trim().length < 18
-    ) {
-      return;
-    }
+      const currentCtx = suggestionContextRef.current;
+      if (
+        !currentCtx.aiConfig.ghostTextEnabled ||
+        currentCtx.macroMenuOpen ||
+        currentCtx.isGeneratingField ||
+        nextText.trim().length < 18
+      ) {
+        return;
+      }
 
-    const delay = Math.max(250, aiConfig.debounceMs || 650);
+      const delay = Math.max(250, currentCtx.aiConfig.debounceMs || 650);
 
-    ghostDebounceTimerRef.current = window.setTimeout(async () => {
-      const ctx = suggestionContextRef.current;
-      const controller = new AbortController();
-      ghostAbortControllerRef.current = controller;
-      setIsFetchingGhost(true);
-      setGhostError(null);
-
-      const continuationPrompt = [
-        `Continue the following "${ctx.label}" text naturally with 1 to 2 concise sentences.`,
-        `Output ONLY the direct continuation text with no quotes, no markdown code fences, no preamble, and without repeating the existing text.`,
-        `\nExisting "${ctx.label}" text:\n${value.slice(-1200)}`,
-      ].join('\n');
-
-      try {
-        const completion = await generateCompletion(
-          continuationPrompt,
-          ctx.cardContextSnapshot,
-          ctx.aiConfig,
-          controller.signal,
-          {
-            isGhostText: true,
-            maxTokens: Math.max(8192, ctx.aiConfig.maxTokens || 8192),
-            temperature: ctx.aiConfig.temperature,
-            activeTheme: ctx.activeTheme,
-            allTags: ctx.tags,
-            characterTags: ctx.combinedActiveTagNames,
-            // Notice: `imageDataUrl` is strictly OMITTED here so Ghost-Text is 100% text-only
-          }
-        );
-
-        if (!controller.signal.aborted) {
-          const cleaned = completion
-            .replace(/^```[\w-]*\s*\n?/i, '')
-            .replace(/\n?```\s*$/i, '')
-            .replace(/^["'`]+|["'`]+$/g, '')
-            .trim();
-
-          if (cleaned) {
-            setGhostText(cleaned);
-            setGhostError(null);
-            setAiError(null);
-          } else {
-            setGhostText('');
-            setGhostError('Model returned an empty suggestion.');
-          }
-        }
-      } catch (err: unknown) {
-        if (err instanceof DOMException && err.name === 'AbortError') {
+      ghostDebounceTimerRef.current = window.setTimeout(async () => {
+        ghostDebounceTimerRef.current = null;
+        const ctx = suggestionContextRef.current;
+        if (!ctx.aiConfig.ghostTextEnabled || ctx.isGeneratingField) {
           return;
         }
-        const msg =
-          err instanceof Error && err.message
-            ? err.message
-            : 'Could not reach AI endpoint for suggestion.';
-        setGhostText('');
-        setGhostError(msg);
-      } finally {
-        if (!controller.signal.aborted) {
-          setIsFetchingGhost(false);
-        }
-      }
-    }, delay);
 
+        const controller = new AbortController();
+        ghostAbortControllerRef.current = controller;
+        setIsFetchingGhost(true);
+        setGhostError(null);
+
+        const continuationPrompt = [
+          `Continue the following "${ctx.label}" text naturally with 1 to 2 concise sentences.`,
+          `Output ONLY the direct continuation text with no quotes, no markdown code fences, no preamble, and without repeating the existing text.`,
+          `\nExisting "${ctx.label}" text:\n${nextText.slice(-1200)}`,
+        ].join('\n');
+
+        try {
+          const completion = await generateCompletion(
+            continuationPrompt,
+            ctx.cardContextSnapshot,
+            ctx.aiConfig,
+            controller.signal,
+            {
+              isGhostText: true,
+              maxTokens: Math.max(8192, ctx.aiConfig.maxTokens || 8192),
+              temperature: ctx.aiConfig.temperature,
+              activeTheme: ctx.activeTheme,
+              allTags: ctx.tags,
+              characterTags: ctx.combinedActiveTagNames,
+              // Notice: `imageDataUrl` is strictly OMITTED here so Ghost-Text is 100% text-only
+            }
+          );
+
+          if (!controller.signal.aborted) {
+            const cleaned = completion
+              .replace(/^```[\w-]*\s*\n?/i, '')
+              .replace(/\n?```\s*$/i, '')
+              .replace(/^["'`]+|["'`]+$/g, '')
+              .trim();
+
+            if (cleaned) {
+              ctx.setGhostText(cleaned);
+              setGhostError(null);
+              setAiError(null);
+            } else {
+              ctx.setGhostText('');
+              setGhostError('Model returned an empty suggestion.');
+            }
+          }
+        } catch (err: unknown) {
+          if (err instanceof DOMException && err.name === 'AbortError') {
+            return;
+          }
+          const msg =
+            err instanceof Error && err.message
+              ? err.message
+              : 'Could not reach AI endpoint for suggestion.';
+          ctx.setGhostText('');
+          setGhostError(msg);
+        } finally {
+          if (ghostAbortControllerRef.current === controller) {
+            ghostAbortControllerRef.current = null;
+          }
+          if (!controller.signal.aborted) {
+            setIsFetchingGhost(false);
+          }
+        }
+      }, delay);
+    },
+    [cancelPendingGhostRequest]
+  );
+
+  // Cancel pending ghost suggestions only if ghost text is explicitly disabled,
+  // or when switching cards/fields (`resolvedScopeKey`) / unmounting.
+  useEffect(() => {
+    if (!aiConfig.ghostTextEnabled) {
+      cancelPendingGhostRequest();
+    }
+  }, [aiConfig.ghostTextEnabled, cancelPendingGhostRequest]);
+
+  useEffect(() => {
     return () => {
       cancelPendingGhostRequest();
     };
-  }, [
-    value,
-    isFocused,
-    aiConfig.ghostTextEnabled,
-    aiConfig.debounceMs,
-    aiConfig.preset,
-    aiConfig.modelName,
-    aiConfig.url,
-    macroMenuOpen,
-    isGeneratingField,
-    cancelPendingGhostRequest,
-    resolvedScopeKey,
-    setGhostText,
-  ]);
+  }, [resolvedScopeKey, cancelPendingGhostRequest]);
 
   // Handle per-field "AI Generate" action (automatically includes all provided images when selected model supports vision)
   const handleGenerateField = async (e?: React.FormEvent) => {
@@ -690,13 +705,19 @@ export const SmartEditor: React.FC<SmartEditorProps> = ({
         ? `Context Theme Style Prompt`
         : `"${label}" (${fieldKey}) field for "${character.name || '{{char}}'}"`;
 
+    const hasExistingText = value.trim().length > 0;
+    const draftDirective = hasExistingText
+      ? [
+          `Existing text is already written in the '${label}' field below. Treat this existing text as the core foundation and context: enhance, enrich, and expand upon what the user has already written (applying any custom instruction provided) while preserving all established facts, traits, and ideas. Only rewrite structure where needed to improve quality or fulfill the user's custom instruction.`,
+          `\nCurrent '${label}' Draft:\n${value}`,
+        ].join('\n')
+      : `\nThe "${label}" field is currently empty. Generate a complete, compelling entry tailored to the active Context Theme, attached Tags, and provided character/lorebook context.`;
+
     const promptText = [
       `Write or refine ${targetLabel}.`,
       userDirective,
       visionContextDirective,
-      value.trim()
-        ? `\nCurrent "${label}" Draft (improve, expand, or update according to the instructions and context):\n${value}`
-        : `\nThe "${label}" field is currently empty. Generate a complete, compelling entry.`,
+      draftDirective,
       `\nOutput ONLY the raw content for the "${label}" field without conversational filler or markdown code fences.`,
     ]
       .filter(Boolean)
@@ -797,8 +818,9 @@ export const SmartEditor: React.FC<SmartEditorProps> = ({
       return;
     }
 
-    if ((ghostText || ghostError) && e.key === 'Escape') {
+    if ((ghostText || ghostError || isFetchingGhost) && e.key === 'Escape') {
       e.preventDefault();
+      cancelPendingGhostRequest();
       setGhostText('');
       setGhostError(null);
       return;
@@ -815,6 +837,7 @@ export const SmartEditor: React.FC<SmartEditorProps> = ({
     }
     onChange(nextValue);
     evaluateMacroTrigger(nextValue, e.target.selectionStart ?? nextValue.length);
+    scheduleGhostSuggestion(nextValue);
   };
 
   return (
@@ -1381,10 +1404,20 @@ export const SmartEditor: React.FC<SmartEditorProps> = ({
           )}
 
           {isFetchingGhost && (
-            <span className="inline-flex items-center gap-1 text-slate-400">
+            <span className="inline-flex items-center gap-1.5 text-slate-400">
               <span>·</span>
               <Loader2 className="h-3 w-3 animate-spin" />
               <span>Writing suggestion...</span>
+              <button
+                type="button"
+                onMouseDown={(e) => {
+                  e.preventDefault();
+                  cancelPendingGhostRequest();
+                }}
+                className="rounded px-1.5 py-0.5 text-[10px] font-medium text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-white border border-slate-200 dark:border-slate-700 cursor-pointer"
+              >
+                Stop
+              </button>
             </span>
           )}
         </div>
