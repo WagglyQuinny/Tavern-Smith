@@ -7,9 +7,32 @@ export interface ChangelogReleaseEntry {
   fileChanges: string[];
 }
 
-export const APP_VERSION = "4.4.1";
+export const APP_VERSION = "4.5.0";
 
 export const CHANGELOG_RELEASES: ChangelogReleaseEntry[] = [
+  {
+    "version": "v4.5.0",
+    "date": "2026-11-17",
+    "title": "Automated release v4.5.0 incorporating 10 updated module(s) (10 files changed, 2220 insertions(+), 600 deletions(-)).",
+    "highlights": [
+      "Automated release v4.5.0 incorporating 10 updated module(s) (10 files changed, 2220 insertions(+), 600 deletions(-))."
+    ],
+    "fixes": [
+      "Improve server disk handling and view state (568a4cf)"
+    ],
+    "fileChanges": [
+      ".github/workflows/release.yml — Updated GitHub Actions CI/CD & Standalone Release Workflow (+914 / -357 lines)",
+      "server.ts — Updated Project Configuration & Metadata (+655 / -7 lines)",
+      "src/App.tsx — Updated Project Configuration & Metadata (+25 / -7 lines)",
+      "src/components/CharacterEditor.tsx — Updated Character Card Workbench & Wizard (+83 / -62 lines)",
+      "src/components/JsonInspector.tsx — Updated UI Workbench Component (+40 / -21 lines)",
+      "src/components/SmartEditor.tsx — Updated Synchronized Macro & Ghost-Text SmartEditor (+125 / -92 lines)",
+      "src/context/StoreContext.tsx — Updated Workspace State, Auto-Save & Provider Credential Vault (+264 / -36 lines)",
+      "src/utils/cardIO.ts — Updated PNG tEXt Chunk & JSON Import/Export Parser (+105 / -5 lines)",
+      "src/utils/tokenCounter.ts — Updated Core Utility Module (+6 / -3 lines)",
+      "src/views/ThemesAndTagsView.tsx — Updated Context Themes & Global Tag/Sub-Tag Manager (+3 / -10 lines)"
+    ]
+  },
   {
     "version": "v4.4.1",
     "date": "2026-11-17",
@@ -298,22 +321,6 @@ export const CHANGELOG_RELEASES: ChangelogReleaseEntry[] = [
     ],
     "fileChanges": [
       "package.json & CHANGELOG.md — Version bump and release metadata sync"
-    ]
-  },
-  {
-    "version": "v2.2.0",
-    "date": "2026-11-12",
-    "title": "Remove PWA install button from top bar (96c5075)",
-    "highlights": [
-      "Remove PWA install button from top bar (96c5075)"
-    ],
-    "fixes": [
-      "Rename standalone to portable in release build (82e2903)"
-    ],
-    "fileChanges": [
-      ".github/workflows/release.yml — Updated GitHub Actions CI/CD & Standalone Release Workflow (+12 / -11 lines)",
-      "README.md — Updated Project Configuration & Metadata (+55 / -66 lines)",
-      "src/components/TopBar.tsx — Updated UI Workbench Component (+1 / -3 lines)"
     ]
   }
 ];

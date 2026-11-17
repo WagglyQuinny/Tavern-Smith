@@ -2,6 +2,27 @@
 
 All notable changes to **TavernSmith** are documented in this file. This file is synced with the in-app **About & Changelog** modal (`src/utils/changelogData.ts`) and the automated GitHub Release workflows (`.github/workflows/version-update.yml` & `.github/workflows/release.yml`).
 
+## [v4.5.0] - 2026-11-17
+
+### 🚀 Highlights & Feature Additions
+- Automated release v4.5.0 incorporating 10 updated module(s) (10 files changed, 2220 insertions(+), 600 deletions(-)).
+
+### 🛠️ Bug Fixes, AI & Stability Improvements
+- Improve server disk handling and view state (568a4cf)
+
+### 📂 Detailed Component & File Changes
+- **Repository Diff Summary**: 10 files changed, 2220 insertions(+), 600 deletions(-)
+- `.github/workflows/release.yml — Updated GitHub Actions CI/CD & Standalone Release Workflow (+914 / -357 lines)`
+- `server.ts — Updated Project Configuration & Metadata (+655 / -7 lines)`
+- `src/App.tsx — Updated Project Configuration & Metadata (+25 / -7 lines)`
+- `src/components/CharacterEditor.tsx — Updated Character Card Workbench & Wizard (+83 / -62 lines)`
+- `src/components/JsonInspector.tsx — Updated UI Workbench Component (+40 / -21 lines)`
+- `src/components/SmartEditor.tsx — Updated Synchronized Macro & Ghost-Text SmartEditor (+125 / -92 lines)`
+- `src/context/StoreContext.tsx — Updated Workspace State, Auto-Save & Provider Credential Vault (+264 / -36 lines)`
+- `src/utils/cardIO.ts — Updated PNG tEXt Chunk & JSON Import/Export Parser (+105 / -5 lines)`
+- `src/utils/tokenCounter.ts — Updated Core Utility Module (+6 / -3 lines)`
+- `src/views/ThemesAndTagsView.tsx — Updated Context Themes & Global Tag/Sub-Tag Manager (+3 / -10 lines)`
+
 ## [v4.4.1] - 2026-11-17
 
 ### 🚀 Highlights & Feature Additions
