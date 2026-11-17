@@ -2,6 +2,24 @@
 
 All notable changes to **TavernSmith** are documented in this file. This file is synced with the in-app **About & Changelog** modal (`src/utils/changelogData.ts`) and the automated GitHub Release workflows (`.github/workflows/version-update.yml` & `.github/workflows/release.yml`).
 
+## [v4.4.0] - 2026-11-17
+
+### 🚀 Highlights & Feature Additions
+- Support persistent themes and tags (47ab82c)
+
+### 🛠️ Bug Fixes, AI & Stability Improvements
+- Verified TypeScript compilation, zero-crash sandbox storage guards, and cross-platform standalone launcher compatibility.
+
+### 📂 Detailed Component & File Changes
+- **Repository Diff Summary**: 7 files changed, 2127 insertions(+), 605 deletions(-)
+- `server.ts — Updated Project Configuration & Metadata (+3 / -3 lines)`
+- `src/App.tsx — Updated Project Configuration & Metadata (+20 / -6 lines)`
+- `src/context/StoreContext.tsx — Updated Workspace State, Auto-Save & Provider Credential Vault (+1670 / -489 lines)`
+- `src/types.ts — Updated Project Configuration & Metadata (+9 / -5 lines)`
+- `src/views/OptionsView.tsx — Updated Options, AI Scanner & Save Folder Manager (+195 / -3 lines)`
+- `src/views/ThemesAndTagsView.tsx — Updated Context Themes & Global Tag/Sub-Tag Manager (+30 / -89 lines)`
+- `vite.config.ts — Updated Project Configuration & Metadata (+200 / -10 lines)`
+
 ## [v4.3.0] - 2026-11-17
 
 ### 🚀 Highlights & Feature Additions

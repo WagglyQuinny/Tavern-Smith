@@ -7,9 +7,29 @@ export interface ChangelogReleaseEntry {
   fileChanges: string[];
 }
 
-export const APP_VERSION = "4.3.0";
+export const APP_VERSION = "4.4.0";
 
 export const CHANGELOG_RELEASES: ChangelogReleaseEntry[] = [
+  {
+    "version": "v4.4.0",
+    "date": "2026-11-17",
+    "title": "Support persistent themes and tags (47ab82c)",
+    "highlights": [
+      "Support persistent themes and tags (47ab82c)"
+    ],
+    "fixes": [
+      "Verified TypeScript compilation, zero-crash sandbox storage guards, and cross-platform standalone launcher compatibility."
+    ],
+    "fileChanges": [
+      "server.ts — Updated Project Configuration & Metadata (+3 / -3 lines)",
+      "src/App.tsx — Updated Project Configuration & Metadata (+20 / -6 lines)",
+      "src/context/StoreContext.tsx — Updated Workspace State, Auto-Save & Provider Credential Vault (+1670 / -489 lines)",
+      "src/types.ts — Updated Project Configuration & Metadata (+9 / -5 lines)",
+      "src/views/OptionsView.tsx — Updated Options, AI Scanner & Save Folder Manager (+195 / -3 lines)",
+      "src/views/ThemesAndTagsView.tsx — Updated Context Themes & Global Tag/Sub-Tag Manager (+30 / -89 lines)",
+      "vite.config.ts — Updated Project Configuration & Metadata (+200 / -10 lines)"
+    ]
+  },
   {
     "version": "v4.3.0",
     "date": "2026-11-17",
@@ -290,29 +310,6 @@ export const CHANGELOG_RELEASES: ChangelogReleaseEntry[] = [
     ],
     "fileChanges": [
       ".github/workflows/version-update.yml — Updated GitHub Actions CI/CD & Standalone Release Workflow (+16 / -20 lines)"
-    ]
-  },
-  {
-    "version": "v2.1.0",
-    "date": "2026-11-12",
-    "title": "Per-Provider API Key Persistence, Gemma 4 System-Merged Engine, Sub-Tags & NSFW Filter, Non-Admin Launchers & Automated Git Changelog Analyzer",
-    "highlights": [
-      "Persistent Per-Provider AI Credentials & Models: Added savedProviderKeys and savedProviderModels keyed by provider ID (google, xai, openrouter, groq, meta, openai, anthropic, lmstudio, ollama, kobold, custom) so switching AI backend presets automatically restores your saved API key and last-used model without retyping.",
-      "Model-Driven Auto-Formatting & Gemma 4 Compatibility: Refactored AI compatibility detection to inspect the active model name directly (Gemma 4/3/2, DeepSeek R1/Qwen QwQ, Llama 3/4, Mistral/Mixtral/Pixtral, Grok, Gemini, Claude) regardless of host endpoint.",
-      "Hierarchical Sub-Tags & 🔞 Hide NSFW Tags Toggle: Added sub-tag definitions and inline sub-tag creation under parent tags (e.g., Big Breasts, Bondage / Restraints, Excessive Fluids, MILF, Monster Girl) plus a 1-click \"🔞 Hide NSFW Tags\" UI filter that hides adult tags visually while preserving 100% of attached NSFW tags and sub-tags in AI generation prompts.",
-      "In-Depth Automated Git Version & Changelog Generator: Upgraded .github/workflows/version-update.yml to automatically analyze git log, git diff --name-status, and line diff stats since the previous tag, generating multi-section release notes into CHANGELOG.md, src/versionInfo.json, and src/utils/changelogData.ts."
-    ],
-    "fixes": [
-      "Fixed LM Studio + Gemma 4 HTTP 400 Bad Request errors by merging system instructions into the user prompt ([SYSTEM INSTRUCTIONS] + [USER REQUEST]), sending strictly universal OpenAI payload fields, and stripping <|thought|>...<|/thought|> and <think>...</think> blocks.",
-      "Fixed white screen on normal launch & removed Administrator privilege requirements by wrapping IndexedDB, localStorage, and FileSystemDirectoryHandle startup calls in defensive try/catch blocks and adding a top-level React AppErrorBoundary with 1-click Safe Recovery.",
-      "Updated Launch-TavernSmith-Windows.bat and release.yml build steps to strip crossorigin attributes for direct file:// compatibility and run strictly in user-space (127.0.0.1:4173 or Edge/Chrome --app mode) with zero elevation prompts."
-    ],
-    "fileChanges": [
-      "src/services/aiService.ts — Model-ID format detector, Gemma system-merged payload builder, HTTP 400 auto-retry fallback & <|thought|> parser",
-      "src/context/StoreContext.tsx — Per-provider API key & model vault, safe localStorage wrappers, NSFW flags & seeded Sub-Tags",
-      "src/components/TagSelector.tsx & src/views/ThemesAndTagsView.tsx — Sub-Tag drawers, custom sub-tag creator & 🔞 Hide NSFW Tags toggle",
-      "src/App.tsx & src/utils/folderDb.ts — Top-level React Error Boundary & zero-crash IndexedDB / FileSystemDirectoryHandle guards",
-      ".github/workflows/release.yml & .github/workflows/version-update.yml — Non-admin Windows launcher & automated git diff changelog generator"
     ]
   }
 ];
