@@ -2,6 +2,26 @@
 
 All notable changes to **TavernSmith** are documented in this file. This file is synced with the in-app **About & Changelog** modal (`src/utils/changelogData.ts`) and the automated GitHub Release workflows (`.github/workflows/version-update.yml` & `.github/workflows/release.yml`).
 
+## [v4.6.0] - 2026-11-18
+
+### 🚀 Highlights & Feature Additions
+- Implement deterministic tag sorting (d2cfa4f)
+
+### 🛠️ Bug Fixes, AI & Stability Improvements
+- Verified TypeScript compilation, zero-crash sandbox storage guards, and cross-platform standalone launcher compatibility.
+
+### 📂 Detailed Component & File Changes
+- **Repository Diff Summary**: 9 files changed, 1449 insertions(+), 387 deletions(-)
+- `src/components/CharacterEditor.tsx — Updated Character Card Workbench & Wizard (+27 / -7 lines)`
+- `src/components/LorebookEditor.tsx — Updated Lorebook / World Info Workbench & Wizard (+37 / -14 lines)`
+- `src/components/SmartEditor.tsx — Updated Synchronized Macro & Ghost-Text SmartEditor (+7 / -3 lines)`
+- `src/components/TagSelector.tsx — Updated Tag & Sub-Tag Selector Bar (+39 / -33 lines)`
+- `src/context/StoreContext.tsx — Updated Workspace State, Auto-Save & Provider Credential Vault (+1030 / -284 lines)`
+- `src/services/aiService.ts — Updated AI Backend Service & Model Format Engine (+13 / -3 lines)`
+- `src/types.ts — Updated Project Configuration & Metadata (+4 / -2 lines)`
+- `src/utils/tagOrder.ts — Added Core Utility Module (+186 / -0 lines)`
+- `src/views/ThemesAndTagsView.tsx — Updated Context Themes & Global Tag/Sub-Tag Manager (+106 / -41 lines)`
+
 ## [v4.5.1] - 2026-11-17
 
 ### 🚀 Highlights & Feature Additions
