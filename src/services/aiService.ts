@@ -8,6 +8,7 @@ import {
 } from '../types';
 import { getDecryptedKeyForProvider } from '../utils/cryptoVault';
 import { compressImageForVision } from '../utils/cardIO';
+import { sortTagsByContextOrder } from '../utils/tagOrder';
 
 export { compressImageForVision };
 
@@ -585,9 +586,10 @@ export function buildActiveAIContextBlock(
 ): string {
   if (!theme) return '';
 
-  const combinedTagNames = Array.from(
-    new Set([...(theme.associatedTags || []), ...activeItemTags])
-  ).filter(Boolean);
+  const combinedTagNames = sortTagsByContextOrder(
+    [...(theme.associatedTags || []), ...activeItemTags],
+    allTags
+  );
 
   const tagContextLines: string[] = [];
   const emittedKeys = new Set<string>();
@@ -616,6 +618,14 @@ export function buildActiveAIContextBlock(
         const nsfwMarker = mainMatch.isNsfw ? ' • NSFW 18+' : '';
         tagContextLines.push(
           `- [${mainMatch.name}] (${mainMatch.category}${nsfwMarker}): ${desc}`
+        );
+      }
+    } else if (trimmed) {
+      const key = `custom:${lower}`;
+      if (!emittedKeys.has(key)) {
+        emittedKeys.add(key);
+        tagContextLines.push(
+          `- [${trimmed}] (Custom): Incorporate thematic, tonal, and character elements consistent with "${trimmed}".`
         );
       }
     }

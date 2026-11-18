@@ -61,6 +61,10 @@ import {
   setInMemoryVaultEnvelope,
   VAULT_FILENAME,
 } from '../utils/cryptoVault';
+import {
+  migrateLegacyTagCategory,
+  sortTagsByContextOrder,
+} from '../utils/tagOrder';
 
 export { VAULT_FILENAME };
 export const META_FILENAME = '_tavernsmith_meta.json';
@@ -112,7 +116,7 @@ export const DEFAULT_THEMES_TAGS_TAB_DRAFT: ThemesTagsTabDraft = {
   categoryFilter: 'All',
   editingTagId: null,
   editTagName: '',
-  editTagCategory: 'Genre & Setting',
+  editTagCategory: 'Setting & Vibe',
   editTagColor: '#a855f7',
   editTagIsNsfw: false,
   editTagAiDesc: '',
@@ -619,21 +623,101 @@ export const DEFAULT_TAGS: TagDefinition[] = [
     "Smug, provocative adult tease who mocks {{user}}'s stamina until thoroughly put in her place.",
     true
   ),
-
-  // C. Body Types, Attire & Physical Fetish Tags
   createBuiltInTag(
-    'tag-glasses-megane',
-    'Glasses / Megane',
-    '#3b82f6',
-    'Body & Attire',
-    'Wears glasses that frame expressive eyes and slip askew or fog up during emotional or intimate moments.',
-    false
+    'tag-mesugaki',
+    'Mesugaki (Cheeky Tease)',
+    '#f43f5e',
+    'Archetype',
+    'Smug, foul-mouthed adult tease who mocks {{user}} relentlessly until flustered, overwhelmed, and humbled by pleasure.',
+    true
   ),
+  createBuiltInTag(
+    'tag-femme-fatale',
+    'Femme Fatale / Temptress',
+    '#be123c',
+    'Archetype',
+    'Dangerous, silver-tongued seductress who weaponizes eye contact, low whispers, and sensual poise to wrap {{user}} around her finger.',
+    true
+  ),
+  createBuiltInTag(
+    'tag-nymphomaniac-insatiable',
+    'Nymphomaniac / Insatiable',
+    '#e11d48',
+    'Archetype',
+    'Perpetually aroused, lust-driven adult partner whose appetite only sharpens after each climax and shamelessly begs for more.',
+    true
+  ),
+  createBuiltInTag(
+    'tag-exhibitionist-shameless',
+    'Exhibitionist / Shameless',
+    '#f97316',
+    'Archetype',
+    'Thrills in being seen, exposed, or barely dressed in risky places, teasing {{user}} with brazen lack of modesty.',
+    true
+  ),
+  createBuiltInTag(
+    'tag-dominatrix-mistress',
+    'Dominatrix / Sadistic Mistress',
+    '#9333ea',
+    'Archetype',
+    'Imperious leather-clad mistress who commands obedience, inflicts sharp teasing pleasure, and rewards total submission.',
+    true
+  ),
+  createBuiltInTag(
+    'tag-submissive-pet',
+    'Submissive Pet / Devoted Thrall',
+    '#ec4899',
+    'Archetype',
+    'Pliant, eager-to-please submissive adult who craves collars, praise, strict rules, and surrendering complete control to {{user}}.',
+    true
+  ),
+  createBuiltInTag(
+    'tag-corrupted-saintess',
+    'Corrupted Saintess / Fallen Nun',
+    '#7c3aed',
+    'Archetype',
+    'Pious cleric or nun whose sacred vows fracture under forbidden lust, alternating between guilty prayers and desperate sin.',
+    true
+  ),
+  createBuiltInTag(
+    'tag-slutty-witch-mage',
+    'Lewd Witch / Arcane Enchantress',
+    '#a855f7',
+    'Archetype',
+    'Playful, amoral sorceress who brews aphrodisiac potions, weaves tactile binding spells, and treats intimacy as arcane experimentation.',
+    true
+  ),
+  createBuiltInTag(
+    'tag-incubus-seducer',
+    'Incubus / Lust Demon',
+    '#6366f1',
+    'Archetype',
+    "Charismatic, predatory incubus who radiates intoxicating pheromones and drains {{user}}'s stamina through relentless, hypnotic pleasure.",
+    true
+  ),
+  createBuiltInTag(
+    'tag-bunny-hostess',
+    'Bunny Hostess / VIP Courtesan',
+    '#db2777',
+    'Archetype',
+    'Flirtatious club hostess or high-society courtesan skilled at reading desires, lap-sitting banter, and intimate VIP service.',
+    true
+  ),
+  createBuiltInTag(
+    'tag-himedere-spoiled',
+    'Himedere (Haughty Princess)',
+    '#eab308',
+    'Archetype',
+    'Demanding, pampered royal who expects worship and service, masking deep needy vulnerability when dominated.',
+    true
+  ),
+
+  // C1. Body Types, Skin, Height & Anatomical Traits
   createBuiltInTag(
     'tag-muscular-fit-female',
     'Muscular / Fit Female',
     '#f97316',
-    'Body & Attire',
+    'Body',
     'Toned abs, defined athletic musculature, physical strength, and sweat-glistening skin.',
     false
   ),
@@ -641,7 +725,7 @@ export const DEFAULT_TAGS: TagDefinition[] = [
     'tag-tanlines-dark-skin',
     'Tanlines / Dark Skin',
     '#d97706',
-    'Body & Attire',
+    'Body',
     'Sun-kissed or rich dark skin with contrasting pale tanlines.',
     false
   ),
@@ -649,7 +733,7 @@ export const DEFAULT_TAGS: TagDefinition[] = [
     'tag-petite-slender-adult',
     'Petite / Slender (Adult)',
     '#f472b6',
-    'Body & Attire',
+    'Body',
     'Lithe, compact adult frame emphasizing size contrast and delicate proportions.',
     false
   ),
@@ -657,41 +741,15 @@ export const DEFAULT_TAGS: TagDefinition[] = [
     'tag-big-breasts',
     'Big Breasts',
     '#ec4899',
-    'Body & Attire',
+    'Body',
     'Full, heavy, supple breasts that bounce, press against clothing, and draw constant visual and tactile focus.',
-    true,
-    [
-      {
-        id: 'sub-breasts-huge-hyper',
-        name: 'Huge / Hyper',
-        aiDescription:
-          'Massively proportioned, overflowing hyper-bust that strains fabric and dominates physical contact.',
-      },
-      {
-        id: 'sub-breasts-perky',
-        name: 'Perky',
-        aiDescription:
-          'Firm, uplifted, gravity-defying full breasts with prominent, sensitive peaks.',
-      },
-      {
-        id: 'sub-breasts-natural-sag',
-        name: 'Natural Sag',
-        aiDescription:
-          'Heavy, natural teardrop weight and realistic pendulous sway when unrestrained.',
-      },
-      {
-        id: 'sub-breasts-cleavage',
-        name: 'Cleavage Window',
-        aiDescription:
-          'Attire features a plunging neckline or keyhole cutout framing deep, plush cleavage.',
-      },
-    ]
+    true
   ),
   createBuiltInTag(
     'tag-huge-breasts-hyper',
     'Huge Breasts / Hyper',
     '#db2777',
-    'Body & Attire',
+    'Body',
     'Massively proportioned, overflowing bust that strains fabric and dominates physical contact.',
     true
   ),
@@ -699,91 +757,23 @@ export const DEFAULT_TAGS: TagDefinition[] = [
     'tag-thick-thighs-wide-hips',
     'Thick Thighs / Wide Hips',
     '#d946ef',
-    'Body & Attire',
+    'Body',
     'Plush, curvy lower body with soft, squeezing thighs, wide childbearing hips, and a prominent rear.',
-    true,
-    [
-      {
-        id: 'sub-thighs-plush',
-        name: 'Thigh Squeeze',
-        aiDescription:
-          'Soft, heavy inner thighs that cushion and grip {{user}} warmly.',
-      },
-      {
-        id: 'sub-hips-hourglass',
-        name: 'Extreme Hourglass',
-        aiDescription:
-          'Narrow waist flaring dramatically into wide, curvaceous hips and a full rear.',
-      },
-    ]
+    true
   ),
   createBuiltInTag(
     'tag-shortstack',
     'Shortstack',
     '#a855f7',
-    'Body & Attire',
+    'Body',
     'Short adult stature paired with exaggerated curves, heavy bust, and thick hips.',
     true
   ),
   createBuiltInTag(
-    'tag-stockings-thighhighs',
-    'Stockings / Thighhighs',
-    '#8b5cf6',
-    'Body & Attire',
-    'Sheer nylon stockings, garter belts, or thigh-highs accentuating the absolute territory of the thighs.',
-    true,
-    [
-      {
-        id: 'sub-stockings-zettai',
-        name: 'Zettai Ryouiki',
-        aiDescription:
-          'Tantalizing strip of bare, soft thigh skin framed between skirt hem and thigh-high stockings.',
-      },
-      {
-        id: 'sub-stockings-garters',
-        name: 'Garter Belt',
-        aiDescription:
-          'Lace garter straps biting softly into plush thighs.',
-      },
-      {
-        id: 'sub-stockings-torn',
-        name: 'Torn Nylon',
-        aiDescription:
-          'Ripped or parted nylon stockings exposing bare skin during heated intimacy.',
-      },
-    ]
-  ),
-  createBuiltInTag(
-    'tag-lingerie-babydoll',
-    'Lingerie / Babydoll',
-    '#ec4899',
-    'Body & Attire',
-    'Lace, sheer fabric, or provocative straps designed to frame and expose the body.',
-    true
-  ),
-  createBuiltInTag(
-    'tag-latex-bodysuit',
-    'Latex / Bodysuit',
-    '#3f3f46',
-    'Body & Attire',
-    'Skin-tight, glossy latex or spandex bodysuit that clings to every contour.',
-    true
-  ),
-  createBuiltInTag(
-    'tag-collar-leash',
-    'Collar / Leash',
-    '#ef4444',
-    'Body & Attire',
-    'Wears a collar symbolizing ownership, submission, or pet-play devotion.',
-    true
-  ),
-
-  // Body Types & Skin Traits
-  createBuiltInTag(
     'tag-chubby-plump',
     'Chubby / Plump',
     '#f472b6',
-    'Body & Attire',
+    'Body',
     'Soft, cushioned build with plush cheeks, gentle tummy softness, and warm, huggable curves.',
     false
   ),
@@ -791,15 +781,23 @@ export const DEFAULT_TAGS: TagDefinition[] = [
     'tag-plus-size-full-figured',
     'Plus-Size / Full-Figured',
     '#ec4899',
-    'Body & Attire',
+    'Body',
     'Generously proportioned, full-figured silhouette with soft fullness across waist, hips, and limbs.',
+    false
+  ),
+  createBuiltInTag(
+    'tag-voluptuous-bbw',
+    'Voluptuous / BBW',
+    '#db2777',
+    'Body',
+    'Richly soft, heavy-curved adult figure with pillowy thighs, full belly softness, and warm embrace.',
     false
   ),
   createBuiltInTag(
     'tag-curvy-hourglass',
     'Curvy / Hourglass',
     '#db2777',
-    'Body & Attire',
+    'Body',
     'Defined waist tapering smoothly between balanced, shapely bust and hip proportions.',
     false
   ),
@@ -807,7 +805,7 @@ export const DEFAULT_TAGS: TagDefinition[] = [
     'tag-slim-lean',
     'Slim / Lean',
     '#38bdf8',
-    'Body & Attire',
+    'Body',
     'Slender, narrow-framed build with clean lines, light grace, and lithe movement.',
     false
   ),
@@ -815,15 +813,39 @@ export const DEFAULT_TAGS: TagDefinition[] = [
     'tag-athletic-toned',
     'Athletic / Toned',
     '#10b981',
-    'Body & Attire',
+    'Body',
     'Balanced, agile physique with subtle muscle definition, endurance, and graceful posture.',
+    false
+  ),
+  createBuiltInTag(
+    'tag-wiry-lean-muscle',
+    'Wiry / Lean Muscle',
+    '#0ea5e9',
+    'Body',
+    'Sinewy, razor-defined runner or assassin physique with zero wasted bulk, corded forearms, and coiled agility.',
+    false
+  ),
+  createBuiltInTag(
+    'tag-stocky-thickset',
+    'Stocky / Thickset',
+    '#78716c',
+    'Body',
+    'Compact, dense, ruggedly powerful frame built like a brawler or blacksmith with heavy limbs and unyielding weight.',
+    false
+  ),
+  createBuiltInTag(
+    'tag-lanky-tall-slender',
+    'Lanky / Long-Limbed',
+    '#6366f1',
+    'Body',
+    'Tall, willowy, long-limbed frame with expressive hands, sharp collarbones, and graceful stride.',
     false
   ),
   createBuiltInTag(
     'tag-androgynous-build',
     'Androgynous / Boyish',
     '#6366f1',
-    'Body & Attire',
+    'Body',
     'Sleek, gender-neutral silhouette with sharp facial features and understated contours.',
     false
   ),
@@ -831,15 +853,31 @@ export const DEFAULT_TAGS: TagDefinition[] = [
     'tag-muscular-broad-male',
     'Muscular / Broad-Shouldered',
     '#0ea5e9',
-    'Body & Attire',
+    'Body',
     'Powerfully built frame with broad shoulders, defined chest and arms, and commanding physical presence.',
+    false
+  ),
+  createBuiltInTag(
+    'tag-defined-abs-six-pack',
+    'Defined Abs / Six-Pack',
+    '#f97316',
+    'Body',
+    'Chiseled abdominal ridges and sculpted V-line obliques flexing visibly with every breath and motion.',
+    false
+  ),
+  createBuiltInTag(
+    'tag-soft-belly-midriff',
+    'Soft Belly / Plush Midriff',
+    '#fb7185',
+    'Body',
+    'Warm, pinchable tummy softness that squishes gently under hands and shifts naturally when sitting or bending.',
     false
   ),
   createBuiltInTag(
     'tag-soft-dad-bod',
     'Soft / Dad Bod',
     '#f59e0b',
-    'Body & Attire',
+    'Body',
     'Relaxed, sturdy build combining broad shoulders with a comfortable, approachable softness.',
     false
   ),
@@ -847,7 +885,7 @@ export const DEFAULT_TAGS: TagDefinition[] = [
     'tag-pale-porcelain-skin',
     'Pale / Porcelain Skin',
     '#94a3b8',
-    'Body & Attire',
+    'Body',
     'Fair, luminous porcelain complexion where blushes, bruises, and temperature shifts show vividly.',
     false
   ),
@@ -855,15 +893,79 @@ export const DEFAULT_TAGS: TagDefinition[] = [
     'tag-freckles-sun-kissed',
     'Freckles / Sun-Kissed',
     '#fb923c',
-    'Body & Attire',
+    'Body',
     'Light dusting of freckles across nose, cheeks, and shoulders paired with warm skin tones.',
+    false
+  ),
+  createBuiltInTag(
+    'tag-furred-plush-coat',
+    'Furred Skin / Plush Coat',
+    '#d97706',
+    'Body',
+    'Body covered in soft, plush, touchable fur—from sleek velvety short hair to thick fluffy pelt across ears, tail, and limbs.',
+    false
+  ),
+  createBuiltInTag(
+    'tag-scaled-reptilian-skin',
+    'Scaled Skin / Reptilian',
+    '#059669',
+    'Body',
+    'Smooth, overlapping dragon or serpentine scales running along the torso, thighs, and spine that catch light and feel cool or warm to the touch.',
+    false
+  ),
+  createBuiltInTag(
+    'tag-latex-skin-living-vinyl',
+    'Latex Skin / Glossy Vinyl',
+    '#1e293b',
+    'Body',
+    'Naturally sleek, mirror-gloss latex-like skin surface—cool, slick, squeaky-tight, and hyper-reflective like living liquid vinyl.',
+    false
+  ),
+  createBuiltInTag(
+    'tag-rubber-skin-toy-like',
+    'Rubber Skin / Toy-Like',
+    '#ec4899',
+    'Body',
+    'Smooth, matte-or-glossy synthetic rubber body surface with subtle seam lines or squeezable, doll-like resilience like a living pooltoy or synth.',
+    false
+  ),
+  createBuiltInTag(
+    'tag-slime-translucent-skin',
+    'Slime Skin / Translucent Gel',
+    '#06b6d4',
+    'Body',
+    'Semi-translucent, bouncy gelatinous body surface with glistening viscosity, swirling inner shimmer, and cool, yielding softness.',
+    false
+  ),
+  createBuiltInTag(
+    'tag-synthetic-android-skin',
+    'Synthetic / Android Doll Skin',
+    '#64748b',
+    'Body',
+    'Flawless, warm-touch synthetic dermal plating with subtle cybernetic panel seams, porcelain sheen, or glowing sub-dermal circuitry.',
+    false
+  ),
+  createBuiltInTag(
+    'tag-feathered-avian-skin',
+    'Feathered / Downy Plumage',
+    '#38bdf8',
+    'Body',
+    'Soft downy feathers blending seamlessly into bare skin along the shoulders, forearms, or thighs, ruffling expressively with emotion.',
+    false
+  ),
+  createBuiltInTag(
+    'tag-patterned-striped-skin',
+    'Patterned / Striped Skin',
+    '#a855f7',
+    'Body',
+    'Distinctive natural body markings—tiger stripes, leopard rosettes, bioluminescent markings, or fantasy crimson/azure/obsidian skin.',
     false
   ),
   createBuiltInTag(
     'tag-scars-battle-worn',
     'Scars / Battle-Worn',
     '#64748b',
-    'Body & Attire',
+    'Body',
     'Visible healed scars across face or torso hinting at past conflicts, resilience, and history.',
     false
   ),
@@ -871,17 +973,55 @@ export const DEFAULT_TAGS: TagDefinition[] = [
     'tag-tattoos-pierced',
     'Tattoos / Pierced',
     '#8b5cf6',
-    'Body & Attire',
+    'Body',
     'Expressive ink sleeves, body art, and visible ear or facial piercings accentuating personal style.',
     false
   ),
-
-  // Height
+  createBuiltInTag(
+    'tag-braces-dental',
+    'Braces / Dental Braces',
+    '#38bdf8',
+    'Body',
+    'Metallic or ceramic dental braces giving a distinct visual quirk to smiles, speech, and self-conscious expressions.',
+    false
+  ),
+  createBuiltInTag(
+    'tag-pointed-elven-ears',
+    'Pointed Ears / Sensitive Tips',
+    '#84cc16',
+    'Body',
+    'Long, tapering fantasy ears that twitch, angle expressively with mood, and flush crimson when caressed.',
+    false
+  ),
+  createBuiltInTag(
+    'tag-horns-demon-tail',
+    'Demon Horns & Spade Tail',
+    '#9333ea',
+    'Body',
+    'Curved horns framing the brow paired with an expressive, prehensile demon tail curling behind the hips.',
+    false
+  ),
+  createBuiltInTag(
+    'tag-feathered-wings-harpy',
+    'Wings / Feathered or Bat',
+    '#38bdf8',
+    'Body',
+    'Large, expressive wings springing from the back that rustle, mantle protectively, or flare wide when startled or aroused.',
+    false
+  ),
+  createBuiltInTag(
+    'tag-monster-claws-scales',
+    'Scales / Claws / Chitin',
+    '#10b981',
+    'Body',
+    'Iridescent scales, sharp claws, or smooth monster skin accents marking inhuman heritage and primal strength.',
+    false
+  ),
   createBuiltInTag(
     'tag-small-short-adult',
     'Small / Short (Adult)',
     '#f472b6',
-    'Body & Attire',
+    'Body',
     'Noticeably short adult stature creating natural height contrast, requiring looking up or reaching high.',
     false
   ),
@@ -889,7 +1029,7 @@ export const DEFAULT_TAGS: TagDefinition[] = [
     'tag-average-height',
     'Average Height',
     '#64748b',
-    'Body & Attire',
+    'Body',
     'Standard, relatable adult height with balanced, everyday proportions.',
     false
   ),
@@ -897,7 +1037,7 @@ export const DEFAULT_TAGS: TagDefinition[] = [
     'tag-tall-amazonian',
     'Tall / Amazonian',
     '#eab308',
-    'Body & Attire',
+    'Body',
     'Strikingly tall, long-legged stature that naturally commands attention and towers over peers.',
     false
   ),
@@ -905,17 +1045,15 @@ export const DEFAULT_TAGS: TagDefinition[] = [
     'tag-towering-giant-7ft',
     'Towering / Giant (7ft+)',
     '#d97706',
-    'Body & Attire',
+    'Body',
     'Immense, superhuman adult stature over seven feet tall with dramatic size and reach contrast.',
     false
   ),
-
-  // Chest & Bust Sizes
   createBuiltInTag(
     'tag-flat-chest',
     'Flat Chest',
     '#38bdf8',
-    'Body & Attire',
+    'Body',
     'Completely flat or nearly flat adult chest, emphasizing sleek silhouettes, sensitivity, and confidence or bashfulness.',
     false
   ),
@@ -923,7 +1061,7 @@ export const DEFAULT_TAGS: TagDefinition[] = [
     'tag-small-chest-a-cup',
     'Small Chest / A-Cup',
     '#60a5fa',
-    'Body & Attire',
+    'Body',
     'Modest, perky, hand-sized adult bust with delicate, understated contours.',
     false
   ),
@@ -931,7 +1069,7 @@ export const DEFAULT_TAGS: TagDefinition[] = [
     'tag-medium-bust-c-cup',
     'Medium Bust / C-Cup',
     '#a855f7',
-    'Body & Attire',
+    'Body',
     'Balanced, shapely medium bust offering natural softness and classic proportions.',
     false
   ),
@@ -939,17 +1077,31 @@ export const DEFAULT_TAGS: TagDefinition[] = [
     'tag-plump-heavy-bust',
     'Plump / Heavy Bust',
     '#e879f9',
-    'Body & Attire',
+    'Body',
     'Richly full, soft adult bust with natural weight, gentle sway, and prominent cleavage.',
     true
   ),
-
-  // Hip & Rear Sizes
+  createBuiltInTag(
+    'tag-sensitive-puffy-nipples',
+    'Sensitive / Puffy Nipples',
+    '#f43f5e',
+    'Body',
+    'Plump, hyper-sensitive buds that tighten instantly at cool air, fabric friction, or the lightest brush of fingertips.',
+    true
+  ),
+  createBuiltInTag(
+    'tag-glistening-sweaty-skin',
+    'Flushed / Sweat-Slick Skin',
+    '#fb923c',
+    'Body',
+    'Hot, rosy skin beaded with glistening perspiration that highlights chest, thighs, and back during intense exertion or lust.',
+    true
+  ),
   createBuiltInTag(
     'tag-narrow-hips-petite-rear',
     'Narrow Hips / Petite Rear',
     '#06b6d4',
-    'Body & Attire',
+    'Body',
     'Slim, compact lower frame with narrow hips and a tight, understated rear.',
     false
   ),
@@ -957,7 +1109,7 @@ export const DEFAULT_TAGS: TagDefinition[] = [
     'tag-firm-athletic-rear',
     'Firm / Athletic Rear',
     '#14b8a6',
-    'Body & Attire',
+    'Body',
     'Sculpted, toned glutes and strong thighs shaped by training and active movement.',
     false
   ),
@@ -965,7 +1117,7 @@ export const DEFAULT_TAGS: TagDefinition[] = [
     'tag-pear-shaped',
     'Pear-Shaped',
     '#c084fc',
-    'Body & Attire',
+    'Body',
     'Slender upper torso contrasted with noticeably fuller hips, thighs, and lower curves.',
     false
   ),
@@ -973,65 +1125,187 @@ export const DEFAULT_TAGS: TagDefinition[] = [
     'tag-big-ass-plump-rear',
     'Big Ass / Plump Rear',
     '#ec4899',
-    'Body & Attire',
-    'Full, plush, generously curved rear and soft hips that draw tactile focus and fill out tight clothing.',
+    'Body',
+    'Full, plush, generously curved rear and soft hips that draw tactile focus and fill out tight bodysuits or skirts.',
     true
   ),
   createBuiltInTag(
     'tag-huge-bubble-butt',
     'Huge / Bubble Butt',
     '#db2777',
-    'Body & Attire',
+    'Body',
     'Dramatically round, bouncy, heavy adult rear with pronounced sway and eye-catching curves.',
     true
   ),
 
-  // Extra Clothing, Accessories & Adult Props
+  // C1.5. Genitals (NSFW-Only Anatomical Types, Sizes, Styles & Wetness)
   createBuiltInTag(
-    'tag-braces-dental',
-    'Braces / Dental Braces',
-    '#38bdf8',
-    'Body & Attire',
-    'Wears metallic or ceramic dental braces, giving a distinct visual quirk to smiles, speech, and self-conscious expressions.',
-    false
+    'tag-genitals-innie-tight',
+    'Innie / Neat Tight Slit',
+    '#f472b6',
+    'Genitals',
+    'Tucked, compact outer labia forming a neat, snug vertical cleft that parts tightly to reveal sensitive pink inner folds.',
+    true
   ),
   createBuiltInTag(
-    'tag-underwear-panties-bra',
-    'Underwear / Panties & Bra',
+    'tag-genitals-outie-plush-labia',
+    'Outie / Plush Prominent Labia',
+    '#ec4899',
+    'Genitals',
+    'Soft, visibly plump, protruding inner and outer labia that swell noticeably with arousal and frame the entrance with plush folds.',
+    true
+  ),
+  createBuiltInTag(
+    'tag-genitals-swollen-clit',
+    'Swollen / Sensitive Clitoris',
     '#f43f5e',
-    'Body & Attire',
-    'Dressed only in everyday or delicate matching bra and panties, emphasizing casual vulnerability and teasing exposure.',
+    'Genitals',
+    'Prominent, hooded pearl of nerves that swells visibly, throbs with pulse, and sends electric shivers at the lightest graze.',
     true
   ),
   createBuiltInTag(
-    'tag-boxers-briefs',
-    'Boxers / Briefs',
-    '#3b82f6',
-    'Body & Attire',
-    'Lounging in fitted briefs or loose boxers, highlighting relaxed intimacy and masculine contours.',
-    true
-  ),
-  createBuiltInTag(
-    'tag-bikini-swimwear',
-    'Bikini / Swimwear',
+    'tag-genitals-wet-dripping',
+    'Dripping Wet / Heavy Arousal',
     '#06b6d4',
-    'Body & Attire',
-    'Two-piece bikini or sleek swimsuit highlighting sun-warmed skin, straps, and poolside or beach appeal.',
-    false
+    'Genitals',
+    'Produces abundant, glistening slickness quickly—coating inner folds, dampening thighs, and making every touch unmistakably audible and wet.',
+    true
   ),
   createBuiltInTag(
-    'tag-micro-bikini-slingkini',
-    'Micro-Bikini / Slingkini',
-    '#f43f5e',
-    'Body & Attire',
-    'Minimalist, daring adult swimwear leaving nearly everything bare and straining to cover curves.',
+    'tag-genitals-thick-creamy-slick',
+    'Creamy / Viscous Wetness',
+    '#e879f9',
+    'Genitals',
+    'Rich, milky-white or honey-thick natural lubrication that clings to fingers and coats every thrust in warm, silky froth.',
     true
+  ),
+  createBuiltInTag(
+    'tag-genitals-smooth-shaved',
+    'Shaved / Completely Smooth',
+    '#fb7185',
+    'Genitals',
+    'Hairless, silky-smooth pubic mound leaving every contour, blush, and glistening droplet completely bare and unobstructed.',
+    true
+  ),
+  createBuiltInTag(
+    'tag-genitals-trimmed-strip',
+    'Trimmed / Landing Strip',
+    '#a855f7',
+    'Genitals',
+    'Neatly sculpted pubic hair—such as a tidy triangle or clean vertical landing strip—framing the mound with mature allure.',
+    true
+  ),
+  createBuiltInTag(
+    'tag-genitals-natural-bush',
+    'Hairy / Full Natural Bush',
+    '#92400e',
+    'Genitals',
+    'Soft, untrimmed natural pubic hair framing the groin, trapping warm scent and glistening moisture between curls.',
+    true
+  ),
+  createBuiltInTag(
+    'tag-genitals-average-cock',
+    'Average / Natural Cock',
+    '#3b82f6',
+    'Genitals',
+    'Well-proportioned, realistic adult shaft offering comfortable, grounded intimacy without exaggerated hentai dimensions.',
+    true
+  ),
+  createBuiltInTag(
+    'tag-genitals-big-heavy-cock',
+    'Big / Heavy-Hung Cock',
+    '#2563eb',
+    'Genitals',
+    'Thick, notably long, heavy-veined shaft that stretches lips and tight walls while slapping audibly against hips.',
+    true
+  ),
+  createBuiltInTag(
+    'tag-genitals-hyper-monster-cock',
+    'Hyper / Monster-Hung Cock',
+    '#7c3aed',
+    'Genitals',
+    'Impossibly massive, forearm-thick hentai-scale shaft whose sheer weight and girth overwhelm hands and reshape curves from within.',
+    true
+  ),
+  createBuiltInTag(
+    'tag-genitals-uncut-foreskin',
+    'Uncut / Foreskin',
+    '#6366f1',
+    'Genitals',
+    'Natural uncircumcised foreskin gliding smoothly over a hyper-sensitive head, pooling warm pre-cum beneath the hood.',
+    true
+  ),
+  createBuiltInTag(
+    'tag-genitals-cut-flared-head',
+    'Cut / Prominent Glans',
+    '#0ea5e9',
+    'Genitals',
+    'Bare, exposed mushroom head with a sharp coronal ridge and taut frenulum that catches and drags sensually along inner walls.',
+    true
+  ),
+  createBuiltInTag(
+    'tag-genitals-curved-upward',
+    'Curved / Upward-Arc Shaft',
+    '#14b8a6',
+    'Genitals',
+    'Distinctive upward curve engineered to press and grind relentlessly against the G-spot or sensitive anterior wall.',
+    true
+  ),
+  createBuiltInTag(
+    'tag-genitals-heavy-balls',
+    'Heavy Low-Hanging Balls',
+    '#d97706',
+    'Genitals',
+    'Plump, full, heavy scrotum swaying rhythmically and slapping firmly during deep thrusts, swelling taut just before release.',
+    true
+  ),
+  createBuiltInTag(
+    'tag-genitals-leaky-precum',
+    'Leaky / Constant Pre-Cum',
+    '#38bdf8',
+    'Genitals',
+    'Tip constantly beads and strings clear, syrupy pre-cum whenever aroused, smearing slickness across belly and inner thighs.',
+    true
+  ),
+  createBuiltInTag(
+    'tag-genitals-sheath-tapered',
+    'Animalistic Sheath / Tapered',
+    '#10b981',
+    'Genitals',
+    'Demihuman or monster genital anatomy resting inside a warm, velvety external sheath before sliding free as a sleek, tapered shaft.',
+    true
+  ),
+  createBuiltInTag(
+    'tag-genitals-dual-hermaphrodite',
+    'Dual Anatomy / Both Sets',
+    '#c026d3',
+    'Genitals',
+    'Possesses fully functional female slit and prominent male/futa shaft positioned in tandem, allowing simultaneous dual stimulation.',
+    true
+  ),
+  createBuiltInTag(
+    'tag-genitals-glowing-marked',
+    'Glowing / Rune-Marked Genitals',
+    '#c084fc',
+    'Genitals',
+    'Fantasy genitals etched with bioluminescent veins or glowing arcane markings that flare bright neon as arousal builds toward climax.',
+    true
+  ),
+
+  // C2. Attire, Outfits, Accessories & NSFW Wardrobe
+  createBuiltInTag(
+    'tag-glasses-megane',
+    'Glasses / Megane',
+    '#3b82f6',
+    'Attire',
+    'Wears glasses that frame expressive eyes and slip askew or fog up during emotional or intimate moments.',
+    false
   ),
   createBuiltInTag(
     'tag-oversized-sweater-hoodie',
     'Oversized Sweater / Hoodie',
     '#a855f7',
-    'Body & Attire',
+    'Attire',
     'Cozy, baggy knit sweater or hoodie with sleeves hanging past the hands, slipping easily off one shoulder.',
     false
   ),
@@ -1039,7 +1313,7 @@ export const DEFAULT_TAGS: TagDefinition[] = [
     'tag-crop-top-shorts',
     'Crop Top & Shorts',
     '#fb923c',
-    'Body & Attire',
+    'Attire',
     'Casual midriff-baring top paired with short denim or athletic shorts for a breezy, energetic look.',
     false
   ),
@@ -1047,7 +1321,7 @@ export const DEFAULT_TAGS: TagDefinition[] = [
     'tag-sundress-skirt',
     'Sundress / Pleated Skirt',
     '#facc15',
-    'Body & Attire',
+    'Attire',
     'Flowing sundress or fluttering skirt that sways with every step and catches the breeze.',
     false
   ),
@@ -1055,7 +1329,7 @@ export const DEFAULT_TAGS: TagDefinition[] = [
     'tag-suit-tie-formal',
     'Suit & Tie / Formal Wear',
     '#475569',
-    'Body & Attire',
+    'Attire',
     'Crisp tailored suit, vest, and tie projecting sharp professionalism, authority, and buttoned-up poise.',
     false
   ),
@@ -1063,7 +1337,7 @@ export const DEFAULT_TAGS: TagDefinition[] = [
     'tag-gothic-punk-attire',
     'Gothic / Punk Attire',
     '#7c3aed',
-    'Body & Attire',
+    'Attire',
     'Dark layered lace, leather jackets, buckles, and silver chains expressing rebellious or moody style.',
     false
   ),
@@ -1071,31 +1345,31 @@ export const DEFAULT_TAGS: TagDefinition[] = [
     'tag-kimono-yukata',
     'Kimono / Yukata',
     '#e11d48',
-    'Body & Attire',
+    'Attire',
     'Traditional wrapped kimono or summer yukata secured with a wide obi sash that frames the collarbone and nape.',
     false
   ),
   createBuiltInTag(
-    'tag-bunny-suit-leotard',
-    'Bunny Suit / Leotard',
-    '#ec4899',
-    'Body & Attire',
-    'Strapless high-cut satin bunny-girl leotard with cuffs, bow tie, ears, and fluffy tail.',
-    true
+    'tag-bikini-swimwear',
+    'Bikini / Swimwear',
+    '#06b6d4',
+    'Attire',
+    'Two-piece bikini or sleek swimsuit highlighting sun-warmed skin, straps, and poolside or beach appeal.',
+    false
   ),
   createBuiltInTag(
-    'tag-fishnets-mesh',
-    'Fishnets / Mesh',
-    '#9333ea',
-    'Body & Attire',
-    'Open-weave fishnet stockings or sheer mesh tops framing skin with bold geometric texture.',
-    true
+    'tag-tactical-bodysuit-plugsuit',
+    'Tactical Suit / Plugsuit',
+    '#0ea5e9',
+    'Attire',
+    'Form-fitting sci-fi or tactical stealth jumpsuit with reinforced seams, utility holsters, and sleek futuristic silhouette.',
+    false
   ),
   createBuiltInTag(
     'tag-choker-accessories',
     'Choker & Accessories',
     '#6366f1',
-    'Body & Attire',
+    'Attire',
     'Velvet, ribbon, or leather choker drawing eyes to the throat and collarbone.',
     false
   ),
@@ -1103,7 +1377,7 @@ export const DEFAULT_TAGS: TagDefinition[] = [
     'tag-high-heels-boots',
     'High Heels / Boots',
     '#be123c',
-    'Body & Attire',
+    'Attire',
     'Stilettos, thigh-high boots, or platform heels adding height, sharp clicks, and confident posture.',
     false
   ),
@@ -1111,9 +1385,185 @@ export const DEFAULT_TAGS: TagDefinition[] = [
     'tag-barefoot',
     'Barefoot',
     '#10b981',
-    'Body & Attire',
+    'Attire',
     'Unshod bare feet padding quietly across floors, grass, or sand with relaxed natural comfort.',
     false
+  ),
+  createBuiltInTag(
+    'tag-stockings-thighhighs',
+    'Stockings / Thighhighs',
+    '#8b5cf6',
+    'Attire',
+    'Sheer nylon stockings, garter belts, or thigh-highs accentuating the absolute territory of the thighs.',
+    true
+  ),
+  createBuiltInTag(
+    'tag-lingerie-babydoll',
+    'Lingerie / Babydoll',
+    '#ec4899',
+    'Attire',
+    'Lace, sheer fabric, or provocative straps designed to frame and expose the body.',
+    true
+  ),
+  createBuiltInTag(
+    'tag-crotchless-open-cup-lingerie',
+    'Crotchless / Open-Cup Lingerie',
+    '#e11d48',
+    'Attire',
+    'Scandalous lace or satin lingerie intentionally parted at the bust and crotch for direct access while still dressed.',
+    true
+  ),
+  createBuiltInTag(
+    'tag-underwear-panties-bra',
+    'Underwear / Panties & Bra',
+    '#f43f5e',
+    'Attire',
+    'Dressed only in everyday or delicate matching bra and panties, emphasizing casual vulnerability and teasing exposure.',
+    true
+  ),
+  createBuiltInTag(
+    'tag-boxers-briefs',
+    'Boxers / Briefs',
+    '#3b82f6',
+    'Attire',
+    'Lounging in fitted briefs or loose boxers, highlighting relaxed intimacy and masculine contours.',
+    true
+  ),
+  createBuiltInTag(
+    'tag-micro-string-g-string',
+    'G-String / Thong / C-String',
+    '#f43f5e',
+    'Attire',
+    'Razor-thin string underwear disappearing between cheeks, framing curves with minimal coverage.',
+    true
+  ),
+  createBuiltInTag(
+    'tag-micro-bikini-slingkini',
+    'Micro-Bikini / Slingkini',
+    '#f43f5e',
+    'Attire',
+    'Minimalist, daring adult swimwear leaving nearly everything bare and straining to cover curves.',
+    true
+  ),
+  createBuiltInTag(
+    'tag-sukumizu-wet-swimsuit',
+    'Sukumizu / Clinging Swimsuit',
+    '#0284c7',
+    'Attire',
+    'Tight competition-style one-piece swimsuit clinging transparently when soaked, molding starkly to every curve.',
+    true
+  ),
+  createBuiltInTag(
+    'tag-open-chest-cow-bikini',
+    'Cow-Print / Keyhole Bikini',
+    '#f59e0b',
+    'Attire',
+    'Provocative cow-print or keyhole-cutout bikini with tiny ties barely restraining heavy curves.',
+    true
+  ),
+  createBuiltInTag(
+    'tag-latex-bodysuit',
+    'Latex / Bodysuit',
+    '#3f3f46',
+    'Attire',
+    'Skin-tight, glossy latex or spandex bodysuit that clings to every contour.',
+    true
+  ),
+  createBuiltInTag(
+    'tag-sheer-see-through-bodystocking',
+    'Sheer / See-Through Bodystocking',
+    '#c026d3',
+    'Attire',
+    'Translucent mesh or gossamer fabric stretched head-to-toe over bare skin, leaving every silhouette and blush plainly visible.',
+    true
+  ),
+  createBuiltInTag(
+    'tag-fishnets-mesh',
+    'Fishnets / Mesh',
+    '#9333ea',
+    'Attire',
+    'Open-weave fishnet stockings or sheer mesh tops framing skin with bold geometric texture.',
+    true
+  ),
+  createBuiltInTag(
+    'tag-bunny-suit-leotard',
+    'Bunny Suit / Leotard',
+    '#ec4899',
+    'Attire',
+    'Strapless high-cut satin bunny-girl leotard with cuffs, bow tie, ears, and fluffy tail.',
+    true
+  ),
+  createBuiltInTag(
+    'tag-french-maid-erotic',
+    'Erotic French Maid Outfit',
+    '#64748b',
+    'Attire',
+    'Frilly, ultra-short satin maid dress paired with sheer stockings, lace garters, and a revealing plunging bodice.',
+    true
+  ),
+  createBuiltInTag(
+    'tag-erotic-nun-habit',
+    'Revealing Nun Habit / Vestments',
+    '#7c3aed',
+    'Attire',
+    'Sinful adaptation of a black-and-white veil and habit with high thigh slits, open chest cutout, and laced thigh-highs.',
+    true
+  ),
+  createBuiltInTag(
+    'tag-fantasy-armor-bikini',
+    'Bikini Armor / Battle Lingerie',
+    '#d97706',
+    'Attire',
+    'Ceremonial or fantasy plate pauldrons paired with minimal chainmail straps, armored gauntlets, and exposed midriff/thighs.',
+    true
+  ),
+  createBuiltInTag(
+    'tag-virgin-killer-backless-sweater',
+    'Virgin-Killer / Backless Sweater',
+    '#a855f7',
+    'Attire',
+    'Risque high-neck, completely backless ribbed knit sweater exposing shoulders, spine, and side-curve to the hips.',
+    true
+  ),
+  createBuiltInTag(
+    'tag-wet-t-shirt-shirt-only',
+    'Bare-Bottomed Oversized Shirt',
+    '#38bdf8',
+    'Attire',
+    'Wearing nothing underneath a thin, unbuttoned dress shirt or wet t-shirt clinging straight to bare skin.',
+    true
+  ),
+  createBuiltInTag(
+    'tag-bondage-leather-harness',
+    'Bondage Harness / Leather Straps',
+    '#3f3f46',
+    'Attire',
+    'Tight buckled leather chest, waist, and thigh straps that cinch skin and frame the body like an erotic centerpiece.',
+    true
+  ),
+  createBuiltInTag(
+    'tag-shibari-rope-harness',
+    'Shibari / Erotic Rope Ties',
+    '#b91c1c',
+    'Attire',
+    'Intricate hemp or silk rope bindings knotted tightly around torso, breasts, and thighs in decorative bondage.',
+    true
+  ),
+  createBuiltInTag(
+    'tag-pasties-nipple-tape',
+    'Pasties / Nipple Tassels',
+    '#ec4899',
+    'Attire',
+    'Tiny adhesive lace hearts, X-tape, or spinning tassels covering only the tips while leaving everything else bare.',
+    true
+  ),
+  createBuiltInTag(
+    'tag-collar-leash',
+    'Collar / Leash',
+    '#ef4444',
+    'Attire',
+    'Wears a collar symbolizing ownership, submission, or pet-play devotion.',
+    true
   ),
   createBuiltInTag(
     'tag-sex-toys-vibrator',
@@ -1723,6 +2173,134 @@ export const DEFAULT_TAGS: TagDefinition[] = [
     "Close-knit combat duo sharing campfires, splitting loot, bantering during quests, and tending each other's wounds.",
     false
   ),
+  createBuiltInTag(
+    'tag-grimdark-fantasy',
+    'Grimdark Fantasy',
+    '#7f1d1d',
+    'Setting & Vibe',
+    'Bleak, morally brutal dark fantasy world of cursed warzones, scarce mercy, blood-soaked survival, and fragile alliances.',
+    false
+  ),
+  createBuiltInTag(
+    'tag-dungeon-crawling-delving',
+    'Dungeon Crawling / Delving',
+    '#b45309',
+    'Setting & Vibe',
+    'Perilous labyrinth exploration featuring ancient traps, torchlit corridors, mimic ambushes, campfires, and high-stakes treasure delves.',
+    false
+  ),
+  createBuiltInTag(
+    'tag-urban-fantasy-modern-magic',
+    'Urban Fantasy / Modern Magic',
+    '#7c3aed',
+    'Setting & Vibe',
+    'Hidden supernatural factions, occult syndicates, and arcane magic operating beneath the neon surface of a modern city.',
+    false
+  ),
+  createBuiltInTag(
+    'tag-steampunk-clockwork',
+    'Steampunk / Clockwork',
+    '#d97706',
+    'Setting & Vibe',
+    'Brass airships, steam-driven prosthetics, Victorian soot, aristocratic inventors, and alchemical industry.',
+    false
+  ),
+  createBuiltInTag(
+    'tag-magic-academy-campus',
+    'Magic Academy / Arcane Campus',
+    '#4f46e5',
+    'Setting & Vibe',
+    'Prestigious academy setting filled with arcane duels, enchanted libraries, dormitory secrets, and rival prodigies.',
+    false
+  ),
+  createBuiltInTag(
+    'tag-cozy-tavern-guild-hall',
+    'Cozy Tavern / Guild Hall',
+    '#f59e0b',
+    'Setting & Vibe',
+    "Hearth-lit inn, clinking ale tankards, quest bounty boards, lively travelers' banter, and warm shelter after the storm.",
+    false
+  ),
+  createBuiltInTag(
+    'tag-psychological-thriller',
+    'Psychological Thriller',
+    '#475569',
+    'Setting & Vibe',
+    'Paranoia, unreliable motives, tense mind games, slow-tightening secrets, and charged silence.',
+    false
+  ),
+  createBuiltInTag(
+    'tag-modern-romance-slice-of-life',
+    'Modern Romance / City Life',
+    '#ec4899',
+    'Setting & Vibe',
+    'Grounded contemporary apartments, late-night convenience stores, rainy commutes, and relatable modern chemistry.',
+    false
+  ),
+  createBuiltInTag(
+    'tag-historical-period-drama',
+    'Historical / Period Drama',
+    '#92400e',
+    'Setting & Vibe',
+    'Authentic period etiquette, candlelit estates, sweeping historical atmosphere, and forbidden longing across social divides.',
+    false
+  ),
+  createBuiltInTag(
+    'tag-pirate-high-seas',
+    'Pirate / High Seas',
+    '#0284c7',
+    'Setting & Vibe',
+    'Swashbuckling galleons, storm-tossed decks, roguish crews, hidden coves, and maritime plunder.',
+    false
+  ),
+  createBuiltInTag(
+    'tag-hentai-doujin-logic',
+    'Hentai / Doujin Logic',
+    '#f43f5e',
+    'Setting & Vibe',
+    'Shameless anime/doujin erotica rules where aphrodisiacs, implausible stamina, heightened sensitivity, and unabashed lust drive every scene.',
+    true
+  ),
+  createBuiltInTag(
+    'tag-dark-fantasy-corruption',
+    'Dark Fantasy Erotica / Corruption',
+    '#9f1239',
+    'Setting & Vibe',
+    'Grim fantasy realm steeped in demonic pacts, curse-induced heat, decadent cults, and sensual moral corruption.',
+    true
+  ),
+  createBuiltInTag(
+    'tag-brothel-red-light-district',
+    'Brothel / Red-Light District',
+    '#be185d',
+    'Setting & Vibe',
+    'Velvet-draped adult parlor, incense, lantern-lit private suites, shameless flirting, and decadent pleasure.',
+    true
+  ),
+  createBuiltInTag(
+    'tag-hot-springs-onsen',
+    'Hot Springs / Onsen',
+    '#06b6d4',
+    'Setting & Vibe',
+    'Steaming mineral baths, thin damp towels, flushed bare skin, and secluded mixed-bathing intimacy.',
+    true
+  ),
+  createBuiltInTag(
+    'tag-dungeon-trap-monster-lair',
+    'Dungeon Trap / Monster Lair',
+    '#059669',
+    'Setting & Vibe',
+    'Treacherous hentai dungeon filled with binding vines, aphrodisiac mist, slime pits, and lustful monster encounters.',
+    true
+  ),
+  createBuiltInTag(
+    'tag-pleasure-palace-decadent-court',
+    'Pleasure Palace / Decadent Court',
+    '#db2777',
+    'Setting & Vibe',
+    'Hedonistic sanctuary of silk cushions, scented oils, and uninhibited sensual indulgence without puritan restraint.',
+    true
+  ),
 
   // G. Narrative & Meta Writing-Style Tags (SFW)
   createBuiltInTag(
@@ -2132,8 +2710,9 @@ const RETIRED_BUILTIN_TAG_KEYS = new Set<string>([
  * Returns true if a TagDefinition has its NSFW (18+) flag set.
  */
 export function isTagNsfwFlagged(tag: TagDefinition): boolean {
-  if (tag.isNsfw !== undefined) return Boolean(tag.isNsfw);
   const cat = (tag.category || '').toLowerCase();
+  if (cat === 'genitals') return true;
+  if (tag.isNsfw !== undefined) return Boolean(tag.isNsfw);
   if (cat.includes('nsfw') || cat.includes('extreme') || cat.includes('hentai')) {
     return true;
   }
@@ -2387,7 +2966,8 @@ export function extractCustomOrModifiedThemes(
 }
 
 export function normalizeIncomingTheme(
-  raw: unknown
+  raw: unknown,
+  tagCatalog: TagDefinition[] = DEFAULT_TAGS
 ): ContextTheme | null {
   if (!raw || typeof raw !== 'object') return null;
   const obj = raw as Record<string, unknown>;
@@ -2404,6 +2984,10 @@ export function normalizeIncomingTheme(
         ? obj.savedFileName
         : undefined;
 
+  const rawAssocTags = Array.isArray(obj.associatedTags)
+    ? obj.associatedTags.map((t) => String(t).trim()).filter(Boolean)
+    : builtIn?.associatedTags || [];
+
   return {
     id:
       builtIn?.id ||
@@ -2419,27 +3003,26 @@ export function normalizeIncomingTheme(
       typeof obj.aiContextPrompt === 'string'
         ? obj.aiContextPrompt
         : builtIn?.aiContextPrompt || '',
-    associatedTags: Array.isArray(obj.associatedTags)
-      ? obj.associatedTags.map((t) => String(t).trim()).filter(Boolean)
-      : builtIn?.associatedTags || [],
+    associatedTags: sortTagsByContextOrder(rawAssocTags, tagCatalog),
     isBuiltIn: Boolean(builtIn || obj.isBuiltIn),
   };
 }
 
 export function mergeWithDefaultThemes(
-  customOrDiskThemes?: unknown[] | null
+  customOrDiskThemes?: unknown[] | null,
+  tagCatalog: TagDefinition[] = DEFAULT_TAGS
 ): ContextTheme[] {
   const resultMap = new Map<string, ContextTheme>();
   for (const b of DEFAULT_CONTEXT_THEMES) {
     resultMap.set(b.name.trim().toLowerCase(), {
       ...b,
-      associatedTags: [...(b.associatedTags || [])],
+      associatedTags: sortTagsByContextOrder(b.associatedTags || [], tagCatalog),
     });
   }
 
   if (Array.isArray(customOrDiskThemes)) {
     for (const raw of customOrDiskThemes) {
-      const normalized = normalizeIncomingTheme(raw);
+      const normalized = normalizeIncomingTheme(raw, tagCatalog);
       if (!normalized) continue;
       const key = normalized.name.trim().toLowerCase();
       const existingById = Array.from(resultMap.entries()).find(
@@ -2452,6 +3035,10 @@ export function mergeWithDefaultThemes(
           ...prevTheme,
           ...normalized,
           id: prevTheme.id,
+          associatedTags: sortTagsByContextOrder(
+            normalized.associatedTags || [],
+            tagCatalog
+          ),
           isBuiltIn: Boolean(prevTheme.isBuiltIn || normalized.isBuiltIn),
           savedFileName: normalized.savedFileName || prevTheme.savedFileName,
         });
@@ -2461,6 +3048,10 @@ export function mergeWithDefaultThemes(
           ...existing,
           ...normalized,
           id: existing?.id || normalized.id,
+          associatedTags: sortTagsByContextOrder(
+            normalized.associatedTags || [],
+            tagCatalog
+          ),
           isBuiltIn: Boolean(existing?.isBuiltIn || normalized.isBuiltIn),
           savedFileName: normalized.savedFileName || existing?.savedFileName,
         });
@@ -2629,15 +3220,25 @@ export function mergeWithDefaultTags(
     if (builtInIdx !== undefined) {
       const targetBuiltIn = freshBuiltIns[builtInIdx];
       const resolvedDesc = incomingDesc || targetBuiltIn.aiContextDescription;
+      const isLegacyBodyAttire =
+        typeof incomingCategory === 'string' &&
+        incomingCategory.trim().toLowerCase() === 'body & attire';
+      const resolvedBuiltInCategory =
+        incomingCategory && !isLegacyBodyAttire
+          ? migrateLegacyTagCategory(incomingCategory, rawName, resolvedDesc)
+          : targetBuiltIn.category;
+
       freshBuiltIns[builtInIdx] = {
         ...targetBuiltIn,
         ...(diskFileName ? { savedFileName: diskFileName } : {}),
         color: incomingColor || targetBuiltIn.color,
-        category: incomingCategory || targetBuiltIn.category,
+        category: resolvedBuiltInCategory,
         isNsfw:
-          incomingNsfwRaw !== undefined
-            ? Boolean(incomingNsfwRaw)
-            : targetBuiltIn.isNsfw,
+          resolvedBuiltInCategory === 'Genitals'
+            ? true
+            : incomingNsfwRaw !== undefined
+              ? Boolean(incomingNsfwRaw)
+              : targetBuiltIn.isNsfw,
         aiContextDescription: resolvedDesc,
         aiDescription: resolvedDesc,
         description: resolvedDesc,
@@ -2645,12 +3246,16 @@ export function mergeWithDefaultTags(
       continue;
     }
 
-    const resolvedCategory = incomingCategory || 'Custom';
+    const resolvedCategory = incomingCategory
+      ? migrateLegacyTagCategory(incomingCategory, rawName, incomingDesc)
+      : 'Custom';
     const resolvedIsNsfw =
-      incomingNsfwRaw !== undefined
-        ? Boolean(incomingNsfwRaw)
-        : resolvedCategory === 'NSFW & Kinks' ||
-          resolvedCategory === 'Extreme & Hentai Physics';
+      resolvedCategory === 'Genitals'
+        ? true
+        : incomingNsfwRaw !== undefined
+          ? Boolean(incomingNsfwRaw)
+          : resolvedCategory === 'NSFW & Kinks' ||
+            resolvedCategory === 'Extreme & Hentai Physics';
     const resolvedDesc =
       incomingDesc ||
       `Incorporate thematic, tonal, and character elements consistent with "${rawName}".`;
@@ -2686,6 +3291,66 @@ export function mergeWithDefaultTags(
   }
 
   return [...freshBuiltIns, ...userCustomTags];
+}
+
+function stringArraysEqual(a?: readonly string[], b?: readonly string[]): boolean {
+  if (a === b) return true;
+  if (!a || !b || a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    if (a[i] !== b[i]) return false;
+  }
+  return true;
+}
+
+function normalizeLorebookTagsWithCatalog(
+  lb: Lorebook,
+  catalog: readonly TagDefinition[]
+): Lorebook {
+  const sortedGlobalTags = sortTagsByContextOrder(lb.tags || [], catalog);
+  let entriesChanged = false;
+  const nextEntries = Array.isArray(lb.entries)
+    ? lb.entries.map((entry) => {
+        if (!Array.isArray(entry.tags) || entry.tags.length === 0) {
+          return entry;
+        }
+        const sortedEntryTags = sortTagsByContextOrder(entry.tags, catalog);
+        if (stringArraysEqual(entry.tags, sortedEntryTags)) {
+          return entry;
+        }
+        entriesChanged = true;
+        return { ...entry, tags: sortedEntryTags };
+      })
+    : [];
+
+  if (!entriesChanged && stringArraysEqual(lb.tags || [], sortedGlobalTags)) {
+    return lb;
+  }
+  return {
+    ...lb,
+    tags: sortedGlobalTags,
+    entries: nextEntries,
+  };
+}
+
+function normalizeCharacterTagsWithCatalog(
+  char: CharacterCardData,
+  catalog: readonly TagDefinition[]
+): CharacterCardData {
+  const sortedTags = sortTagsByContextOrder(char.tags || [], catalog);
+  const nextBook = char.character_book
+    ? normalizeLorebookTagsWithCatalog(char.character_book, catalog)
+    : undefined;
+  if (
+    stringArraysEqual(char.tags || [], sortedTags) &&
+    nextBook === char.character_book
+  ) {
+    return char;
+  }
+  return {
+    ...char,
+    tags: sortedTags,
+    ...(nextBook ? { character_book: nextBook } : {}),
+  };
 }
 
 export const DEFAULT_STAT_BLOCK: StatBlockConfig = {
@@ -2809,7 +3474,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   activeSaveFolder: UNIFIED_INTERNAL_ROOT,
   availableSaveFolders: DEFAULT_SAVE_FOLDERS,
   mainSidebarOpen: true,
-  hideNsfwTags: false,
+  hideNsfwTags: true,
 };
 
 /**
@@ -3476,7 +4141,9 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
     useCallback((updater) => {
       diskMutationVersionRef.current += 1;
       setCharactersState((prev) => {
-        const next = typeof updater === 'function' ? updater(prev) : updater;
+        const rawNext = typeof updater === 'function' ? updater(prev) : updater;
+        const catalog = tagsRef.current;
+        const next = rawNext.map((c) => normalizeCharacterTagsWithCatalog(c, catalog));
         charactersRef.current = next;
         latestWorkspaceRef.current.characters = next;
         return next;
@@ -3493,7 +4160,9 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
     useCallback((updater) => {
       diskMutationVersionRef.current += 1;
       setLorebooksState((prev) => {
-        const next = typeof updater === 'function' ? updater(prev) : updater;
+        const rawNext = typeof updater === 'function' ? updater(prev) : updater;
+        const catalog = tagsRef.current;
+        const next = rawNext.map((l) => normalizeLorebookTagsWithCatalog(l, catalog));
         lorebooksRef.current = next;
         latestWorkspaceRef.current.lorebooks = next;
         return next;
@@ -3510,7 +4179,17 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
     useCallback((updater) => {
       diskMutationVersionRef.current += 1;
       setThemesState((prev) => {
-        const next = typeof updater === 'function' ? updater(prev) : updater;
+        const rawNext = typeof updater === 'function' ? updater(prev) : updater;
+        const catalog = tagsRef.current;
+        const next = rawNext.map((theme) => {
+          const sorted = sortTagsByContextOrder(
+            theme.associatedTags || [],
+            catalog
+          );
+          return stringArraysEqual(theme.associatedTags || [], sorted)
+            ? theme
+            : { ...theme, associatedTags: sorted };
+        });
         themesRef.current = next;
         latestWorkspaceRef.current.themes = next;
         return next;
@@ -3521,7 +4200,15 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
     useCallback((updater) => {
       diskMutationVersionRef.current += 1;
       setTagsState((prev) => {
-        const next = typeof updater === 'function' ? updater(prev) : updater;
+        const rawNext = typeof updater === 'function' ? updater(prev) : updater;
+        const next = rawNext.map((t) => {
+          const migrated = migrateLegacyTagCategory(
+            t.category,
+            t.name,
+            t.aiContextDescription || t.aiDescription || t.description
+          );
+          return migrated !== t.category ? { ...t, category: migrated } : t;
+        });
         tagsRef.current = next;
         latestWorkspaceRef.current.tags = next;
         return next;
@@ -3820,9 +4507,11 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
 
       const color =
         AUTO_TAG_PALETTE[currentTags.length % AUTO_TAG_PALETTE.length] || '#a855f7';
+      const resolvedCat = migrateLegacyTagCategory(category, clean, '');
       const isNsfw =
-        category === 'NSFW & Kinks' ||
-        category === 'Extreme & Hentai Physics' ||
+        resolvedCat === 'Genitals' ||
+        resolvedCat === 'NSFW & Kinks' ||
+        resolvedCat === 'Extreme & Hentai Physics' ||
         clean.toLowerCase().includes('nsfw') ||
         clean.toLowerCase().includes('18+');
       const desc = `Incorporate thematic, tonal, and character elements consistent with "${clean}".`;
@@ -3831,7 +4520,7 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
         savedFileName: assignedFile,
         name: clean,
         color,
-        category,
+        category: resolvedCat,
         isNsfw,
         aiContextDescription: desc,
         aiDescription: desc,
@@ -3909,10 +4598,10 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
       const diskThemeEntries = Array.isArray(diskState.themes)
         ? diskState.themes
         : [];
-      const hydratedThemes = mergeWithDefaultThemes([
-        ...legacyMetaThemes,
-        ...diskThemeEntries,
-      ]);
+      const hydratedThemes = mergeWithDefaultThemes(
+        [...legacyMetaThemes, ...diskThemeEntries],
+        mergedTags
+      );
 
       const nextThemeFileNames = new Map<string, string>();
       for (const th of hydratedThemes) {
@@ -4053,18 +4742,19 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
               'character'
             );
             if (parsedRes.kind === 'character') {
-              parsedRes.character.isNsfw = isCharacterNsfw(
+              const sortedChar = normalizeCharacterTagsWithCatalog(
                 parsedRes.character,
                 mergedTags
               );
+              sortedChar.isNsfw = isCharacterNsfw(sortedChar, mergedTags);
               const resolvedName =
-                diskFileName || parsedRes.character.savedFileName || '';
+                diskFileName || sortedChar.savedFileName || '';
               if (resolvedName) {
-                parsedRes.character.savedFileName = resolvedName;
+                sortedChar.savedFileName = resolvedName;
               }
-              parsedCharacters.push(parsedRes.character);
-              if (parsedRes.character.id && resolvedName) {
-                nextCharFileNames.set(parsedRes.character.id, resolvedName);
+              parsedCharacters.push(sortedChar);
+              if (sortedChar.id && resolvedName) {
+                nextCharFileNames.set(sortedChar.id, resolvedName);
               }
             }
           } catch {
@@ -4141,9 +4831,9 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
             const fallbackTitle =
               (diskFileName || 'Lorebook.json').replace(/\.json$/i, '') ||
               'Lorebook';
-            const normalizedBook = normalizeLorebookObject(
-              candidateLoreObj,
-              fallbackTitle
+            const normalizedBook = normalizeLorebookTagsWithCatalog(
+              normalizeLorebookObject(candidateLoreObj, fallbackTitle),
+              mergedTags
             );
             normalizedBook.isNsfw = isLorebookNsfw(normalizedBook, mergedTags);
             const resolvedName =
@@ -4417,8 +5107,10 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
           let nextList: CharacterCardData[];
           if (prev.length === 0) {
             const freshBase = createBlankCharacter();
-            const next =
-              typeof updater === 'function' ? updater(freshBase) : updater;
+            const next = normalizeCharacterTagsWithCatalog(
+              typeof updater === 'function' ? updater(freshBase) : updater,
+              currentTags
+            );
             const autoNsfw = isCharacterNsfw(next, currentTags);
             const assignedFile =
               next.savedFileName ||
@@ -4441,7 +5133,10 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
             const targetId = activeCharacterIdRef.current || prev[0]?.id || '';
             nextList = prev.map((c) => {
               if (c.id !== targetId) return c;
-              const next = typeof updater === 'function' ? updater(c) : updater;
+              const next = normalizeCharacterTagsWithCatalog(
+                typeof updater === 'function' ? updater(c) : updater,
+                currentTags
+              );
               const autoNsfw = isCharacterNsfw(next, currentTags);
               return {
                 ...next,
@@ -4465,11 +5160,14 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
       value: CharacterCardData[K]
     ) => {
       setCharacter((prev) => {
-        const updated = {
-          ...prev,
-          [field]: value,
-          modification_date: Math.floor(Date.now() / 1000),
-        };
+        const updated = normalizeCharacterTagsWithCatalog(
+          {
+            ...prev,
+            [field]: value,
+            modification_date: Math.floor(Date.now() / 1000),
+          },
+          tagsRef.current
+        );
         updated.isNsfw = isCharacterNsfw(updated, tagsRef.current);
         return updated;
       });
@@ -4506,8 +5204,10 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
           let nextList: Lorebook[];
           if (prev.length === 0) {
             const freshBase = createBlankLorebook();
-            const next =
-              typeof updater === 'function' ? updater(freshBase) : updater;
+            const next = normalizeLorebookTagsWithCatalog(
+              typeof updater === 'function' ? updater(freshBase) : updater,
+              currentTags
+            );
             const autoNsfw = isLorebookNsfw(next, currentTags);
             const assignedFile =
               next.savedFileName ||
@@ -4530,7 +5230,10 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
             const targetId = activeLorebookIdRef.current || prev[0]?.id || '';
             nextList = prev.map((l) => {
               if (l.id !== targetId) return l;
-              const next = typeof updater === 'function' ? updater(l) : updater;
+              const next = normalizeLorebookTagsWithCatalog(
+                typeof updater === 'function' ? updater(l) : updater,
+                currentTags
+              );
               const autoNsfw = isLorebookNsfw(next, currentTags);
               return {
                 ...next,
@@ -5226,7 +5929,7 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
           partial?.aiContextPrompt ??
           `Write in a compelling ${uniqueName} style with strong atmospheric detail.`,
         associatedTags: Array.isArray(partial?.associatedTags)
-          ? [...partial.associatedTags]
+          ? sortTagsByContextOrder(partial.associatedTags, tagsRef.current)
           : [],
         isBuiltIn: false,
       };
@@ -5298,11 +6001,18 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
 
       themeDiskFileNamesRef.current.set(id, assignedFile);
 
+      const sortedAssociatedTags = partial.associatedTags
+        ? sortTagsByContextOrder(partial.associatedTags, tagsRef.current)
+        : undefined;
+
       const nextThemes = currentThemes.map((t) =>
         t.id === id
           ? {
               ...t,
               ...partial,
+              ...(sortedAssociatedTags !== undefined
+                ? { associatedTags: sortedAssociatedTags }
+                : {}),
               savedFileName: assignedFile,
             }
           : t
@@ -5465,6 +6175,14 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
           .filter(Boolean)
       );
 
+      const resolvedCategory = migrateLegacyTagCategory(
+        input.category || existing?.category || 'Custom',
+        cleanName,
+        cleanDesc
+      );
+      const resolvedIsNsfw =
+        resolvedCategory === 'Genitals' ? true : Boolean(input.isNsfw);
+
       let resultTag: TagDefinition;
       let nextTags: TagDefinition[];
 
@@ -5478,8 +6196,8 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
           name: cleanName,
           savedFileName: assignedFile,
           color: input.color || existing.color,
-          category: input.category || existing.category,
-          isNsfw: Boolean(input.isNsfw),
+          category: resolvedCategory,
+          isNsfw: resolvedIsNsfw,
           aiContextDescription: cleanDesc,
           aiDescription: cleanDesc,
           description: cleanDesc,
@@ -5502,8 +6220,8 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
           savedFileName: assignedFile,
           name: cleanName,
           color: input.color || '#a855f7',
-          category: input.category || 'Custom',
-          isNsfw: Boolean(input.isNsfw),
+          category: resolvedCategory,
+          isNsfw: resolvedIsNsfw,
           aiContextDescription: cleanDesc,
           aiDescription: cleanDesc,
           description: cleanDesc,
@@ -5515,6 +6233,33 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
       tagsRef.current = nextTags;
       latestWorkspaceRef.current.tags = nextTags;
       setTagsState(nextTags);
+
+      // Keep attached project tags sorted if a tag's category changed
+      if (existing && existing.category !== resultTag.category) {
+        const reorderedChars = charactersRef.current.map((c) =>
+          normalizeCharacterTagsWithCatalog(c, nextTags)
+        );
+        charactersRef.current = reorderedChars;
+        latestWorkspaceRef.current.characters = reorderedChars;
+        setCharactersState(reorderedChars);
+
+        const reorderedBooks = lorebooksRef.current.map((l) =>
+          normalizeLorebookTagsWithCatalog(l, nextTags)
+        );
+        lorebooksRef.current = reorderedBooks;
+        latestWorkspaceRef.current.lorebooks = reorderedBooks;
+        setLorebooksState(reorderedBooks);
+
+        const reorderedThemes = themesRef.current.map((th) => {
+          const sorted = sortTagsByContextOrder(th.associatedTags || [], nextTags);
+          return stringArraysEqual(th.associatedTags || [], sorted)
+            ? th
+            : { ...th, associatedTags: sorted };
+        });
+        themesRef.current = reorderedThemes;
+        latestWorkspaceRef.current.themes = reorderedThemes;
+        setThemesState(reorderedThemes);
+      }
 
       void enqueueDiskOperation(() =>
         runDiskSaveRequest(
@@ -5539,6 +6284,7 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
       const currentTags = tagsRef.current;
       const target = currentTags.find((t) => t.id === tagId);
       if (!target) return;
+      if ((target.category || '').toLowerCase() === 'genitals') return;
 
       diskMutationVersionRef.current += 1;
       const opVersion = diskMutationVersionRef.current;

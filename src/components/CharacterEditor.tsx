@@ -53,6 +53,7 @@ import { ContextImagesBar } from './ContextImagesBar';
 import { Tooltip } from './Tooltip';
 import { PortraitCropperModal } from './PortraitCropperModal';
 import { isTagNsfw, TagSelector } from './TagSelector';
+import { sortTagsByContextOrder } from '../utils/tagOrder';
 import {
   buildStatTemplatePreset,
   calculateCardTokenBreakdown,
@@ -498,13 +499,22 @@ export const CharacterEditor: React.FC = () => {
   ]);
 
   const toggleCharacterTag = (tagName: string) => {
-    ensureTagRegistered(tagName);
-    const exists = character.tags.includes(tagName);
+    const registered = ensureTagRegistered(tagName);
+    const canonicalName = registered ? registered.name : tagName.trim();
+    const exists = character.tags.some(
+      (t) => t.trim().toLowerCase() === canonicalName.toLowerCase()
+    );
+    const nextRaw = exists
+      ? character.tags.filter(
+          (t) => t.trim().toLowerCase() !== canonicalName.toLowerCase()
+        )
+      : [...character.tags, canonicalName];
     updateCharacterField(
       'tags',
-      exists
-        ? character.tags.filter((t) => t !== tagName)
-        : [...character.tags, tagName]
+      sortTagsByContextOrder(
+        nextRaw,
+        registered ? [registered, ...tags] : tags
+      )
     );
   };
 
@@ -513,8 +523,18 @@ export const CharacterEditor: React.FC = () => {
     if (!clean) return;
     const registered = ensureTagRegistered(clean);
     const tagName = registered ? registered.name : clean;
-    if (!character.tags.includes(tagName)) {
-      updateCharacterField('tags', [...character.tags, tagName]);
+    if (
+      !character.tags.some(
+        (t) => t.trim().toLowerCase() === tagName.toLowerCase()
+      )
+    ) {
+      updateCharacterField(
+        'tags',
+        sortTagsByContextOrder(
+          [...character.tags, tagName],
+          registered ? [registered, ...tags] : tags
+        )
+      );
     }
     setNewCustomTagInput('');
   };

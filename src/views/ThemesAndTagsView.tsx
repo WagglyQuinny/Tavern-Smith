@@ -27,21 +27,31 @@ import { SmartEditor } from '../components/SmartEditor';
 import { Tooltip } from '../components/Tooltip';
 import { isTagNsfw, TagSelector } from '../components/TagSelector';
 import { AIServiceError, generateCompletionDetailed } from '../services/aiService';
+import {
+  CANONICAL_TAG_CATEGORY_ORDER,
+  getTagCategoryPriority,
+  migrateLegacyTagCategory,
+  sortTagsByContextOrder,
+} from '../utils/tagOrder';
 
 const TAG_CATEGORIES: { value: TagCategory; label: string }[] = [
   { value: 'Setting & Vibe', label: 'Setting & Vibe' },
-  { value: 'Narrative & Meta', label: 'Narrative & Meta' },
   { value: 'Rating', label: 'Rating' },
+  { value: 'Narrative & Meta', label: 'Narrative & Meta' },
   { value: 'Archetype', label: 'Archetype' },
-  { value: 'Body & Attire', label: 'Body & Attire' },
+  { value: 'Body', label: 'Body' },
+  { value: 'Genitals', label: 'Genitals (18+ NSFW)' },
+  { value: 'Attire', label: 'Attire' },
   { value: 'NSFW & Kinks', label: 'NSFW & Kinks' },
   { value: 'Extreme & Hentai Physics', label: 'Extreme & Hentai Physics' },
-  { value: 'Genre & Setting', label: 'Genre & Setting' },
-  { value: 'Personality & Archetype', label: 'Personality & Archetype' },
-  { value: 'Relationship & Role', label: 'Relationship & Role' },
-  { value: 'Tone & Style', label: 'Tone & Style' },
   { value: 'Custom', label: 'Custom' },
 ];
+
+const NSFW_ONLY_CATEGORIES = new Set<string>([
+  'Genitals',
+  'NSFW & Kinks',
+  'Extreme & Hentai Physics',
+]);
 
 const QUICK_SWATCHES = [
   '#6366f1',
@@ -167,6 +177,20 @@ export const ThemesAndTagsView: React.FC = () => {
   const [generatingEditTagDesc, setGeneratingEditTagDesc] = useState(false);
 
   const hideNsfw = Boolean(settings.hideNsfwTags);
+
+  const visibleSelectCategories = useMemo(
+    () =>
+      hideNsfw
+        ? TAG_CATEGORIES.filter((c) => !NSFW_ONLY_CATEGORIES.has(String(c.value)))
+        : TAG_CATEGORIES,
+    [hideNsfw]
+  );
+
+  const effectiveQuickCategory: TagCategory = visibleSelectCategories.some(
+    (c) => c.value === quickTagCategory
+  )
+    ? quickTagCategory
+    : 'Custom';
 
   const handleUpdateActiveTheme = (partial: Partial<ContextTheme>) => {
     updateTheme(activeTheme.id, partial);
@@ -330,11 +354,14 @@ export const ThemesAndTagsView: React.FC = () => {
     const clean = quickTagName.trim();
     if (!clean) return;
 
+    const effectiveNsfw =
+      effectiveQuickCategory === 'Genitals' ? true : quickTagIsNsfw;
+
     const { updatedExisting } = upsertCustomTag({
       name: clean,
       color: quickTagColor,
-      category: quickTagCategory,
-      isNsfw: quickTagIsNsfw,
+      category: effectiveQuickCategory,
+      isNsfw: effectiveNsfw,
       aiContextDescription: quickTagAiDesc,
     });
 
@@ -342,7 +369,7 @@ export const ThemesAndTagsView: React.FC = () => {
       setQuickTagFeedback(`Updated existing tag "${clean}".`);
     } else {
       setQuickTagFeedback(
-        `Created tag "${clean}" (${quickTagIsNsfw ? 'NSFW 18+' : 'SFW'}).`
+        `Created tag "${clean}" (${effectiveNsfw ? 'NSFW 18+' : 'SFW'}).`
       );
     }
 
@@ -363,14 +390,15 @@ export const ThemesAndTagsView: React.FC = () => {
   };
 
   const handleOpenEditModal = (tag: TagDefinition) => {
+    const desc =
+      tag.aiContextDescription || tag.aiDescription || tag.description || '';
     updateThemesTagsDraft({
       editingTagId: tag.id,
       editTagName: tag.name,
-      editTagCategory: tag.category || 'Custom',
+      editTagCategory: migrateLegacyTagCategory(tag.category, tag.name, desc),
       editTagColor: tag.color || '#a855f7',
       editTagIsNsfw: isTagNsfwFlagged(tag),
-      editTagAiDesc:
-        tag.aiContextDescription || tag.aiDescription || tag.description || '',
+      editTagAiDesc: desc,
     });
   };
 
@@ -379,12 +407,15 @@ export const ThemesAndTagsView: React.FC = () => {
     const cleanName = editTagName.trim();
     if (!cleanName) return;
 
+    const effectiveEditNsfw =
+      editTagCategory === 'Genitals' ? true : editTagIsNsfw;
+
     upsertCustomTag({
       id: editingTag.id,
       name: cleanName,
       category: editTagCategory,
       color: editTagColor,
-      isNsfw: editTagIsNsfw,
+      isNsfw: effectiveEditNsfw,
       aiContextDescription: editTagAiDesc,
     });
     setEditingTag(null);
@@ -405,14 +436,8 @@ export const ThemesAndTagsView: React.FC = () => {
   const availableCategories = useMemo(() => {
     const visiblePool = hideNsfw ? tags.filter((t) => !isTagNsfw(t)) : tags;
     const set = new Set<string>();
-    const preferredOrder = [
-      'Setting & Vibe',
-      'Narrative & Meta',
-      'Rating',
-      'Archetype',
-      'Body & Attire',
-      'NSFW & Kinks',
-      'Extreme & Hentai Physics',
+    const preferredOrder: string[] = [
+      ...CANONICAL_TAG_CATEGORY_ORDER.filter((c) => c !== 'Custom'),
       'Genre & Setting',
       'Personality & Archetype',
       'Relationship & Role',
@@ -460,7 +485,7 @@ export const ThemesAndTagsView: React.FC = () => {
     });
   }, [tags, hideNsfw, safetyFilter, categoryFilter, tagSearch]);
 
-  // Group filtered tags by category for clean visual browsing
+  // Group filtered tags by category in canonical priority order
   const groupedTags = useMemo(() => {
     const groups = new Map<string, TagDefinition[]>();
     for (const t of filteredTags) {
@@ -469,7 +494,12 @@ export const ThemesAndTagsView: React.FC = () => {
       list.push(t);
       groups.set(cat, list);
     }
-    return Array.from(groups.entries());
+    return Array.from(groups.entries()).sort(([catA], [catB]) => {
+      const prioA = getTagCategoryPriority(catA);
+      const prioB = getTagCategoryPriority(catB);
+      if (prioA !== prioB) return prioA - prioB;
+      return catA.localeCompare(catB);
+    });
   }, [filteredTags]);
 
   const totalNsfwCount = useMemo(
@@ -708,7 +738,9 @@ export const ThemesAndTagsView: React.FC = () => {
           <TagSelector
             selectedTags={activeTheme.associatedTags || []}
             onChange={(nextTags) =>
-              handleUpdateActiveTheme({ associatedTags: nextTags })
+              handleUpdateActiveTheme({
+                associatedTags: sortTagsByContextOrder(nextTags, tags),
+              })
             }
             title="Theme Default Tags"
             subtitle="Tags included automatically whenever this theme is active"
@@ -801,20 +833,17 @@ export const ThemesAndTagsView: React.FC = () => {
               </label>
               <select
                 aria-label="Tag Category"
-                value={quickTagCategory}
+                value={effectiveQuickCategory}
                 onChange={(e) => {
                   const nextCat = e.target.value as TagCategory;
                   setQuickTagCategory(nextCat);
-                  if (
-                    nextCat === 'NSFW & Kinks' ||
-                    nextCat === 'Extreme & Hentai Physics'
-                  ) {
+                  if (NSFW_ONLY_CATEGORIES.has(String(nextCat))) {
                     setQuickTagIsNsfw(true);
                   }
                 }}
                 className="w-full rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 px-2.5 py-2 text-xs font-medium text-slate-900 dark:text-white focus:outline-none cursor-pointer"
               >
-                {TAG_CATEGORIES.map((c) => (
+                {visibleSelectCategories.map((c) => (
                   <option key={c.value} value={c.value}>
                     {c.label}
                   </option>
@@ -829,14 +858,30 @@ export const ThemesAndTagsView: React.FC = () => {
               </label>
               <button
                 type="button"
-                onClick={() => setQuickTagIsNsfw((prev) => !prev)}
-                className={`flex w-full items-center justify-center gap-1.5 rounded-lg border px-3 py-2 text-xs font-bold cursor-pointer transition-all ${
-                  quickTagIsNsfw
+                disabled={effectiveQuickCategory === 'Genitals'}
+                title={
+                  effectiveQuickCategory === 'Genitals'
+                    ? 'Genitals is an NSFW-only category.'
+                    : 'Toggle SFW / NSFW rating for this tag'
+                }
+                onClick={() => {
+                  if (effectiveQuickCategory === 'Genitals') {
+                    setQuickTagIsNsfw(true);
+                    return;
+                  }
+                  setQuickTagIsNsfw((prev) => !prev);
+                }}
+                className={`flex w-full items-center justify-center gap-1.5 rounded-lg border px-3 py-2 text-xs font-bold transition-all ${
+                  effectiveQuickCategory === 'Genitals'
+                    ? 'cursor-not-allowed opacity-90'
+                    : 'cursor-pointer'
+                } ${
+                  quickTagIsNsfw || effectiveQuickCategory === 'Genitals'
                     ? 'border-rose-500 bg-rose-500/15 text-rose-600 dark:text-rose-300 shadow-2xs'
                     : 'border-emerald-500/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300'
                 }`}
               >
-                {quickTagIsNsfw ? (
+                {quickTagIsNsfw || effectiveQuickCategory === 'Genitals' ? (
                   <>
                     <ShieldAlert className="h-3.5 w-3.5 shrink-0" />
                     <span>🔞 NSFW (18+)</span>
@@ -1177,9 +1222,13 @@ export const ThemesAndTagsView: React.FC = () => {
                 <select
                   aria-label="Edit Tag Category"
                   value={editTagCategory}
-                  onChange={(e) =>
-                    setEditTagCategory(e.target.value as TagCategory)
-                  }
+                  onChange={(e) => {
+                    const nextCat = e.target.value as TagCategory;
+                    setEditTagCategory(nextCat);
+                    if (NSFW_ONLY_CATEGORIES.has(String(nextCat))) {
+                      setEditTagIsNsfw(true);
+                    }
+                  }}
                   className="w-full rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 px-2.5 py-2 text-xs font-medium text-slate-900 dark:text-white focus:outline-none cursor-pointer"
                 >
                   {TAG_CATEGORIES.map((c) => (
@@ -1198,14 +1247,30 @@ export const ThemesAndTagsView: React.FC = () => {
                 </label>
                 <button
                   type="button"
-                  onClick={() => setEditTagIsNsfw((prev) => !prev)}
-                  className={`flex w-full items-center justify-center gap-1.5 rounded-lg border px-3 py-2 text-xs font-bold cursor-pointer transition-all ${
-                    editTagIsNsfw
+                  disabled={editTagCategory === 'Genitals'}
+                  title={
+                    editTagCategory === 'Genitals'
+                      ? 'Genitals is an NSFW-only category.'
+                      : 'Toggle SFW / NSFW rating for this tag'
+                  }
+                  onClick={() => {
+                    if (editTagCategory === 'Genitals') {
+                      setEditTagIsNsfw(true);
+                      return;
+                    }
+                    setEditTagIsNsfw((prev) => !prev);
+                  }}
+                  className={`flex w-full items-center justify-center gap-1.5 rounded-lg border px-3 py-2 text-xs font-bold transition-all ${
+                    editTagCategory === 'Genitals'
+                      ? 'cursor-not-allowed opacity-90'
+                      : 'cursor-pointer'
+                  } ${
+                    editTagIsNsfw || editTagCategory === 'Genitals'
                       ? 'border-rose-500 bg-rose-500/15 text-rose-600 dark:text-rose-300'
                       : 'border-emerald-500/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300'
                   }`}
                 >
-                  {editTagIsNsfw ? (
+                  {editTagIsNsfw || editTagCategory === 'Genitals' ? (
                     <>
                       <ShieldAlert className="h-3.5 w-3.5" />
                       <span>🔞 Flagged NSFW (18+)</span>

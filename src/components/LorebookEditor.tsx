@@ -38,6 +38,7 @@ import { SmartEditor } from './SmartEditor';
 import { ContextImagesBar } from './ContextImagesBar';
 import { Tooltip } from './Tooltip';
 import { isTagNsfw, TagSelector } from './TagSelector';
+import { sortTagsByContextOrder } from '../utils/tagOrder';
 import {
   calculateLorebookTokens,
   estimateTokens,
@@ -397,15 +398,22 @@ export const LorebookEditor: React.FC = () => {
   };
 
   const toggleLorebookGlobalTag = (tagName: string) => {
-    ensureTagRegistered(tagName);
+    const registered = ensureTagRegistered(tagName);
+    const canonicalName = registered ? registered.name : tagName.trim();
+    const catalog = registered ? [registered, ...tags] : tags;
     updateLorebookAndSync((prev) => {
       const current = prev.tags || [];
-      const exists = current.includes(tagName);
+      const exists = current.some(
+        (t) => t.trim().toLowerCase() === canonicalName.toLowerCase()
+      );
+      const nextRaw = exists
+        ? current.filter(
+            (t) => t.trim().toLowerCase() !== canonicalName.toLowerCase()
+          )
+        : [...current, canonicalName];
       return {
         ...prev,
-        tags: exists
-          ? current.filter((t) => t !== tagName)
-          : [...current, tagName],
+        tags: sortTagsByContextOrder(nextRaw, catalog),
       };
     });
   };
@@ -415,12 +423,17 @@ export const LorebookEditor: React.FC = () => {
     if (!clean) return;
     const registered = ensureTagRegistered(clean);
     const tagName = registered ? registered.name : clean;
+    const catalog = registered ? [registered, ...tags] : tags;
     updateLorebookAndSync((prev) => {
       const current = prev.tags || [];
-      if (current.includes(tagName)) return prev;
+      if (
+        current.some((t) => t.trim().toLowerCase() === tagName.toLowerCase())
+      ) {
+        return prev;
+      }
       return {
         ...prev,
-        tags: [...current, tagName],
+        tags: sortTagsByContextOrder([...current, tagName], catalog),
       };
     });
     setNewCustomTagInput('');
@@ -537,13 +550,20 @@ export const LorebookEditor: React.FC = () => {
 
   const toggleEntryTag = (tagName: string) => {
     if (!selectedEntry) return;
-    ensureTagRegistered(tagName);
+    const registered = ensureTagRegistered(tagName);
+    const canonicalName = registered ? registered.name : tagName.trim();
+    const catalog = registered ? [registered, ...tags] : tags;
     const current = selectedEntry.tags || [];
-    const exists = current.includes(tagName);
+    const exists = current.some(
+      (t) => t.trim().toLowerCase() === canonicalName.toLowerCase()
+    );
+    const nextRaw = exists
+      ? current.filter(
+          (t) => t.trim().toLowerCase() !== canonicalName.toLowerCase()
+        )
+      : [...current, canonicalName];
     handleUpdateSelectedEntry({
-      tags: exists
-        ? current.filter((t) => t !== tagName)
-        : [...current, tagName],
+      tags: sortTagsByContextOrder(nextRaw, catalog),
     });
   };
 
@@ -553,10 +573,13 @@ export const LorebookEditor: React.FC = () => {
     if (!clean) return;
     const registered = ensureTagRegistered(clean);
     const tagName = registered ? registered.name : clean;
+    const catalog = registered ? [registered, ...tags] : tags;
     const current = selectedEntry.tags || [];
-    if (!current.includes(tagName)) {
+    if (
+      !current.some((t) => t.trim().toLowerCase() === tagName.toLowerCase())
+    ) {
       handleUpdateSelectedEntry({
-        tags: [...current, tagName],
+        tags: sortTagsByContextOrder([...current, tagName], catalog),
       });
     }
     setNewCustomTagInput('');

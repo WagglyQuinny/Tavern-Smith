@@ -8,7 +8,12 @@ import {
   ShieldAlert,
 } from 'lucide-react';
 import { useStore, isTagNsfwFlagged } from '../context/StoreContext';
-import { TagDefinition } from '../types';
+import { TagCategory, TagDefinition } from '../types';
+import {
+  CANONICAL_TAG_CATEGORY_ORDER,
+  migrateLegacyTagCategory,
+  sortTagsByContextOrder,
+} from '../utils/tagOrder';
 import { Tooltip } from './Tooltip';
 
 interface TagSelectorProps {
@@ -39,12 +44,15 @@ export const TagSelector: React.FC<TagSelectorProps> = ({
   title,
   label,
   subtitle,
-  tooltip = 'Click any tag below to attach it. Tags marked NSFW (18+) automatically mark this card as NSFW, and you can hide 18+ content anytime in Options (⚙️).',
+  tooltip = 'Click any tag below to attach it. Attached tags auto-sort from macro setting down to specific details (Setting & Vibe -> Rating -> Narrative -> Archetype -> Body -> Genitals -> Attire -> Kinks -> Custom).',
   compact = false,
 }) => {
-  const { tags: storeTags, setTags, settings } = useStore();
+  const { tags: storeTags, upsertCustomTag, settings } = useStore();
   const tags = tagsProp || storeTags;
-  const selectedTags = selectedTagsProp ?? selectedTagNames ?? [];
+  const selectedTags = useMemo(
+    () => sortTagsByContextOrder(selectedTagsProp ?? selectedTagNames ?? [], tags),
+    [selectedTagsProp, selectedTagNames, tags]
+  );
   const headerTitle = title || label || 'Tags';
 
   const [searchQuery, setSearchQuery] = useState('');
@@ -58,14 +66,8 @@ export const TagSelector: React.FC<TagSelectorProps> = ({
   const categories = useMemo(() => {
     const visibleSource = hideNsfw ? tags.filter((t) => !isTagNsfw(t)) : tags;
     const set = new Set<string>();
-    const preferredOrder = [
-      'Setting & Vibe',
-      'Narrative & Meta',
-      'Rating',
-      'Archetype',
-      'Body & Attire',
-      'NSFW & Kinks',
-      'Extreme & Hentai Physics',
+    const preferredOrder: string[] = [
+      ...CANONICAL_TAG_CATEGORY_ORDER.filter((c) => c !== 'Custom'),
       'Genre & Setting',
       'Personality & Archetype',
       'Relationship & Role',
@@ -140,15 +142,12 @@ export const TagSelector: React.FC<TagSelectorProps> = ({
     }
     if (onChange) {
       const exists = isSelected(clean);
-      if (exists) {
-        onChange(
-          selectedTags.filter(
+      const nextRaw = exists
+        ? selectedTags.filter(
             (t) => t.trim().toLowerCase() !== clean.toLowerCase()
           )
-        );
-      } else {
-        onChange([...selectedTags, clean]);
-      }
+        : [...selectedTags, clean];
+      onChange(sortTagsByContextOrder(nextRaw, tags));
     }
   };
 
@@ -159,31 +158,38 @@ export const TagSelector: React.FC<TagSelectorProps> = ({
     const existing = tags.find(
       (t) => t.name.trim().toLowerCase() === clean.toLowerCase()
     );
+    let resolvedName = existing ? existing.name : clean;
+    let nextCatalog = tags;
+
     if (!existing) {
-      const targetCat =
+      const targetCat: TagCategory =
         activeCategory !== 'All'
-          ? activeCategory
+          ? migrateLegacyTagCategory(activeCategory, clean, '')
           : quickNewTagNsfw
             ? 'NSFW & Kinks'
             : 'Custom';
-      const newTag: TagDefinition = {
-        id: `tag-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      const resolvedNsfw =
+        quickNewTagNsfw ||
+        targetCat === 'Genitals' ||
+        targetCat === 'NSFW & Kinks' ||
+        targetCat === 'Extreme & Hentai Physics';
+      const { tag: createdTag } = upsertCustomTag({
         name: clean,
-        color: quickNewTagNsfw ? '#f43f5e' : '#a855f7',
+        color: resolvedNsfw ? '#f43f5e' : '#a855f7',
         category: targetCat,
-        isNsfw: quickNewTagNsfw,
+        isNsfw: resolvedNsfw,
         aiContextDescription: `Incorporate thematic, tonal, and character elements consistent with "${clean}".`,
-        aiDescription: `Incorporate thematic, tonal, and character elements consistent with "${clean}".`,
-      };
-      setTags((prev) => [...prev, newTag]);
+      });
+      resolvedName = createdTag.name;
+      nextCatalog = [createdTag, ...tags];
     }
 
     if (onAddCustomTag) {
-      onAddCustomTag(clean);
-    } else if (onToggleTag && !isSelected(clean)) {
-      onToggleTag(clean);
-    } else if (onChange && !isSelected(clean)) {
-      onChange([...selectedTags, clean]);
+      onAddCustomTag(resolvedName);
+    } else if (onToggleTag && !isSelected(resolvedName)) {
+      onToggleTag(resolvedName);
+    } else if (onChange && !isSelected(resolvedName)) {
+      onChange(sortTagsByContextOrder([...selectedTags, resolvedName], nextCatalog));
     }
     setQuickNewTagName('');
   };

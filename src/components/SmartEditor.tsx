@@ -37,6 +37,7 @@ import {
   resolveEffectiveMaxTokens,
 } from '../services/aiService';
 import { readImageFileAsDataUrl } from '../utils/cardIO';
+import { sortTagsByContextOrder } from '../utils/tagOrder';
 import { estimateTokens } from '../utils/tokenCounter';
 import { ContextReferenceImage } from '../types';
 import { Tooltip } from './Tooltip';
@@ -284,10 +285,13 @@ export const SmartEditor: React.FC<SmartEditorProps> = ({
       fieldKey.startsWith('lorebook_') ||
       fieldKey === 'theme_ai_context_prompt'
     ) {
-      return Array.from(new Set(additionalTags));
+      return sortTagsByContextOrder(additionalTags, tags);
     }
-    return Array.from(new Set([...(character.tags || []), ...additionalTags]));
-  }, [fieldKey, character.tags, additionalTags]);
+    return sortTagsByContextOrder(
+      [...(character.tags || []), ...additionalTags],
+      tags
+    );
+  }, [fieldKey, character.tags, additionalTags, tags]);
 
   const effectiveFormatLabel = useMemo(() => {
     const fmt = resolveEffectiveFormat(aiConfig);

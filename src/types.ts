@@ -16,10 +16,12 @@ export type RosterSortOption =
 
 export type TagCategory =
   | 'Setting & Vibe'
-  | 'Narrative & Meta'
   | 'Rating'
+  | 'Narrative & Meta'
   | 'Archetype'
-  | 'Body & Attire'
+  | 'Body'
+  | 'Genitals'
+  | 'Attire'
   | 'Genre & Setting'
   | 'Personality & Archetype'
   | 'Relationship & Role'
