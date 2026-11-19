@@ -63,6 +63,7 @@ export interface ContextTheme {
   aiContextPrompt: string;
   associatedTags: string[];
   isBuiltIn?: boolean;
+  isNsfw?: boolean;
 }
 
 export type StatItemType = 'number' | 'bar' | 'text' | 'list' | 'group';
@@ -242,6 +243,8 @@ export interface AIBackendConfig {
   ghostTextEnabled: boolean;
   debounceMs: number;
   availableModels: string[];
+  loadedModels?: string[];
+  modelStatuses?: Record<string, 'loaded' | 'not-loaded'>;
   forceEnableVision?: boolean;
   savedProviderKeys?: Record<string, string>;
   savedProviderModels?: Record<string, string>;
@@ -315,6 +318,8 @@ export interface TavernSmithMetaPayload {
   activeThemeId: string;
   contextThemes?: ContextTheme[];
   tags?: TagDefinition[];
+  deletedDefaultTagIds?: string[];
+  deletedDefaultThemeIds?: string[];
   settings?: Partial<AppSettings>;
   aiConfig?: Partial<AIBackendConfig>;
   activeCharacterId?: string;
@@ -333,6 +338,14 @@ export interface DiskStateResponse {
   vault: Record<string, unknown> | null;
   files: SavedFileEntry[];
   updatedAt: string;
+}
+
+export interface AppVaultStateResponse {
+  ok: boolean;
+  storagePath: string;
+  appKey: string;
+  vault: Record<string, unknown> | null;
+  legacyVault: Record<string, unknown> | null;
 }
 
 export interface NameConflictRequest {

@@ -23,6 +23,7 @@ import {
 } from 'lucide-react';
 import {
   DEFAULT_SMART_EDITOR_FIELD_DRAFT,
+  isTagNsfwFlagged,
   useStore,
 } from '../context/StoreContext';
 import {
@@ -36,7 +37,10 @@ import {
   resolveEffectiveFormat,
   resolveEffectiveMaxTokens,
 } from '../services/aiService';
-import { readImageFileAsDataUrl } from '../utils/cardIO';
+import {
+  isAllowedRasterImageFile,
+  readImageFileAsDataUrl,
+} from '../utils/cardIO';
 import { sortTagsByContextOrder } from '../utils/tagOrder';
 import { estimateTokens } from '../utils/tokenCounter';
 import { ContextReferenceImage } from '../types';
@@ -161,6 +165,7 @@ export const SmartEditor: React.FC<SmartEditorProps> = ({
     activeTheme,
     tags,
     aiConfig,
+    settings,
     workspaceDraftCache,
     updateSmartEditorDraft,
   } = useStore();
@@ -210,6 +215,7 @@ export const SmartEditor: React.FC<SmartEditorProps> = ({
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const backdropRef = useRef<HTMLDivElement | null>(null);
   const tempRefImageInputRef = useRef<HTMLInputElement | null>(null);
+  const isMountedRef = useRef(true);
 
   // Non-AI Macro Autocomplete state
   const [macroMenuOpen, setMacroMenuOpen] = useState(false);
@@ -281,17 +287,25 @@ export const SmartEditor: React.FC<SmartEditorProps> = ({
   const tokenCount = useMemo(() => estimateTokens(value), [value]);
 
   const combinedActiveTagNames = useMemo(() => {
-    if (
+    const raw =
       fieldKey.startsWith('lorebook_') ||
       fieldKey === 'theme_ai_context_prompt'
-    ) {
-      return sortTagsByContextOrder(additionalTags, tags);
+        ? sortTagsByContextOrder(additionalTags, tags)
+        : sortTagsByContextOrder(
+            [...(character.tags || []), ...additionalTags],
+            tags
+          );
+    if (settings.hideNsfwTags) {
+      return raw.filter((tagName) => !isTagNsfwFlagged(tagName, tags));
     }
-    return sortTagsByContextOrder(
-      [...(character.tags || []), ...additionalTags],
-      tags
-    );
-  }, [fieldKey, character.tags, additionalTags, tags]);
+    return raw;
+  }, [
+    fieldKey,
+    character.tags,
+    additionalTags,
+    tags,
+    settings.hideNsfwTags,
+  ]);
 
   const effectiveFormatLabel = useMemo(() => {
     const fmt = resolveEffectiveFormat(aiConfig);
@@ -321,6 +335,11 @@ export const SmartEditor: React.FC<SmartEditorProps> = ({
     }
   }, []);
 
+  // Re-sync scroll offset when controlled value changes externally (e.g., AI Generate)
+  useEffect(() => {
+    handleScroll();
+  }, [value, handleScroll]);
+
   const cancelPendingGhostRequest = useCallback(() => {
     if (ghostDebounceTimerRef.current !== null) {
       window.clearTimeout(ghostDebounceTimerRef.current);
@@ -330,11 +349,15 @@ export const SmartEditor: React.FC<SmartEditorProps> = ({
       ghostAbortControllerRef.current.abort();
       ghostAbortControllerRef.current = null;
     }
-    setIsFetchingGhost(false);
+    if (isMountedRef.current) {
+      setIsFetchingGhost(false);
+    }
   }, []);
 
   useEffect(() => {
+    isMountedRef.current = true;
     return () => {
+      isMountedRef.current = false;
       if (ghostDebounceTimerRef.current !== null) {
         window.clearTimeout(ghostDebounceTimerRef.current);
       }
@@ -343,27 +366,32 @@ export const SmartEditor: React.FC<SmartEditorProps> = ({
       }
       if (ghostAbortControllerRef.current) {
         ghostAbortControllerRef.current.abort();
+        ghostAbortControllerRef.current = null;
       }
       if (generateAbortControllerRef.current) {
         generateAbortControllerRef.current.abort();
+        generateAbortControllerRef.current = null;
       }
     };
   }, []);
 
   const handleLoadTempReferenceFile = async (file: File) => {
-    if (!file.type.startsWith('image/')) {
+    if (!isAllowedRasterImageFile(file)) {
       setAiError({
-        message: 'Please select or drop a valid image file (PNG, JPEG, WebP).',
+        message:
+          'Please select or drop a valid raster image file (PNG, JPEG, WebP). SVG files are blocked for security.',
       });
       return;
     }
     try {
       const rawDataUrl = await readImageFileAsDataUrl(file);
       const compressed = await compressImageForVision(rawDataUrl, 512);
+      if (!isMountedRef.current) return;
       setTempReferenceImageUrl(compressed);
       setTempReferenceImageName(file.name);
       setAiError(null);
     } catch (err) {
+      if (!isMountedRef.current) return;
       setAiError({
         message:
           err instanceof Error
@@ -405,11 +433,14 @@ export const SmartEditor: React.FC<SmartEditorProps> = ({
     if (!textarea) return;
 
     const caretPos = textarea.selectionStart ?? value.length;
+    const selectionEnd = Math.max(caretPos, textarea.selectionEnd ?? caretPos);
     const startIdx =
-      macroTriggerIndex !== null ? macroTriggerIndex : caretPos;
+      macroTriggerIndex !== null && macroTriggerIndex <= caretPos
+        ? macroTriggerIndex
+        : caretPos;
 
     const before = value.slice(0, startIdx);
-    const after = value.slice(caretPos);
+    const after = value.slice(selectionEnd);
     const updated = `${before}${macroString}${after}`;
 
     onChange(updated);
@@ -445,17 +476,14 @@ export const SmartEditor: React.FC<SmartEditorProps> = ({
     });
   }, [ghostText, value, onChange, setGhostText]);
 
-  // Build complete snapshot of existing Character & Lorebook fields for system context
+  // Build complete snapshot of existing entity fields for system context (strictly isolated by entity type)
   const cardContextSnapshot = useMemo(() => {
-    if (fieldKey.startsWith('lorebook_') && extraContextSummary) {
-      return [
-        extraContextSummary,
-        character.name && character.name !== 'New Character'
-          ? `Active Character Reference: ${character.name}`
-          : '',
-      ]
-        .filter(Boolean)
-        .join('\n');
+    if (fieldKey === 'theme_ai_context_prompt') {
+      return extraContextSummary || 'Context Theme AI Style Prompt';
+    }
+
+    if (fieldKey.startsWith('lorebook_')) {
+      return extraContextSummary || '';
     }
 
     return [
@@ -512,6 +540,7 @@ export const SmartEditor: React.FC<SmartEditorProps> = ({
         activeTheme,
         allTags: tags,
         characterTags: combinedActiveTagNames,
+        hideNsfw: settings.hideNsfwTags,
       }
     );
     const notes: string[] = [];
@@ -538,6 +567,7 @@ export const SmartEditor: React.FC<SmartEditorProps> = ({
     activeTheme,
     tags,
     combinedActiveTagNames,
+    settings.hideNsfwTags,
     value,
     label,
     customInstruction,
@@ -552,6 +582,7 @@ export const SmartEditor: React.FC<SmartEditorProps> = ({
     aiConfig,
     activeTheme,
     tags,
+    hideNsfwTags: settings.hideNsfwTags,
     cardContextSnapshot,
     combinedActiveTagNames,
     label,
@@ -563,6 +594,7 @@ export const SmartEditor: React.FC<SmartEditorProps> = ({
     aiConfig,
     activeTheme,
     tags,
+    hideNsfwTags: settings.hideNsfwTags,
     cardContextSnapshot,
     combinedActiveTagNames,
     label,
@@ -616,16 +648,17 @@ export const SmartEditor: React.FC<SmartEditorProps> = ({
             controller.signal,
             {
               isGhostText: true,
-              maxTokens: Math.max(8192, ctx.aiConfig.maxTokens || 8192),
+              maxTokens: Math.min(512, Math.max(96, ctx.aiConfig.maxTokens || 256)),
               temperature: ctx.aiConfig.temperature,
               activeTheme: ctx.activeTheme,
               allTags: ctx.tags,
               characterTags: ctx.combinedActiveTagNames,
-              // Notice: `imageDataUrl` is strictly OMITTED here so Ghost-Text is 100% text-only
+              hideNsfw: ctx.hideNsfwTags,
+              // Notice: `imageDataUrls` is strictly OMITTED here so Ghost-Text is 100% text-only
             }
           );
 
-          if (!controller.signal.aborted) {
+          if (!controller.signal.aborted && isMountedRef.current) {
             const cleaned = completion
               .replace(/^```[\w-]*\s*\n?/i, '')
               .replace(/\n?```\s*$/i, '')
@@ -645,6 +678,7 @@ export const SmartEditor: React.FC<SmartEditorProps> = ({
           if (err instanceof DOMException && err.name === 'AbortError') {
             return;
           }
+          if (!isMountedRef.current) return;
           const msg =
             err instanceof Error && err.message
               ? err.message
@@ -654,9 +688,9 @@ export const SmartEditor: React.FC<SmartEditorProps> = ({
         } finally {
           if (ghostAbortControllerRef.current === controller) {
             ghostAbortControllerRef.current = null;
-          }
-          if (!controller.signal.aborted) {
-            setIsFetchingGhost(false);
+            if (isMountedRef.current) {
+              setIsFetchingGhost(false);
+            }
           }
         }
       }, delay);
@@ -665,7 +699,7 @@ export const SmartEditor: React.FC<SmartEditorProps> = ({
   );
 
   // Cancel pending ghost suggestions only if ghost text is explicitly disabled,
-  // or when switching cards/fields (`resolvedScopeKey`) / unmounting.
+  // or cancel ALL pending requests when switching cards/fields (`resolvedScopeKey`) / unmounting.
   useEffect(() => {
     if (!aiConfig.ghostTextEnabled) {
       cancelPendingGhostRequest();
@@ -675,6 +709,15 @@ export const SmartEditor: React.FC<SmartEditorProps> = ({
   useEffect(() => {
     return () => {
       cancelPendingGhostRequest();
+      if (generateAbortControllerRef.current) {
+        generateAbortControllerRef.current.abort();
+        generateAbortControllerRef.current = null;
+      }
+      if (isMountedRef.current) {
+        setIsGeneratingField(false);
+        setAiError(null);
+        setGhostError(null);
+      }
     };
   }, [resolvedScopeKey, cancelPendingGhostRequest]);
 
@@ -739,15 +782,18 @@ export const SmartEditor: React.FC<SmartEditorProps> = ({
           activeTheme,
           allTags: tags,
           characterTags: combinedActiveTagNames,
+          hideNsfw: settings.hideNsfwTags,
           imageDataUrls:
             activeVisionImageUrls.length > 0
               ? activeVisionImageUrls
               : undefined,
-          onVisionFallback: (warning) => setVisionFallbackToast(warning),
+          onVisionFallback: (warning) => {
+            if (isMountedRef.current) setVisionFallbackToast(warning);
+          },
         }
       );
 
-      if (!controller.signal.aborted) {
+      if (!controller.signal.aborted && isMountedRef.current) {
         if (detailed.content.trim()) {
           if (detailed.visionFallbackWarning) {
             setVisionFallbackToast(detailed.visionFallbackWarning);
@@ -767,6 +813,7 @@ export const SmartEditor: React.FC<SmartEditorProps> = ({
       if (err instanceof DOMException && err.name === 'AbortError') {
         return;
       }
+      if (!isMountedRef.current) return;
       if (err instanceof AIServiceError) {
         setAiError({
           message: err.message,
@@ -781,8 +828,11 @@ export const SmartEditor: React.FC<SmartEditorProps> = ({
         });
       }
     } finally {
-      if (!controller.signal.aborted) {
-        setIsGeneratingField(false);
+      if (generateAbortControllerRef.current === controller) {
+        generateAbortControllerRef.current = null;
+        if (isMountedRef.current) {
+          setIsGeneratingField(false);
+        }
       }
     }
   };
@@ -869,6 +919,7 @@ export const SmartEditor: React.FC<SmartEditorProps> = ({
         <div className="flex flex-wrap items-center gap-2">
           <button
             type="button"
+            onMouseDown={(e) => e.preventDefault()}
             onClick={() => {
               const textarea = textareaRef.current;
               const pos = textarea?.selectionStart ?? value.length;
@@ -997,11 +1048,16 @@ export const SmartEditor: React.FC<SmartEditorProps> = ({
               <div
                 onDragOver={(e) => {
                   e.preventDefault();
+                  e.stopPropagation();
                   setIsDraggingRefImage(true);
                 }}
-                onDragLeave={() => setIsDraggingRefImage(false)}
+                onDragLeave={(e) => {
+                  e.stopPropagation();
+                  setIsDraggingRefImage(false);
+                }}
                 onDrop={(e) => {
                   e.preventDefault();
+                  e.stopPropagation();
                   setIsDraggingRefImage(false);
                   const droppedFile = e.dataTransfer.files?.[0];
                   if (droppedFile) {
@@ -1022,7 +1078,7 @@ export const SmartEditor: React.FC<SmartEditorProps> = ({
                 <input
                   ref={tempRefImageInputRef}
                   type="file"
-                  accept="image/*"
+                  accept="image/png,image/jpeg,image/webp,.png,.jpg,.jpeg,.webp"
                   className="hidden"
                   onChange={(e) => {
                     const f = e.target.files?.[0];
@@ -1221,10 +1277,8 @@ export const SmartEditor: React.FC<SmartEditorProps> = ({
                   <button
                     key={item.macro}
                     type="button"
-                    onMouseDown={(e) => {
-                      e.preventDefault();
-                      insertMacro(item.macro);
-                    }}
+                    onMouseDown={(e) => e.preventDefault()}
+                    onClick={() => insertMacro(item.macro)}
                     style={
                       isSelected
                         ? {
@@ -1261,19 +1315,30 @@ export const SmartEditor: React.FC<SmartEditorProps> = ({
           </div>
         )}
 
-        {/* Backdrop Layer: Renders visible text + zero-padding {{macro}} highlights */}
+        {/* Backdrop Layer: Renders visible text, placeholder, and zero-padding {{macro}} highlights */}
         <div
           ref={backdropRef}
           aria-hidden="true"
-          className="pointer-events-none absolute inset-0 overflow-hidden whitespace-pre-wrap break-words p-3.5 font-mono text-xs leading-relaxed text-slate-900 dark:text-slate-100 select-none"
+          className="pointer-events-none absolute inset-0 overflow-hidden [scrollbar-gutter:stable] whitespace-pre-wrap break-words p-3.5 font-mono text-xs leading-relaxed text-slate-900 dark:text-slate-100 select-none"
         >
-          {renderHighlightedBackdrop(value)}
-          {value.endsWith('\n') ? '\n' : ''}
+          {value ? (
+            <>
+              {renderHighlightedBackdrop(value)}
+              {value.endsWith('\n') ? '\n' : ''}
+            </>
+          ) : (
+            placeholder && (
+              <span className="text-slate-400 dark:text-slate-600">
+                {placeholder}
+              </span>
+            )
+          )}
         </div>
 
         {/* Foreground Interactive Textarea: Transparent text fill with high-visibility caret for 1:1 pixel alignment */}
         <textarea
           ref={textareaRef}
+          aria-label={label}
           rows={rows}
           value={value}
           onChange={handleTextChange}
@@ -1290,14 +1355,14 @@ export const SmartEditor: React.FC<SmartEditorProps> = ({
               150
             );
           }}
-          placeholder={placeholder}
+          placeholder=""
           spellCheck={true}
           style={{
             color: 'transparent',
             WebkitTextFillColor: 'transparent',
             caretColor: 'var(--theme-accent)',
           }}
-          className="relative z-10 block w-full resize-y bg-transparent p-3.5 font-mono text-xs leading-relaxed placeholder:text-slate-400 dark:placeholder:text-slate-600 focus:outline-none selection:bg-sky-500/25"
+          className="relative z-10 block w-full resize-y overflow-y-auto overflow-x-hidden [scrollbar-gutter:stable] bg-transparent p-3.5 font-mono text-xs leading-relaxed focus:outline-none selection:bg-sky-500/25"
         />
       </div>
 
@@ -1313,10 +1378,8 @@ export const SmartEditor: React.FC<SmartEditorProps> = ({
         >
           <button
             type="button"
-            onMouseDown={(e) => {
-              e.preventDefault();
-              acceptGhostText();
-            }}
+            onMouseDown={(e) => e.preventDefault()}
+            onClick={() => acceptGhostText()}
             className="flex flex-1 min-w-0 w-full items-start gap-2 text-left cursor-pointer group"
             title="Click or press Tab to insert this AI suggestion"
           >
@@ -1336,10 +1399,8 @@ export const SmartEditor: React.FC<SmartEditorProps> = ({
           <div className="flex items-center gap-1.5 shrink-0 self-end sm:self-start">
             <button
               type="button"
-              onMouseDown={(e) => {
-                e.preventDefault();
-                acceptGhostText();
-              }}
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={() => acceptGhostText()}
               style={{ borderColor: 'var(--theme-accent)' }}
               className="theme-hover-outline flex items-center gap-1 rounded-md border bg-white dark:bg-slate-900 px-2.5 py-1 font-mono text-[11px] font-semibold text-slate-900 dark:text-white cursor-pointer whitespace-nowrap"
             >
@@ -1348,10 +1409,8 @@ export const SmartEditor: React.FC<SmartEditorProps> = ({
             </button>
             <button
               type="button"
-              onMouseDown={(e) => {
-                e.preventDefault();
-                setGhostText('');
-              }}
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={() => setGhostText('')}
               title="Dismiss AI suggestion (Esc)"
               aria-label="Dismiss AI suggestion"
               className="rounded-md border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-1 text-slate-500 hover:text-slate-800 dark:hover:text-white cursor-pointer"
@@ -1372,10 +1431,8 @@ export const SmartEditor: React.FC<SmartEditorProps> = ({
           </div>
           <button
             type="button"
-            onMouseDown={(e) => {
-              e.preventDefault();
-              setGhostError(null);
-            }}
+            onMouseDown={(e) => e.preventDefault()}
+            onClick={() => setGhostError(null)}
             title="Dismiss error"
             aria-label="Dismiss suggestion error"
             className="rounded p-0.5 text-amber-700 dark:text-amber-300 hover:opacity-75 cursor-pointer shrink-0"
@@ -1414,10 +1471,8 @@ export const SmartEditor: React.FC<SmartEditorProps> = ({
               <span>Writing suggestion...</span>
               <button
                 type="button"
-                onMouseDown={(e) => {
-                  e.preventDefault();
-                  cancelPendingGhostRequest();
-                }}
+                onMouseDown={(e) => e.preventDefault()}
+                onClick={() => cancelPendingGhostRequest()}
                 className="rounded px-1.5 py-0.5 text-[10px] font-medium text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-white border border-slate-200 dark:border-slate-700 cursor-pointer"
               >
                 Stop

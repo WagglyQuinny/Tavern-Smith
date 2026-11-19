@@ -324,9 +324,11 @@ const DeleteConfirmationModal: React.FC = () => {
         ? './Saves/Themes/'
         : fileKind === 'tag'
           ? './Saves/Tags/'
-          : fileKind === 'meta' || fileKind === 'vault'
-            ? './Saves/'
-            : './Saves/Lorebooks/';
+          : fileKind === 'vault'
+            ? './.tavernsmith-app/'
+            : fileKind === 'meta'
+              ? './Saves/'
+              : './Saves/Lorebooks/';
 
   return (
     <div
@@ -374,7 +376,9 @@ const DeleteConfirmationModal: React.FC = () => {
           {pendingDeleteTarget.subtitle
             ? `— ${pendingDeleteTarget.subtitle} — `
             : ''}
-          from your roster and saved files? This cannot be undone.
+          {fileKind === 'tag'
+            ? 'from your tag library, every character, lorebook, entry, theme, and saved files? This cannot be undone.'
+            : 'from your roster and saved files? This cannot be undone.'}
         </p>
 
         <div className="flex items-center justify-end gap-2 pt-2">

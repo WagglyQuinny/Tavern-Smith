@@ -1,12 +1,16 @@
 import tailwindcss from '@tailwindcss/vite';
 import react from '@vitejs/plugin-react';
+import crypto from 'crypto';
 import fs from 'fs';
 import type { IncomingMessage, ServerResponse } from 'http';
 import path from 'path';
 import { defineConfig, type Plugin } from 'vite';
 
 const META_FILENAME = '_tavernsmith_meta.json';
-const VAULT_FILENAME = '_tavernsmith_vault.enc';
+const LEGACY_VAULT_FILENAME = '_tavernsmith_vault.enc';
+const APP_VAULT_DIRNAME = '.tavernsmith-app';
+const APP_VAULT_FILENAME = 'credentials.vault.enc';
+const APP_VAULT_KEY_FILENAME = 'vault.key';
 
 const MAX_DISK_BODY_BYTES = 128 * 1024 * 1024;
 
@@ -28,31 +32,97 @@ function getCanonicalWorkspaceRoot(): string {
   }
 }
 
-function isPathInsideWorkspace(rootDir: string, candidatePath: string): boolean {
-  const rel = path.relative(rootDir, candidatePath);
-  return rel !== '' && !rel.startsWith('..') && !path.isAbsolute(rel);
-}
-
-function hasWorkspaceConfinedAncestor(
-  rootDir: string,
-  candidatePath: string
-): boolean {
-  let probe = candidatePath;
-  while (!fs.existsSync(probe)) {
-    const parent = path.dirname(probe);
-    if (parent === probe) break;
-    probe = parent;
-  }
+function isFileConfinedInDir(dirPath: string, candidatePath: string): boolean {
   try {
-    const realAncestor = fs.existsSync(probe) ? fs.realpathSync(probe) : probe;
-    const rel = path.relative(rootDir, realAncestor);
-    return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel));
+    const realDir = fs.realpathSync(dirPath);
+    const realCandidate = fs.realpathSync(candidatePath);
+    const rel = path.relative(realDir, realCandidate);
+    return rel !== '' && !rel.startsWith('..') && !path.isAbsolute(rel);
   } catch {
     return false;
   }
 }
 
-function resolveSavesRoot(customSavePath?: string): {
+function isLocalHostname(hostname: string): boolean {
+  const clean = hostname.trim().toLowerCase().replace(/^\[|\]$/g, '');
+  return clean === 'localhost' || clean === '127.0.0.1' || clean === '::1';
+}
+
+function isLocalHostHeader(hostHeader?: string): boolean {
+  if (!hostHeader || typeof hostHeader !== 'string') return false;
+  try {
+    const parsed = new URL(`http://${hostHeader.trim()}`);
+    return isLocalHostname(parsed.hostname);
+  } catch {
+    return false;
+  }
+}
+
+function validateLocalApiRequest(
+  req: IncomingMessage,
+  requireJsonContentType: boolean
+): { ok: true } | { ok: false; status: number; error: string } {
+  const hostHeader = req.headers.host;
+  if (!isLocalHostHeader(hostHeader)) {
+    return {
+      ok: false,
+      status: 403,
+      error: 'Blocked request with non-local Host header.',
+    };
+  }
+
+  const secFetchSite = String(req.headers['sec-fetch-site'] || '')
+    .trim()
+    .toLowerCase();
+  if (secFetchSite && secFetchSite !== 'same-origin' && secFetchSite !== 'none') {
+    return {
+      ok: false,
+      status: 403,
+      error: 'Blocked cross-site request to local TavernSmith API.',
+    };
+  }
+
+  const originHeader = req.headers.origin;
+  if (typeof originHeader === 'string' && originHeader.trim()) {
+    try {
+      const originUrl = new URL(originHeader.trim());
+      if (
+        (originUrl.protocol !== 'http:' && originUrl.protocol !== 'https:') ||
+        !isLocalHostname(originUrl.hostname) ||
+        originUrl.host.toLowerCase() !== String(hostHeader).trim().toLowerCase()
+      ) {
+        return {
+          ok: false,
+          status: 403,
+          error: 'Blocked cross-origin request to local TavernSmith API.',
+        };
+      }
+    } catch {
+      return {
+        ok: false,
+        status: 403,
+        error: 'Blocked request with malformed Origin header.',
+      };
+    }
+  }
+
+  if (requireJsonContentType) {
+    const contentType = String(req.headers['content-type'] || '')
+      .trim()
+      .toLowerCase();
+    if (!contentType.startsWith('application/json')) {
+      return {
+        ok: false,
+        status: 415,
+        error: 'POST requests to local APIs must use Content-Type: application/json.',
+      };
+    }
+  }
+
+  return { ok: true };
+}
+
+function resolveSavesRoot(): {
   diskRoot: string;
   resolvedPath: string;
   charsDir: string;
@@ -61,31 +131,8 @@ function resolveSavesRoot(customSavePath?: string): {
   tagsDir: string;
 } {
   const workspaceRoot = getCanonicalWorkspaceRoot();
-  const defaultPath = path.join(workspaceRoot, 'Saves');
-  const trimmed = (customSavePath || '').trim();
-  const useCustom =
-    trimmed &&
-    trimmed !== './Saves' &&
-    trimmed !== './Saves/' &&
-    trimmed !== '/Saves/';
-
-  let resolvedPath = defaultPath;
-  let diskRoot = './Saves/';
-
-  if (useCustom) {
-    const candidate = path.resolve(workspaceRoot, trimmed);
-    if (
-      isPathInsideWorkspace(workspaceRoot, candidate) &&
-      hasWorkspaceConfinedAncestor(workspaceRoot, candidate)
-    ) {
-      resolvedPath = candidate;
-      const normalizedRel = path
-        .relative(workspaceRoot, candidate)
-        .replace(/\\/g, '/')
-        .replace(/\/+$/, '');
-      diskRoot = `./${normalizedRel}/`;
-    }
-  }
+  const resolvedPath = path.join(workspaceRoot, 'Saves');
+  const diskRoot = './Saves/';
 
   const charsDir = path.join(resolvedPath, 'Characters');
   const loreDir = path.join(resolvedPath, 'Lorebooks');
@@ -99,6 +146,118 @@ function resolveSavesRoot(customSavePath?: string): {
   fs.mkdirSync(tagsDir, { recursive: true });
 
   return { diskRoot, resolvedPath, charsDir, loreDir, themesDir, tagsDir };
+}
+
+function resolveAppVaultPaths(): {
+  appVaultDir: string;
+  vaultFilePath: string;
+  keyFilePath: string;
+  legacyVaultPath: string;
+} {
+  const workspaceRoot = getCanonicalWorkspaceRoot();
+  const appVaultDir = path.join(workspaceRoot, APP_VAULT_DIRNAME);
+  fs.mkdirSync(appVaultDir, { recursive: true, mode: 0o700 });
+  return {
+    appVaultDir,
+    vaultFilePath: path.join(appVaultDir, APP_VAULT_FILENAME),
+    keyFilePath: path.join(appVaultDir, APP_VAULT_KEY_FILENAME),
+    legacyVaultPath: path.join(workspaceRoot, 'Saves', LEGACY_VAULT_FILENAME),
+  };
+}
+
+function readOrCreateAppVaultKey(keyFilePath: string): string {
+  try {
+    if (fs.existsSync(keyFilePath)) {
+      const existing = fs.readFileSync(keyFilePath, 'utf8').trim();
+      if (existing.length >= 32) {
+        return existing;
+      }
+    }
+  } catch {
+    // Regenerate below
+  }
+  const generated = crypto.randomBytes(32).toString('base64');
+  fs.writeFileSync(keyFilePath, `${generated}\n`, {
+    encoding: 'utf8',
+    mode: 0o600,
+  });
+  try {
+    fs.chmodSync(keyFilePath, 0o600);
+  } catch {
+    // Ignore on Windows
+  }
+  return generated;
+}
+
+function readAppVaultStateOnDisk(): {
+  ok: true;
+  storagePath: string;
+  appKey: string;
+  vault: Record<string, unknown> | null;
+  legacyVault: Record<string, unknown> | null;
+} {
+  const { vaultFilePath, keyFilePath, legacyVaultPath } = resolveAppVaultPaths();
+  const appKey = readOrCreateAppVaultKey(keyFilePath);
+  let vault: Record<string, unknown> | null = null;
+  let legacyVault: Record<string, unknown> | null = null;
+
+  if (fs.existsSync(vaultFilePath)) {
+    const inspected = inspectDiskJsonFile(vaultFilePath);
+    if (inspected.ok) {
+      vault = inspected.parsed;
+    }
+  }
+
+  if (!vault && fs.existsSync(legacyVaultPath)) {
+    const inspectedLegacy = inspectDiskJsonFile(legacyVaultPath);
+    if (inspectedLegacy.ok) {
+      legacyVault = inspectedLegacy.parsed;
+    }
+  }
+
+  return {
+    ok: true,
+    storagePath: `./${APP_VAULT_DIRNAME}/`,
+    appKey,
+    vault,
+    legacyVault,
+  };
+}
+
+function saveAppVaultStateOnDisk(body: Record<string, unknown>): {
+  ok: true;
+  storagePath: string;
+  saved: boolean;
+} {
+  const { vaultFilePath, keyFilePath, legacyVaultPath } = resolveAppVaultPaths();
+  readOrCreateAppVaultKey(keyFilePath);
+
+  if (body.vault && typeof body.vault === 'object' && !Array.isArray(body.vault)) {
+    fs.writeFileSync(
+      vaultFilePath,
+      JSON.stringify(body.vault, null, 2),
+      { encoding: 'utf8', mode: 0o600 }
+    );
+    try {
+      fs.chmodSync(vaultFilePath, 0o600);
+    } catch {
+      // Ignore on Windows
+    }
+  }
+
+  if (body.removeLegacy === true && fs.existsSync(legacyVaultPath)) {
+    try {
+      fs.unlinkSync(legacyVaultPath);
+    } catch {
+      // Ignore if already removed
+    }
+  }
+
+  return {
+    ok: true,
+    storagePath: `./${APP_VAULT_DIRNAME}/`,
+    saved: true,
+  };
 }
 
 type DiskScannedFileEntry = {
@@ -183,16 +342,15 @@ function inspectDiskJsonFile(fullPath: string): {
   }
 }
 
-export function scanSavesDirectoryOnDisk(customSavePath?: string) {
+export function scanSavesDirectoryOnDisk() {
   const { diskRoot, resolvedPath, charsDir, loreDir, themesDir, tagsDir } =
-    resolveSavesRoot(customSavePath);
+    resolveSavesRoot();
 
   const characters: Record<string, unknown>[] = [];
   const lorebooks: Record<string, unknown>[] = [];
   const themes: Record<string, unknown>[] = [];
   const tags: Record<string, unknown>[] = [];
   let meta: Record<string, unknown> | null = null;
-  let vault: Record<string, unknown> | null = null;
   const files: DiskScannedFileEntry[] = [];
 
   // 1. Read all .json files inside ./Saves/Characters/ strictly as characters[]
@@ -204,6 +362,7 @@ export function scanSavesDirectoryOnDisk(customSavePath?: string) {
 
     for (const entry of charEntries) {
       const fullPath = path.join(charsDir, entry.name);
+      if (!isFileConfinedInDir(charsDir, fullPath)) continue;
       const inspected = inspectDiskJsonFile(fullPath);
       if (!inspected.ok) {
         files.push({
@@ -248,6 +407,7 @@ export function scanSavesDirectoryOnDisk(customSavePath?: string) {
 
     for (const entry of loreEntries) {
       const fullPath = path.join(loreDir, entry.name);
+      if (!isFileConfinedInDir(loreDir, fullPath)) continue;
       const inspected = inspectDiskJsonFile(fullPath);
       if (!inspected.ok) {
         files.push({
@@ -293,6 +453,7 @@ export function scanSavesDirectoryOnDisk(customSavePath?: string) {
 
     for (const entry of themeEntries) {
       const fullPath = path.join(themesDir, entry.name);
+      if (!isFileConfinedInDir(themesDir, fullPath)) continue;
       const inspected = inspectDiskJsonFile(fullPath);
       if (!inspected.ok) {
         files.push({
@@ -335,6 +496,7 @@ export function scanSavesDirectoryOnDisk(customSavePath?: string) {
 
     for (const entry of tagEntries) {
       const fullPath = path.join(tagsDir, entry.name);
+      if (!isFileConfinedInDir(tagsDir, fullPath)) continue;
       const inspected = inspectDiskJsonFile(fullPath);
       if (!inspected.ok) {
         files.push({
@@ -370,7 +532,7 @@ export function scanSavesDirectoryOnDisk(customSavePath?: string) {
 
   // 5. Read ./Saves/_tavernsmith_meta.json
   const metaPath = path.join(resolvedPath, META_FILENAME);
-  if (fs.existsSync(metaPath)) {
+  if (fs.existsSync(metaPath) && isFileConfinedInDir(resolvedPath, metaPath)) {
     const inspected = inspectDiskJsonFile(metaPath);
     if (!inspected.ok) {
       files.push({
@@ -398,46 +560,16 @@ export function scanSavesDirectoryOnDisk(customSavePath?: string) {
     }
   }
 
-  // 6. Read ./Saves/_tavernsmith_vault.enc
-  const vaultPath = path.join(resolvedPath, VAULT_FILENAME);
-  if (fs.existsSync(vaultPath)) {
-    const inspected = inspectDiskJsonFile(vaultPath);
-    if (!inspected.ok) {
-      files.push({
-        id: `/${VAULT_FILENAME}`,
-        folderPath: '/',
-        fileName: VAULT_FILENAME,
-        kind: 'vault',
-        sizeBytes: inspected.sizeBytes,
-        updatedAt: inspected.updatedAt,
-        content: inspected.content,
-        isCorrupted: true,
-        corruptReason: inspected.reason,
-      });
-    } else {
-      vault = inspected.parsed;
-      files.push({
-        id: `/${VAULT_FILENAME}`,
-        folderPath: '/',
-        fileName: VAULT_FILENAME,
-        kind: 'vault',
-        sizeBytes: inspected.sizeBytes,
-        updatedAt: inspected.updatedAt,
-        content: inspected.content,
-      });
-    }
-  }
-
   return {
     ok: true,
     diskRoot,
-    resolvedPath,
+    resolvedPath: diskRoot,
     characters,
     lorebooks,
     themes,
     tags,
     meta,
-    vault,
+    vault: null,
     files,
     updatedAt: new Date().toISOString(),
   };
@@ -507,7 +639,7 @@ function pruneValidOrphanJsonFiles(
       if (!fileName.toLowerCase().endsWith('.json')) continue;
       if (!writtenFilesLower.has(fileName.toLowerCase())) {
         const orphanPath = path.join(targetDir, fileName);
-        if (fs.existsSync(orphanPath)) {
+        if (fs.existsSync(orphanPath) && isFileConfinedInDir(targetDir, orphanPath)) {
           // Keep corrupted/unparseable files flagged in Settings > Saved Files until explicitly deleted by the user
           const inspected = inspectDiskJsonFile(orphanPath);
           if (inspected.ok) {
@@ -522,14 +654,8 @@ function pruneValidOrphanJsonFiles(
 }
 
 export function saveToSavesDirectoryOnDisk(body: Record<string, unknown>) {
-  const customSavePath =
-    typeof body.customSavePath === 'string'
-      ? body.customSavePath
-      : typeof body.savesDir === 'string'
-        ? body.savesDir
-        : undefined;
   const { resolvedPath, charsDir, loreDir, themesDir, tagsDir } =
-    resolveSavesRoot(customSavePath);
+    resolveSavesRoot();
 
   // 1. Write characters strictly into ./Saves/Characters/[UniqueSanitizedName].json
   if (Array.isArray(body.characters)) {
@@ -706,28 +832,13 @@ export function saveToSavesDirectoryOnDisk(body: Record<string, unknown>) {
     );
   }
 
-  // 6. Write AES-256-GCM encrypted API keys into ./Saves/_tavernsmith_vault.enc
-  if (body.vault && typeof body.vault === 'object') {
-    fs.writeFileSync(
-      path.join(resolvedPath, VAULT_FILENAME),
-      JSON.stringify(body.vault, null, 2),
-      'utf8'
-    );
-  }
-
   // Immediately re-scan the disk and return the fresh disk state
-  return scanSavesDirectoryOnDisk(customSavePath);
+  return scanSavesDirectoryOnDisk();
 }
 
 export function deleteFromSavesDirectoryOnDisk(body: Record<string, unknown>) {
-  const customSavePath =
-    typeof body.customSavePath === 'string'
-      ? body.customSavePath
-      : typeof body.savesDir === 'string'
-        ? body.savesDir
-        : undefined;
   const { resolvedPath, charsDir, loreDir, themesDir, tagsDir } =
-    resolveSavesRoot(customSavePath);
+    resolveSavesRoot();
 
   const rawFolder = String(body.folder || body.kind || '').toLowerCase();
 
@@ -746,12 +857,11 @@ export function deleteFromSavesDirectoryOnDisk(body: Record<string, unknown>) {
     candidateNames.add(path.basename(rawSavedFileName));
   }
 
-  if (rawFolder === 'root' || rawFolder === 'meta' || rawFolder === 'vault') {
-    const allowedRootFiles = new Set([META_FILENAME, VAULT_FILENAME]);
+  if (rawFolder === 'root' || rawFolder === 'meta') {
     for (const name of candidateNames) {
-      if (!allowedRootFiles.has(name)) continue;
+      if (name !== META_FILENAME) continue;
       const targetPath = path.join(resolvedPath, name);
-      if (fs.existsSync(targetPath)) {
+      if (fs.existsSync(targetPath) && isFileConfinedInDir(resolvedPath, targetPath)) {
         try {
           fs.unlinkSync(targetPath);
         } catch {
@@ -759,7 +869,11 @@ export function deleteFromSavesDirectoryOnDisk(body: Record<string, unknown>) {
         }
       }
     }
-    return scanSavesDirectoryOnDisk(customSavePath);
+    return scanSavesDirectoryOnDisk();
+  }
+
+  if (rawFolder === 'vault') {
+    return scanSavesDirectoryOnDisk();
   }
 
   const targetDir =
@@ -773,11 +887,13 @@ export function deleteFromSavesDirectoryOnDisk(body: Record<string, unknown>) {
 
   let deletedAny = false;
   for (const name of candidateNames) {
-    if (!name || name === '.' || name === '..') continue;
+    if (!name || name === '.' || name === '..' || !name.toLowerCase().endsWith('.json')) {
+      continue;
+    }
     const targetPath = path.join(targetDir, name);
     const rel = path.relative(targetDir, targetPath);
     if (!rel || rel.startsWith('..') || path.isAbsolute(rel)) continue;
-    if (fs.existsSync(targetPath)) {
+    if (fs.existsSync(targetPath) && isFileConfinedInDir(targetDir, targetPath)) {
       try {
         fs.unlinkSync(targetPath);
         deletedAny = true;
@@ -794,6 +910,7 @@ export function deleteFromSavesDirectoryOnDisk(body: Record<string, unknown>) {
       .filter((d) => d.isFile() && d.name.toLowerCase().endsWith('.json'));
     for (const entry of entries) {
       const fullPath = path.join(targetDir, entry.name);
+      if (!isFileConfinedInDir(targetDir, fullPath)) continue;
       try {
         const parsed = JSON.parse(
           fs.readFileSync(fullPath, 'utf8')
@@ -811,7 +928,7 @@ export function deleteFromSavesDirectoryOnDisk(body: Record<string, unknown>) {
   // Fallback to sanitized name ONLY if no file was matched by savedFileName/fileName/id
   if (!deletedAny && rawName) {
     const sanitizedTarget = path.join(targetDir, sanitizeDiskFileName(rawName));
-    if (fs.existsSync(sanitizedTarget)) {
+    if (fs.existsSync(sanitizedTarget) && isFileConfinedInDir(targetDir, sanitizedTarget)) {
       try {
         fs.unlinkSync(sanitizedTarget);
       } catch {
@@ -820,7 +937,7 @@ export function deleteFromSavesDirectoryOnDisk(body: Record<string, unknown>) {
     }
   }
 
-  return scanSavesDirectoryOnDisk(customSavePath);
+  return scanSavesDirectoryOnDisk();
 }
 
 function createHttpError(message: string, statusCode: number): Error & {
@@ -865,7 +982,12 @@ function readJsonRequestBody(
       settled = true;
       try {
         const raw = Buffer.concat(chunks).toString('utf8');
-        resolve(raw ? (JSON.parse(raw) as Record<string, unknown>) : {});
+        const parsed = raw ? JSON.parse(raw) : {};
+        if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+          reject(createHttpError('JSON request body must be an object', 400));
+          return;
+        }
+        resolve(parsed as Record<string, unknown>);
       } catch {
         reject(createHttpError('Invalid JSON request body', 400));
       }
@@ -878,71 +1000,141 @@ function readJsonRequestBody(
   });
 }
 
+function isBlockedStaticPath(pathname: string): boolean {
+  let decoded = pathname;
+  try {
+    decoded = decodeURIComponent(pathname);
+  } catch {
+    return true;
+  }
+  const segments = decoded
+    .replace(/\\/g, '/')
+    .replace(/^\/+/, '')
+    .split('/')
+    .filter(Boolean);
+  for (const seg of segments) {
+    const lower = seg.toLowerCase();
+    if (
+      lower === '..' ||
+      lower === 'saves' ||
+      lower === APP_VAULT_DIRNAME.toLowerCase() ||
+      lower === '.git' ||
+      lower === '.env' ||
+      lower.startsWith('.env.') ||
+      lower === 'server.cjs' ||
+      lower === 'server.py' ||
+      lower.endsWith('.bat') ||
+      lower.endsWith('.command') ||
+      lower.endsWith('.sh') ||
+      lower.endsWith('.ps1')
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function createDiskApiMiddleware() {
+  return async (req: IncomingMessage, res: ServerResponse, next: () => void) => {
+    const rawUrl = req.url || '';
+    const parsedUrl = new URL(rawUrl, 'http://127.0.0.1');
+    const pathname = parsedUrl.pathname;
+
+    if (isBlockedStaticPath(pathname)) {
+      res.statusCode = 403;
+      res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+      res.end('Forbidden');
+      return;
+    }
+
+    const isDiskRoute = pathname.startsWith('/api/disk/');
+    const isVaultRoute = pathname === '/api/vault';
+    if (!isDiskRoute && !isVaultRoute) {
+      next();
+      return;
+    }
+
+    res.setHeader('Content-Type', 'application/json; charset=utf-8');
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+
+    const requireJson =
+      req.method === 'POST' || req.method === 'PUT' || req.method === 'PATCH';
+    const check = validateLocalApiRequest(req, requireJson);
+    if (!check.ok) {
+      res.statusCode = check.status;
+      res.end(JSON.stringify({ ok: false, error: check.error }));
+      return;
+    }
+
+    try {
+      if (req.method === 'GET' && pathname === '/api/disk/state') {
+        const state = scanSavesDirectoryOnDisk();
+        res.statusCode = 200;
+        res.end(JSON.stringify(state));
+        return;
+      }
+
+      if (req.method === 'POST' && pathname === '/api/disk/save') {
+        const body = await readJsonRequestBody(req);
+        const state = saveToSavesDirectoryOnDisk(body);
+        res.statusCode = 200;
+        res.end(JSON.stringify(state));
+        return;
+      }
+
+      if (req.method === 'POST' && pathname === '/api/disk/delete') {
+        const body = await readJsonRequestBody(req);
+        const state = deleteFromSavesDirectoryOnDisk(body);
+        res.statusCode = 200;
+        res.end(JSON.stringify(state));
+        return;
+      }
+
+      if (req.method === 'GET' && pathname === '/api/vault') {
+        const state = readAppVaultStateOnDisk();
+        res.statusCode = 200;
+        res.end(JSON.stringify(state));
+        return;
+      }
+
+      if (req.method === 'POST' && pathname === '/api/vault') {
+        const body = await readJsonRequestBody(req);
+        const state = saveAppVaultStateOnDisk(body);
+        res.statusCode = 200;
+        res.end(JSON.stringify(state));
+        return;
+      }
+
+      res.statusCode = 404;
+      res.end(JSON.stringify({ ok: false, error: 'Not found' }));
+    } catch (err: unknown) {
+      const statusCode =
+        typeof (err as { statusCode?: unknown })?.statusCode === 'number'
+          ? (err as { statusCode: number }).statusCode
+          : 500;
+      res.statusCode = statusCode;
+      res.end(
+        JSON.stringify({
+          ok: false,
+          error: err instanceof Error ? err.message : 'Disk API failure',
+        })
+      );
+    }
+  };
+}
+
 function tavernSmithDiskApiPlugin(): Plugin {
-  // Ensure ./Saves/, ./Saves/Characters/, and ./Saves/Lorebooks/ exist on startup
+  // Ensure ./Saves/ and ./.tavernsmith-app/ exist on startup
   resolveSavesRoot();
+  resolveAppVaultPaths();
 
   return {
     name: 'tavernsmith-local-disk-api',
     configureServer(server) {
-      server.middlewares.use(
-        async (req: IncomingMessage, res: ServerResponse, next: () => void) => {
-          const rawUrl = req.url || '';
-          const parsedUrl = new URL(rawUrl, 'http://127.0.0.1');
-          const pathname = parsedUrl.pathname;
-
-          if (!pathname.startsWith('/api/disk/')) {
-            next();
-            return;
-          }
-
-          res.setHeader('Content-Type', 'application/json; charset=utf-8');
-          res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
-
-          try {
-            if (req.method === 'GET' && pathname === '/api/disk/state') {
-              const customPath =
-                parsedUrl.searchParams.get('customSavePath') || undefined;
-              const state = scanSavesDirectoryOnDisk(customPath);
-              res.statusCode = 200;
-              res.end(JSON.stringify(state));
-              return;
-            }
-
-            if (req.method === 'POST' && pathname === '/api/disk/save') {
-              const body = await readJsonRequestBody(req);
-              const state = saveToSavesDirectoryOnDisk(body);
-              res.statusCode = 200;
-              res.end(JSON.stringify(state));
-              return;
-            }
-
-            if (req.method === 'POST' && pathname === '/api/disk/delete') {
-              const body = await readJsonRequestBody(req);
-              const state = deleteFromSavesDirectoryOnDisk(body);
-              res.statusCode = 200;
-              res.end(JSON.stringify(state));
-              return;
-            }
-
-            res.statusCode = 404;
-            res.end(JSON.stringify({ ok: false, error: 'Not found' }));
-          } catch (err: unknown) {
-            const statusCode =
-              typeof (err as { statusCode?: unknown })?.statusCode === 'number'
-                ? (err as { statusCode: number }).statusCode
-                : 500;
-            res.statusCode = statusCode;
-            res.end(
-              JSON.stringify({
-                ok: false,
-                error:
-                  err instanceof Error ? err.message : 'Disk API failure',
-              })
-            );
-          }
-        }
-      );
+      server.middlewares.use(createDiskApiMiddleware());
+    },
+    configurePreviewServer(server) {
+      server.middlewares.use(createDiskApiMiddleware());
     },
   };
 }
@@ -979,11 +1171,15 @@ export default defineConfig(() => {
       },
     },
     server: {
+      host: '127.0.0.1',
       // HMR is disabled in AI Studio via DISABLE_HMR env var.
       // Do not modify—file watching is disabled to prevent flickering during agent edits.
       hmr: process.env.DISABLE_HMR !== 'true',
       // Disable file watching when DISABLE_HMR is true to save CPU during agent edits.
       watch: process.env.DISABLE_HMR === 'true' ? null : {},
+    },
+    preview: {
+      host: '127.0.0.1',
     },
   };
 });

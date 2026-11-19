@@ -21,10 +21,14 @@ import {
   ChevronRight,
   GripVertical,
   ShieldAlert,
+  ShieldCheck,
 } from 'lucide-react';
 import {
   ensureUniqueEntityName,
+  isCharacterNsfw,
+  isLorebookEntryNsfw,
   isLorebookNsfw,
+  isTagNsfwFlagged,
   useStore,
 } from '../context/StoreContext';
 import {
@@ -98,7 +102,6 @@ export const LorebookEditor: React.FC = () => {
     setLorebook,
     characters,
     character,
-    updateCharacterField,
     bindLorebookToCharacter,
     tags,
     ensureTagRegistered,
@@ -106,10 +109,12 @@ export const LorebookEditor: React.FC = () => {
     aiConfig,
     settings,
     updateSettings,
+    setActiveTab,
     importFromFiles,
     checkAndTriggerNameConflict,
     workspaceDraftCache,
     updateLorebookDraft,
+    purgeSmartEditorDraftsByPrefix,
   } = useStore();
 
   const lbDraft = workspaceDraftCache.lorebook;
@@ -159,7 +164,7 @@ export const LorebookEditor: React.FC = () => {
   const extraContextImages = lbDraft.extraContextImages || [];
   const handleAddExtraContextImages = (newImages: ContextReferenceImage[]) =>
     updateLorebookDraft({
-      extraContextImages: [...extraContextImages, ...newImages],
+      extraContextImages: [...extraContextImages, ...newImages].slice(0, 6),
     });
   const handleRemoveExtraContextImage = (imgId: string) =>
     updateLorebookDraft({
@@ -174,6 +179,11 @@ export const LorebookEditor: React.FC = () => {
     null
   );
   const lorebookFileInputRef = useRef<HTMLInputElement | null>(null);
+
+  // Raw draft strings for Wizard Step 3 comma-separated keyword inputs so trailing commas/spaces aren't eaten while typing
+  const [step3KeyDrafts, setStep3KeyDrafts] = useState<Record<string, string>>(
+    {}
+  );
 
   // Drag-and-Drop Reordering for Lorebook Entries
   const [draggedEntryId, setDraggedEntryId] = useState<string | number | null>(
@@ -217,19 +227,110 @@ export const LorebookEditor: React.FC = () => {
   }, [visionSupported, extraContextImages]);
   const [syncSuccessBanner, setSyncSuccessBanner] = useState(false);
 
-  const abortRef = useRef<AbortController | null>(null);
+  // Dedicated AbortControllers per AI operation so concurrent flows never cancel each other or leak across lorebooks
+  const multiLoreAbortRef = useRef<AbortController | null>(null);
+  const entryDraftAbortRef = useRef<AbortController | null>(null);
+  const suggestKeysAbortRef = useRef<AbortController | null>(null);
+  const isMountedRef = useRef<boolean>(true);
+  const prevLorebookIdRef = useRef<string | undefined>(lorebook.id);
   const timersRef = useRef<Set<number>>(new Set());
 
   const scheduleTimer = (fn: () => void, ms: number) => {
     const id = window.setTimeout(() => {
       timersRef.current.delete(id);
-      fn();
+      if (isMountedRef.current) {
+        fn();
+      }
     }, ms);
     timersRef.current.add(id);
   };
 
+  // Strict NSFW Hiding Enforcement
+  const isActiveLorebookNsfw = useMemo(
+    () => isLorebookNsfw(lorebook, tags),
+    [lorebook, tags]
+  );
+  const isActiveLorebookShielded =
+    Boolean(settings.hideNsfwTags) && isActiveLorebookNsfw;
+
+  const visibleLorebookCount = useMemo(
+    () =>
+      lorebooks.filter(
+        (lb) => !settings.hideNsfwTags || !isLorebookNsfw(lb, tags)
+      ).length,
+    [lorebooks, settings.hideNsfwTags, tags]
+  );
+  const hiddenNsfwLorebookCount = Math.max(
+    0,
+    lorebooks.length - visibleLorebookCount
+  );
+
+  const visibleEntries = useMemo(() => {
+    if (!settings.hideNsfwTags) return lorebook.entries;
+    return lorebook.entries.filter((e) => !isLorebookEntryNsfw(e, tags));
+  }, [lorebook.entries, settings.hideNsfwTags, tags]);
+
+  const visibleCharactersForLink = useMemo(() => {
+    if (!settings.hideNsfwTags) return characters;
+    return characters.filter((c) => !isCharacterNsfw(c, tags, lorebooks));
+  }, [characters, settings.hideNsfwTags, tags, lorebooks]);
+
+  const isActiveCharNsfw = useMemo(
+    () => isCharacterNsfw(character, tags, lorebooks),
+    [character, tags, lorebooks]
+  );
+
+  // When SFW mode is turned ON, auto-switch away from any NSFW lorebook and reset NSFW tag filters
+  useEffect(() => {
+    if (!settings.hideNsfwTags) return;
+
+    if (rosterTagFilter !== 'all' && isTagNsfwFlagged(rosterTagFilter, tags)) {
+      updateLorebookDraft({ rosterTagFilter: 'all' });
+    }
+    if (entryTagFilter !== 'all' && isTagNsfwFlagged(entryTagFilter, tags)) {
+      updateLorebookDraft({ entryTagFilter: 'all' });
+    }
+
+    if (isLorebookNsfw(lorebook, tags)) {
+      const firstSfw = lorebooks.find((lb) => !isLorebookNsfw(lb, tags));
+      if (firstSfw?.id && firstSfw.id !== lorebook.id) {
+        setActiveLorebookId(firstSfw.id);
+      }
+    }
+  }, [
+    settings.hideNsfwTags,
+    lorebook,
+    lorebooks,
+    tags,
+    rosterTagFilter,
+    entryTagFilter,
+    setActiveLorebookId,
+    updateLorebookDraft,
+  ]);
+
+  // Abort pending AI requests and clear transient drafts/images when switching lorebooks
+  useEffect(() => {
+    if (prevLorebookIdRef.current !== lorebook.id) {
+      prevLorebookIdRef.current = lorebook.id;
+      multiLoreAbortRef.current?.abort();
+      entryDraftAbortRef.current?.abort();
+      suggestKeysAbortRef.current?.abort();
+      setIsGeneratingMultiLore(false);
+      setIsDraftingEntryContent(false);
+      setIsSuggestingKeys(false);
+      setSuggestingEntryId(null);
+      setAiKeyError(null);
+      setVisionFallbackBanner(null);
+      setStep3KeyDrafts({});
+      if (extraContextImages.length > 0) {
+        updateLorebookDraft({ extraContextImages: [] });
+      }
+    }
+  }, [lorebook.id, extraContextImages.length, updateLorebookDraft]);
+
   const lorebookContextSummary = useMemo(() => {
-    const entriesList = lorebook.entries
+    if (isActiveLorebookShielded) return '';
+    const entriesList = visibleEntries
       .slice(0, 12)
       .map(
         (e) =>
@@ -243,7 +344,12 @@ export const LorebookEditor: React.FC = () => {
     ]
       .filter(Boolean)
       .join('\n\n');
-  }, [lorebook.name, lorebook.description, lorebook.entries]);
+  }, [
+    isActiveLorebookShielded,
+    lorebook.name,
+    lorebook.description,
+    visibleEntries,
+  ]);
 
   const handleLorebookFilesDropped = async (
     files: FileList | File[] | null
@@ -251,40 +357,46 @@ export const LorebookEditor: React.FC = () => {
     if (!files || files.length === 0) return;
     try {
       const res = await importFromFiles(files);
-      setImportStatusBanner(res.summary);
-      scheduleTimer(() => setImportStatusBanner(null), 4000);
+      if (isMountedRef.current) {
+        setImportStatusBanner(res.summary);
+        scheduleTimer(() => setImportStatusBanner(null), 4000);
+      }
     } catch (err: unknown) {
-      setAiKeyError({
-        message:
-          err instanceof Error
-            ? err.message
-            : 'Failed to import Lorebook or Character file.',
-      });
+      if (isMountedRef.current) {
+        setAiKeyError({
+          message:
+            err instanceof Error
+              ? err.message
+              : 'Failed to import Lorebook or Character file.',
+        });
+      }
     }
   };
 
   useEffect(() => {
+    isMountedRef.current = true;
     return () => {
-      if (abortRef.current) {
-        abortRef.current.abort();
-      }
+      isMountedRef.current = false;
+      multiLoreAbortRef.current?.abort();
+      entryDraftAbortRef.current?.abort();
+      suggestKeysAbortRef.current?.abort();
       timersRef.current.forEach((id) => window.clearTimeout(id));
       timersRef.current.clear();
     };
   }, []);
 
-  // Keep selectedEntryId valid when switching lorebooks
+  // Keep selectedEntryId valid when switching lorebooks or toggling SFW mode
   useEffect(() => {
-    if (lorebook.entries.length === 0) {
+    if (visibleEntries.length === 0) {
       if (lbDraft.selectedEntryId !== null) {
         setSelectedEntryId(null);
       }
       return;
     }
-    if (!lorebook.entries.some((e) => e.id === selectedEntryId)) {
-      setSelectedEntryId(lorebook.entries[0].id);
+    if (!visibleEntries.some((e) => e.id === selectedEntryId)) {
+      setSelectedEntryId(visibleEntries[0].id);
     }
-  }, [lorebook.id, lorebook.entries, selectedEntryId, lbDraft.selectedEntryId]);
+  }, [lorebook.id, visibleEntries, selectedEntryId, lbDraft.selectedEntryId]);
 
   const lorebooksWithTokens = useMemo(() => {
     return lorebooks.map((lb) => ({
@@ -346,7 +458,7 @@ export const LorebookEditor: React.FC = () => {
 
   const filteredEntries = useMemo(() => {
     const q = entrySearch.trim().toLowerCase();
-    return lorebook.entries.filter((entry) => {
+    return visibleEntries.filter((entry) => {
       const matchesTag =
         entryTagFilter === 'all' || (entry.tags || []).includes(entryTagFilter);
       const matchesQuery =
@@ -357,28 +469,19 @@ export const LorebookEditor: React.FC = () => {
         entry.secondary_keys.some((k) => k.toLowerCase().includes(q));
       return matchesTag && matchesQuery;
     });
-  }, [lorebook.entries, entrySearch, entryTagFilter]);
+  }, [visibleEntries, entrySearch, entryTagFilter]);
 
   const selectedEntry = useMemo(
     () =>
-      lorebook.entries.find((e) => e.id === selectedEntryId) ||
-      lorebook.entries[0] ||
+      visibleEntries.find((e) => e.id === selectedEntryId) ||
+      visibleEntries[0] ||
       null,
-    [lorebook.entries, selectedEntryId]
+    [visibleEntries, selectedEntryId]
   );
 
-  // Sync changes to character.character_book if this lorebook is bound to the active character
+  // StoreContext.setLorebook automatically propagates updates by lorebook ID to all linked characters
   const updateLorebookAndSync = (updater: (prev: Lorebook) => Lorebook) => {
-    setLorebook((prev) => {
-      const updated = updater(prev);
-      if (
-        character.character_book?.id === updated.id ||
-        character.character_book?.name === prev.name
-      ) {
-        updateCharacterField('character_book', updated);
-      }
-      return updated;
-    });
+    setLorebook(updater);
   };
 
   const handleDropReorderEntries = (
@@ -398,9 +501,19 @@ export const LorebookEditor: React.FC = () => {
   };
 
   const toggleLorebookGlobalTag = (tagName: string) => {
-    const registered = ensureTagRegistered(tagName);
-    const canonicalName = registered ? registered.name : tagName.trim();
+    const clean = tagName.trim();
+    if (!clean) return;
+    const cleanLower = clean.toLowerCase();
+    const currentTags = lorebook.tags || [];
+    const isRemoving = currentTags.some(
+      (t) => t.trim().toLowerCase() === cleanLower
+    );
+
+    // Never re-register a tag when removing it (prevents resurrecting deleted tags)
+    const registered = isRemoving ? null : ensureTagRegistered(clean);
+    const canonicalName = registered ? registered.name : clean;
     const catalog = registered ? [registered, ...tags] : tags;
+
     updateLorebookAndSync((prev) => {
       const current = prev.tags || [];
       const exists = current.some(
@@ -440,7 +553,8 @@ export const LorebookEditor: React.FC = () => {
   };
 
   const handleBindToActiveCharacter = () => {
-    updateCharacterField('character_book', lorebook);
+    if (!character.id) return;
+    bindLorebookToCharacter(character.id, lorebook);
     setSyncSuccessBanner(true);
     scheduleTimer(() => setSyncSuccessBanner(false), 3000);
   };
@@ -453,8 +567,11 @@ export const LorebookEditor: React.FC = () => {
 
   // Entry CRUD Handlers
   const handleCreateEntry = (customCategoryLabel?: string) => {
+    const inheritedTags = settings.hideNsfwTags
+      ? (lorebook.tags || []).filter((t) => !isTagNsfwFlagged(t, tags))
+      : [...(lorebook.tags || [])];
     const newEntry: LorebookEntry = {
-      id: `entry-${Date.now()}`,
+      id: `entry-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
       comment:
         customCategoryLabel ||
         `New World Info Entry #${lorebook.entries.length + 1}`,
@@ -470,7 +587,7 @@ export const LorebookEditor: React.FC = () => {
       priority: 10,
       depth: 4,
       probability: 100,
-      tags: [...(lorebook.tags || [])],
+      tags: inheritedTags,
     };
     updateLorebookAndSync((prev) => ({
       ...prev,
@@ -482,7 +599,7 @@ export const LorebookEditor: React.FC = () => {
   const handleDuplicateEntry = (entry: LorebookEntry) => {
     const copy: LorebookEntry = {
       ...entry,
-      id: `entry-${Date.now()}`,
+      id: `entry-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
       comment: `${entry.comment || 'Entry'} (Copy)`,
       keys: [...entry.keys],
       secondary_keys: [...entry.secondary_keys],
@@ -496,6 +613,13 @@ export const LorebookEditor: React.FC = () => {
   };
 
   const handleDeleteEntry = (id: string | number) => {
+    purgeSmartEditorDraftsByPrefix(`lore:${lorebook.id || 'active'}:${id}`);
+    setStep3KeyDrafts((prev) => {
+      const next = { ...prev };
+      delete next[`${id}:keys`];
+      delete next[`${id}:secondary_keys`];
+      return next;
+    });
     updateLorebookAndSync((prev) => {
       const remaining = prev.entries.filter((e) => e.id !== id);
       return { ...prev, entries: remaining };
@@ -550,13 +674,19 @@ export const LorebookEditor: React.FC = () => {
 
   const toggleEntryTag = (tagName: string) => {
     if (!selectedEntry) return;
-    const registered = ensureTagRegistered(tagName);
-    const canonicalName = registered ? registered.name : tagName.trim();
-    const catalog = registered ? [registered, ...tags] : tags;
+    const clean = tagName.trim();
+    if (!clean) return;
+    const cleanLower = clean.toLowerCase();
     const current = selectedEntry.tags || [];
     const exists = current.some(
-      (t) => t.trim().toLowerCase() === canonicalName.toLowerCase()
+      (t) => t.trim().toLowerCase() === cleanLower
     );
+
+    // Never re-register a tag when removing it
+    const registered = exists ? null : ensureTagRegistered(clean);
+    const canonicalName = registered ? registered.name : clean;
+    const catalog = registered ? [registered, ...tags] : tags;
+
     const nextRaw = exists
       ? current.filter(
           (t) => t.trim().toLowerCase() !== canonicalName.toLowerCase()
@@ -588,12 +718,13 @@ export const LorebookEditor: React.FC = () => {
   // Wizard Step 1: "✨ AI Generate Multi-Entry Lorebook from Concept"
   const handleGenerateMultiEntryLorebook = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (isActiveLorebookShielded) return;
     const hasRefImages = activeLoreVisionUrls.length > 0;
     if (!worldConceptPrompt.trim() && !hasRefImages) return;
 
-    if (abortRef.current) abortRef.current.abort();
+    if (multiLoreAbortRef.current) multiLoreAbortRef.current.abort();
     const controller = new AbortController();
-    abortRef.current = controller;
+    multiLoreAbortRef.current = controller;
     setIsGeneratingMultiLore(true);
     setAiKeyError(null);
     setVisionFallbackBanner(null);
@@ -640,12 +771,15 @@ export const LorebookEditor: React.FC = () => {
           activeTheme,
           allTags: tags,
           characterTags: lorebook.tags || [],
+          hideNsfw: settings.hideNsfwTags,
           imageDataUrls: hasRefImages ? activeLoreVisionUrls : undefined,
-          onVisionFallback: (warning) => setVisionFallbackBanner(warning),
+          onVisionFallback: (warning) => {
+            if (isMountedRef.current) setVisionFallbackBanner(warning);
+          },
         }
       );
 
-      if (!controller.signal.aborted && detailed.content) {
+      if (isMountedRef.current && !controller.signal.aborted && detailed.content) {
         if (detailed.visionFallbackWarning) {
           setVisionFallbackBanner(detailed.visionFallbackWarning);
         }
@@ -662,9 +796,13 @@ export const LorebookEditor: React.FC = () => {
           }>;
         }>(detailed.content);
 
+        const inheritedTags = settings.hideNsfwTags
+          ? (lorebook.tags || []).filter((t) => !isTagNsfwFlagged(t, tags))
+          : [...(lorebook.tags || [])];
+
         const builtEntries: LorebookEntry[] = (parsed.entries || []).map(
           (item, idx) => ({
-            id: `entry-${Date.now()}-${idx}`,
+            id: `entry-${Date.now()}-${idx}-${Math.random().toString(36).slice(2, 6)}`,
             comment: item.comment || `Lore Entry #${idx + 1}`,
             keys:
               Array.isArray(item.keys) && item.keys.length > 0
@@ -686,7 +824,7 @@ export const LorebookEditor: React.FC = () => {
             priority: 10,
             depth: 4,
             probability: 100,
-            tags: [...(lorebook.tags || [])],
+            tags: [...inheritedTags],
           })
         );
 
@@ -719,6 +857,7 @@ export const LorebookEditor: React.FC = () => {
       }
     } catch (err: unknown) {
       if (err instanceof DOMException && err.name === 'AbortError') return;
+      if (!isMountedRef.current) return;
       if (err instanceof AIServiceError) {
         setAiKeyError({
           message: err.message,
@@ -733,7 +872,7 @@ export const LorebookEditor: React.FC = () => {
         });
       }
     } finally {
-      if (!controller.signal.aborted) {
+      if (isMountedRef.current && !controller.signal.aborted) {
         setIsGeneratingMultiLore(false);
       }
     }
@@ -741,11 +880,12 @@ export const LorebookEditor: React.FC = () => {
 
   // Wizard Step 2: Per-Entry "AI Generate" Draft from Short Prompt (supports Multi-Image Context when vision is supported)
   const handleDraftSelectedEntryWithAI = async () => {
-    if (!selectedEntry) return;
-    if (abortRef.current) abortRef.current.abort();
+    if (isActiveLorebookShielded || !selectedEntry) return;
+    if (entryDraftAbortRef.current) entryDraftAbortRef.current.abort();
 
     const controller = new AbortController();
-    abortRef.current = controller;
+    entryDraftAbortRef.current = controller;
+    const targetEntryId = selectedEntry.id;
     setIsDraftingEntryContent(true);
     setAiKeyError(null);
     setVisionFallbackBanner(null);
@@ -790,20 +930,30 @@ export const LorebookEditor: React.FC = () => {
           activeTheme,
           allTags: tags,
           characterTags: mergedEntryTags,
+          hideNsfw: settings.hideNsfwTags,
           imageDataUrls: hasRefImages ? activeLoreVisionUrls : undefined,
-          onVisionFallback: (warning) => setVisionFallbackBanner(warning),
+          onVisionFallback: (warning) => {
+            if (isMountedRef.current) setVisionFallbackBanner(warning);
+          },
         }
       );
 
-      if (!controller.signal.aborted && detailed.content.trim()) {
+      if (
+        isMountedRef.current &&
+        !controller.signal.aborted &&
+        detailed.content.trim()
+      ) {
         if (detailed.visionFallbackWarning) {
           setVisionFallbackBanner(detailed.visionFallbackWarning);
         }
-        handleUpdateSelectedEntry({ content: detailed.content.trim() });
+        handleUpdateEntryById(targetEntryId, {
+          content: detailed.content.trim(),
+        });
         setEntryDraftPrompt('');
       }
     } catch (err: unknown) {
       if (err instanceof DOMException && err.name === 'AbortError') return;
+      if (!isMountedRef.current) return;
       if (err instanceof AIServiceError) {
         setAiKeyError({
           message: err.message,
@@ -815,7 +965,7 @@ export const LorebookEditor: React.FC = () => {
         });
       }
     } finally {
-      if (!controller.signal.aborted) {
+      if (isMountedRef.current && !controller.signal.aborted) {
         setIsDraftingEntryContent(false);
       }
     }
@@ -823,12 +973,13 @@ export const LorebookEditor: React.FC = () => {
 
   // 1-Click AI Auto-Key Suggestion (works for selectedEntry or any entry passed in Wizard Step 3 & Full Mode)
   const handleSuggestTriggerKeysForEntry = async (targetEntry?: LorebookEntry) => {
+    if (isActiveLorebookShielded) return;
     const entry = targetEntry || selectedEntry;
     if (!entry) return;
-    if (abortRef.current) abortRef.current.abort();
+    if (suggestKeysAbortRef.current) suggestKeysAbortRef.current.abort();
 
     const controller = new AbortController();
-    abortRef.current = controller;
+    suggestKeysAbortRef.current = controller;
     setIsSuggestingKeys(true);
     setSuggestingEntryId(entry.id);
     setAiKeyError(null);
@@ -861,16 +1012,23 @@ export const LorebookEditor: React.FC = () => {
           activeTheme,
           allTags: tags,
           characterTags: mergedEntryTags,
+          hideNsfw: settings.hideNsfwTags,
           imageDataUrls: hasRefImages ? activeLoreVisionUrls : undefined,
-          onVisionFallback: (warning) => setVisionFallbackBanner(warning),
+          onVisionFallback: (warning) => {
+            if (isMountedRef.current) setVisionFallbackBanner(warning);
+          },
         }
       );
 
-      if (!controller.signal.aborted && detailed.visionFallbackWarning) {
+      if (
+        isMountedRef.current &&
+        !controller.signal.aborted &&
+        detailed.visionFallbackWarning
+      ) {
         setVisionFallbackBanner(detailed.visionFallbackWarning);
       }
 
-      if (!controller.signal.aborted && detailed.content) {
+      if (isMountedRef.current && !controller.signal.aborted && detailed.content) {
         const suggested = detailed.content
           .split(/,|\n/)
           .map((s) => s.replace(/^[-*•\d.)\s]+|["'`]+$/g, '').trim())
@@ -879,10 +1037,16 @@ export const LorebookEditor: React.FC = () => {
         if (suggested.length > 0) {
           const merged = Array.from(new Set([...entry.keys, ...suggested]));
           handleUpdateEntryById(entry.id, { keys: merged });
+          setStep3KeyDrafts((prev) => {
+            const next = { ...prev };
+            delete next[`${entry.id}:keys`];
+            return next;
+          });
         }
       }
     } catch (err: unknown) {
       if (err instanceof DOMException && err.name === 'AbortError') return;
+      if (!isMountedRef.current) return;
       if (err instanceof AIServiceError) {
         setAiKeyError({
           message: err.message,
@@ -894,16 +1058,16 @@ export const LorebookEditor: React.FC = () => {
         });
       }
     } finally {
-      if (!controller.signal.aborted) {
+      if (isMountedRef.current && !controller.signal.aborted) {
         setIsSuggestingKeys(false);
         setSuggestingEntryId(null);
       }
     }
   };
 
-  const isBoundToActiveChar =
-    character.character_book?.id === lorebook.id ||
-    character.character_book?.name === lorebook.name;
+  const isBoundToActiveChar = Boolean(
+    lorebook.id && character.character_book?.id === lorebook.id
+  );
 
   return (
     <div
@@ -937,20 +1101,28 @@ export const LorebookEditor: React.FC = () => {
           className="w-full lg:w-72 shrink-0 rounded-xl border bg-white dark:bg-slate-900 p-4 space-y-3.5"
         >
           <div className="flex items-center justify-between gap-2">
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-2 min-w-0">
               <BookOpen
-                className="h-4 w-4"
+                className="h-4 w-4 shrink-0"
                 style={{ color: 'var(--theme-accent)' }}
               />
-              <h2 className="text-xs font-bold uppercase tracking-wider text-slate-700 dark:text-slate-200">
-                Lorebook Roster ({lorebooks.length})
+              <h2 className="text-xs font-bold uppercase tracking-wider text-slate-700 dark:text-slate-200 truncate">
+                Lorebook Roster ({visibleLorebookCount})
               </h2>
+              {settings.hideNsfwTags && hiddenNsfwLorebookCount > 0 && (
+                <span
+                  title={`${hiddenNsfwLorebookCount} NSFW lorebook(s) hidden while Hide NSFW Content is enabled in Options`}
+                  className="shrink-0 rounded bg-amber-500/15 border border-amber-500/30 px-1.5 py-0.5 font-mono text-[9px] font-semibold text-amber-700 dark:text-amber-300"
+                >
+                  {hiddenNsfwLorebookCount} hidden
+                </span>
+              )}
             </div>
             <button
               type="button"
               onClick={() => setRosterOpen(false)}
               title="Collapse Lorebook Roster"
-              className="p-1 text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 cursor-pointer"
+              className="p-1 text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 cursor-pointer shrink-0"
             >
               <PanelLeftClose className="h-4 w-4" />
             </button>
@@ -998,11 +1170,16 @@ export const LorebookEditor: React.FC = () => {
           <div
             onDragOver={(e) => {
               e.preventDefault();
+              e.stopPropagation();
               setIsDraggingFile(true);
             }}
-            onDragLeave={() => setIsDraggingFile(false)}
+            onDragLeave={(e) => {
+              e.stopPropagation();
+              setIsDraggingFile(false);
+            }}
             onDrop={(e) => {
               e.preventDefault();
+              e.stopPropagation();
               setIsDraggingFile(false);
               void handleLorebookFilesDropped(e.dataTransfer.files);
             }}
@@ -1104,7 +1281,7 @@ export const LorebookEditor: React.FC = () => {
                         <div className="text-xs font-semibold text-slate-900 dark:text-white truncate">
                           {lb.name || 'Untitled Lorebook'}
                         </div>
-                        {isLorebookNsfw(lb, tags) && (
+                        {!settings.hideNsfwTags && isLorebookNsfw(lb, tags) && (
                           <span className="shrink-0 rounded bg-rose-500/15 border border-rose-500/30 px-1 py-0.2 font-mono text-[9px] font-bold uppercase text-rose-600 dark:text-rose-400">
                             NSFW
                           </span>
@@ -1146,6 +1323,15 @@ export const LorebookEditor: React.FC = () => {
                       Click <strong>+ New Book</strong> above or drop a SillyTavern <code>.JSON</code> lorebook here to get started.
                     </div>
                   </>
+                ) : visibleLorebookCount === 0 && settings.hideNsfwTags ? (
+                  <>
+                    <div className="font-medium text-slate-500 dark:text-slate-300">
+                      All {lorebooks.length} lorebook{lorebooks.length === 1 ? '' : 's'} hidden by SFW Mode
+                    </div>
+                    <div>
+                      Create a new SFW lorebook or disable Hide NSFW Content in Options.
+                    </div>
+                  </>
                 ) : (
                   <div>No lorebooks match your search or tag filter.</div>
                 )}
@@ -1164,12 +1350,52 @@ export const LorebookEditor: React.FC = () => {
             className="h-4 w-4"
             style={{ color: 'var(--theme-accent)' }}
           />
-          <span>Lorebooks ({lorebooks.length})</span>
+          <span>Lorebooks ({visibleLorebookCount})</span>
         </button>
       )}
 
       {/* Main Lorebook Workbench Area */}
       <div className="flex-1 min-w-0 w-full space-y-6">
+        {isActiveLorebookShielded ? (
+          <div
+            style={{
+              borderColor:
+                'color-mix(in srgb, var(--theme-accent) 40%, transparent)',
+            }}
+            className="rounded-2xl border bg-white dark:bg-slate-900 p-8 sm:p-12 text-center space-y-4 shadow-sm"
+          >
+            <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-2xl border border-amber-500/40 bg-amber-500/10 text-amber-600 dark:text-amber-300">
+              <ShieldCheck className="h-6 w-6" />
+            </div>
+            <div className="space-y-1.5 max-w-md mx-auto">
+              <h2 className="text-base font-bold text-slate-900 dark:text-white">
+                NSFW Lorebook Hidden (SFW Mode Active)
+              </h2>
+              <p className="text-xs text-slate-500 dark:text-slate-400 leading-relaxed">
+                This lorebook is flagged NSFW (either manually or via NSFW tags) and is completely shielded while <strong>Hide NSFW Content</strong> is enabled. Its contents are never displayed or sent to any AI backend.
+              </p>
+            </div>
+            <div className="flex flex-wrap items-center justify-center gap-2.5 pt-2">
+              <button
+                type="button"
+                onClick={() => createNewLorebook()}
+                style={{ borderColor: 'var(--theme-accent)' }}
+                className="theme-hover-outline flex items-center gap-1.5 rounded-lg border bg-slate-900 dark:bg-white px-4 py-2 text-xs font-semibold text-white dark:text-slate-900 cursor-pointer"
+              >
+                <Plus className="h-3.5 w-3.5" />
+                <span>Create New SFW Lorebook</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setActiveTab('options')}
+                className="theme-hover-outline rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 px-4 py-2 text-xs font-semibold text-slate-700 dark:text-slate-200 cursor-pointer"
+              >
+                Open Options
+              </button>
+            </div>
+          </div>
+        ) : (
+          <>
         {/* Top Lorebook Header & Mode Switcher */}
         <div
           style={{
@@ -1184,32 +1410,34 @@ export const LorebookEditor: React.FC = () => {
                 <h1 className="text-lg font-bold tracking-tight text-slate-900 dark:text-white truncate">
                   {lorebook.name || 'Untitled Lorebook'}
                 </h1>
-                {isLorebookNsfw(lorebook, tags) && (
+                {!settings.hideNsfwTags && isActiveLorebookNsfw && (
                   <span
-                    title="Automatically flagged NSFW because an NSFW (18+) tag is attached or manual NSFW flag is enabled."
+                    title="Flagged NSFW because an NSFW (18+) tag is attached or the manual NSFW flag is enabled."
                     className="inline-flex items-center gap-1 rounded-md border border-rose-500/40 bg-rose-500/15 px-2 py-0.5 font-mono text-[10px] font-bold uppercase text-rose-600 dark:text-rose-300"
                   >
                     <ShieldAlert className="h-3 w-3" />
                     <span>🔞 NSFW</span>
                   </span>
                 )}
-                <button
-                  type="button"
-                  onClick={() =>
-                    updateLorebookAndSync((prev) => ({
-                      ...prev,
-                      isNsfw: !prev.isNsfw,
-                    }))
-                  }
-                  title="Toggle explicit manual NSFW flag on this lorebook (lorebooks with NSFW tags are also auto-flagged NSFW)"
-                  className={`rounded-md border px-2 py-0.5 text-[10px] font-semibold cursor-pointer transition-colors ${
-                    lorebook.isNsfw
-                      ? 'border-rose-500/40 bg-rose-500/10 text-rose-600 dark:text-rose-300'
-                      : 'border-slate-200 dark:border-slate-800 text-slate-500 hover:text-slate-800 dark:hover:text-slate-200'
-                  }`}
-                >
-                  {lorebook.isNsfw ? 'Manual NSFW: ON' : 'Flag NSFW'}
-                </button>
+                {!settings.hideNsfwTags && (
+                  <button
+                    type="button"
+                    onClick={() =>
+                      updateLorebookAndSync((prev) => ({
+                        ...prev,
+                        isNsfw: !prev.isNsfw,
+                      }))
+                    }
+                    title="Toggle explicit manual NSFW flag on this lorebook (lorebooks with NSFW tags are also auto-flagged NSFW)"
+                    className={`rounded-md border px-2 py-0.5 text-[10px] font-semibold cursor-pointer transition-colors ${
+                      lorebook.isNsfw
+                        ? 'border-rose-500/40 bg-rose-500/10 text-rose-600 dark:text-rose-300'
+                        : 'border-slate-200 dark:border-slate-800 text-slate-500 hover:text-slate-800 dark:hover:text-slate-200'
+                    }`}
+                  >
+                    {lorebook.isNsfw ? 'Manual NSFW: ON' : 'Flag NSFW'}
+                  </button>
+                )}
                 <Tooltip content="Settings and entries for this SillyTavern lorebook (World Info)." />
               </div>
               <p className="text-xs text-slate-500 dark:text-slate-400">
@@ -1220,26 +1448,28 @@ export const LorebookEditor: React.FC = () => {
             </div>
 
             <div className="flex flex-wrap items-center gap-2 shrink-0">
-              <button
-                type="button"
-                onClick={handleBindToActiveCharacter}
-                style={{ borderColor: 'var(--theme-accent)' }}
-                className="theme-hover-outline flex items-center gap-1.5 rounded-lg border bg-slate-50 dark:bg-slate-950 px-3 py-1.5 text-xs font-semibold text-slate-900 dark:text-white cursor-pointer"
-              >
-                {syncSuccessBanner || isBoundToActiveChar ? (
-                  <Check className="h-3.5 w-3.5 text-emerald-500" />
-                ) : (
-                  <Link2
-                    className="h-3.5 w-3.5"
-                    style={{ color: 'var(--theme-accent)' }}
-                  />
-                )}
-                <span>
-                  {isBoundToActiveChar
-                    ? `Linked to ${character.name}`
-                    : `Link to ${character.name}`}
-                </span>
-              </button>
+              {character.id && (!settings.hideNsfwTags || !isActiveCharNsfw) && (
+                <button
+                  type="button"
+                  onClick={handleBindToActiveCharacter}
+                  style={{ borderColor: 'var(--theme-accent)' }}
+                  className="theme-hover-outline flex items-center gap-1.5 rounded-lg border bg-slate-50 dark:bg-slate-950 px-3 py-1.5 text-xs font-semibold text-slate-900 dark:text-white cursor-pointer"
+                >
+                  {syncSuccessBanner || isBoundToActiveChar ? (
+                    <Check className="h-3.5 w-3.5 text-emerald-500" />
+                  ) : (
+                    <Link2
+                      className="h-3.5 w-3.5"
+                      style={{ color: 'var(--theme-accent)' }}
+                    />
+                  )}
+                  <span>
+                    {isBoundToActiveChar
+                      ? `Linked to ${character.name}`
+                      : `Link to ${character.name}`}
+                  </span>
+                </button>
+              )}
 
               <button
                 type="button"
@@ -1689,7 +1919,7 @@ export const LorebookEditor: React.FC = () => {
                   >
                     <div className="flex items-center justify-between">
                       <span className="text-xs font-bold uppercase tracking-wider text-slate-700 dark:text-slate-200">
-                        Entries ({lorebook.entries.length})
+                        Entries ({visibleEntries.length})
                       </span>
                       <button
                         type="button"
@@ -1702,14 +1932,21 @@ export const LorebookEditor: React.FC = () => {
                     </div>
 
                     <div className="space-y-2 max-h-[55vh] overflow-y-auto pr-1">
-                      {lorebook.entries.map((entry) => {
+                      {visibleEntries.map((entry) => {
                         const isSelected = selectedEntry?.id === entry.id;
                         const isDragOver = dragOverEntryId === entry.id;
                         return (
                           <div
                             key={entry.id}
                             draggable
-                            onDragStart={() => setDraggedEntryId(entry.id)}
+                            onDragStart={(e) => {
+                              e.dataTransfer.setData(
+                                'text/plain',
+                                String(entry.id)
+                              );
+                              e.dataTransfer.effectAllowed = 'move';
+                              setDraggedEntryId(entry.id);
+                            }}
                             onDragOver={(e) => {
                               e.preventDefault();
                               if (
@@ -1926,9 +2163,16 @@ export const LorebookEditor: React.FC = () => {
                   }}
                   className="grid gap-4"
                 >
-                  {lorebook.entries.map((entry) => {
+                  {visibleEntries.map((entry) => {
                     const isBusy =
                       isSuggestingKeys && suggestingEntryId === entry.id;
+                    const primaryDraftKey = `${entry.id}:keys`;
+                    const secondaryDraftKey = `${entry.id}:secondary_keys`;
+                    const primaryDisplay =
+                      step3KeyDrafts[primaryDraftKey] ?? entry.keys.join(', ');
+                    const secondaryDisplay =
+                      step3KeyDrafts[secondaryDraftKey] ??
+                      entry.secondary_keys.join(', ');
                     return (
                       <div
                         key={entry.id}
@@ -1968,15 +2212,28 @@ export const LorebookEditor: React.FC = () => {
                           </label>
                           <input
                             type="text"
-                            value={entry.keys.join(', ')}
-                            onChange={(e) =>
+                            value={primaryDisplay}
+                            onChange={(e) => {
+                              const raw = e.target.value;
+                              setStep3KeyDrafts((prev) => ({
+                                ...prev,
+                                [primaryDraftKey]: raw,
+                              }));
                               handleUpdateEntryById(entry.id, {
-                                keys: e.target.value
+                                keys: raw
                                   .split(',')
                                   .map((k) => k.trim())
                                   .filter(Boolean),
-                              })
-                            }
+                              });
+                            }}
+                            onBlur={() => {
+                              setStep3KeyDrafts((prev) => {
+                                if (!(primaryDraftKey in prev)) return prev;
+                                const next = { ...prev };
+                                delete next[primaryDraftKey];
+                                return next;
+                              });
+                            }}
                             placeholder="e.g. Oakhaven, Hollow Bell, Warden"
                             className="theme-focus-ring font-mono w-full rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-3 py-1.5 text-xs text-slate-900 dark:text-white"
                           />
@@ -1988,15 +2245,28 @@ export const LorebookEditor: React.FC = () => {
                           </label>
                           <input
                             type="text"
-                            value={entry.secondary_keys.join(', ')}
-                            onChange={(e) =>
+                            value={secondaryDisplay}
+                            onChange={(e) => {
+                              const raw = e.target.value;
+                              setStep3KeyDrafts((prev) => ({
+                                ...prev,
+                                [secondaryDraftKey]: raw,
+                              }));
                               handleUpdateEntryById(entry.id, {
-                                secondary_keys: e.target.value
+                                secondary_keys: raw
                                   .split(',')
                                   .map((k) => k.trim())
                                   .filter(Boolean),
-                              })
-                            }
+                              });
+                            }}
+                            onBlur={() => {
+                              setStep3KeyDrafts((prev) => {
+                                if (!(secondaryDraftKey in prev)) return prev;
+                                const next = { ...prev };
+                                delete next[secondaryDraftKey];
+                                return next;
+                              });
+                            }}
                             placeholder="Extra keywords used when Selective mode is on..."
                             className="theme-focus-ring font-mono w-full rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-3 py-1.5 text-xs text-slate-900 dark:text-white"
                           />
@@ -2119,7 +2389,7 @@ export const LorebookEditor: React.FC = () => {
                       Entry Order &amp; Placement
                     </h4>
                     <div className="space-y-2">
-                      {lorebook.entries.map((entry) => (
+                      {visibleEntries.map((entry) => (
                         <div
                           key={entry.id}
                           style={{
@@ -2228,8 +2498,8 @@ export const LorebookEditor: React.FC = () => {
                     <div className="flex justify-between py-1.5 border-b border-slate-100 dark:border-slate-800">
                       <span className="text-slate-500">Total Entries</span>
                       <span className="font-mono font-semibold">
-                        {lorebook.entries.length} (
-                        {lorebook.entries.filter((e) => e.enabled).length}{' '}
+                        {visibleEntries.length} (
+                        {visibleEntries.filter((e) => e.enabled).length}{' '}
                         enabled)
                       </span>
                     </div>
@@ -2239,7 +2509,7 @@ export const LorebookEditor: React.FC = () => {
                       </span>
                       <span className="font-mono font-semibold">
                         {
-                          lorebook.entries.filter(
+                          visibleEntries.filter(
                             (e) => e.enabled && e.constant
                           ).length
                         }{' '}
@@ -2252,7 +2522,7 @@ export const LorebookEditor: React.FC = () => {
                       </span>
                       <span className="font-mono font-semibold">
                         {
-                          lorebook.entries.filter(
+                          visibleEntries.filter(
                             (e) => e.enabled && !e.constant
                           ).length
                         }{' '}
@@ -2303,7 +2573,7 @@ export const LorebookEditor: React.FC = () => {
                       Link to a Character
                     </h3>
                     <p className="text-xs text-slate-500">
-                      Attach this lorebook directly to any character card in your library.
+                      Attach this lorebook directly to any character card in your library. Linked characters embed the live lorebook on export and include it in AI context.
                     </p>
                   </div>
 
@@ -2314,10 +2584,11 @@ export const LorebookEditor: React.FC = () => {
                   )}
 
                   <div className="space-y-2 max-h-64 overflow-y-auto pr-1">
-                    {characters.map((charItem) => {
-                      const isBound =
-                        charItem.character_book?.id === lorebook.id ||
-                        charItem.character_book?.name === lorebook.name;
+                    {visibleCharactersForLink.map((charItem) => {
+                      const isBound = Boolean(
+                        lorebook.id &&
+                          charItem.character_book?.id === lorebook.id
+                      );
                       return (
                         <div
                           key={charItem.id}
@@ -2363,6 +2634,11 @@ export const LorebookEditor: React.FC = () => {
                         </div>
                       );
                     })}
+                    {visibleCharactersForLink.length === 0 && (
+                      <div className="py-4 text-center text-xs text-slate-400">
+                        No visible characters available to link.
+                      </div>
+                    )}
                   </div>
                 </div>
               </div>
@@ -2424,7 +2700,7 @@ export const LorebookEditor: React.FC = () => {
             >
               <div className="flex items-center justify-between">
                 <h2 className="text-xs font-bold uppercase tracking-wider text-slate-700 dark:text-slate-200">
-                  Entries ({filteredEntries.length} / {lorebook.entries.length})
+                  Entries ({filteredEntries.length} / {visibleEntries.length})
                 </h2>
                 <button
                   type="button"
@@ -2474,7 +2750,11 @@ export const LorebookEditor: React.FC = () => {
                     <div
                       key={entry.id}
                       draggable
-                      onDragStart={() => setDraggedEntryId(entry.id)}
+                      onDragStart={(e) => {
+                        e.dataTransfer.setData('text/plain', String(entry.id));
+                        e.dataTransfer.effectAllowed = 'move';
+                        setDraggedEntryId(entry.id);
+                      }}
                       onDragOver={(e) => {
                         e.preventDefault();
                         if (
@@ -2970,6 +3250,8 @@ export const LorebookEditor: React.FC = () => {
               )}
             </div>
           </div>
+        )}
+          </>
         )}
       </div>
     </div>

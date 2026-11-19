@@ -29,6 +29,8 @@ import {
   GripVertical,
   RefreshCw,
   ShieldAlert,
+  ShieldCheck,
+  BookOpen,
   CornerDownRight,
   Smile,
   Link,
@@ -36,6 +38,9 @@ import {
 import {
   ensureUniqueEntityName,
   isCharacterNsfw,
+  isLorebookEntryNsfw,
+  isLorebookNsfw,
+  isTagNsfwFlagged,
   useStore,
 } from '../context/StoreContext';
 import {
@@ -69,8 +74,10 @@ import {
   exportCharacterAsJson,
   exportCharacterAsPng,
   extractPngTextChunks,
+  isAllowedRasterImageFile,
   readImageDimensions,
   sanitizeFilename,
+  sanitizeMediaUri,
   triggerBrowserDownload,
 } from '../utils/cardIO';
 import {
@@ -80,7 +87,9 @@ import {
   parseAiJsonResponse,
 } from '../services/aiService';
 
-const REACTION_EXPRESSION_PRESETS: readonly string[] = [
+const MAX_CONTEXT_REFERENCE_IMAGES = 6;
+
+const SFW_REACTION_EXPRESSION_PRESETS: readonly string[] = [
   'neutral',
   'joy',
   'amusement',
@@ -98,10 +107,13 @@ const REACTION_EXPRESSION_PRESETS: readonly string[] = [
   'smug',
   'flustered',
   'teasing',
+  'battle_damaged',
+];
+
+const NSFW_REACTION_EXPRESSION_PRESETS: readonly string[] = [
   'ahegao',
   'climax',
   'overstimulated',
-  'battle_damaged',
 ];
 
 const WIZARD_STEPS = [
@@ -132,6 +144,39 @@ const WIZARD_STEPS = [
   },
 ];
 
+async function downscaleTwoThreePortrait(
+  dataUrl: string,
+  targetW = 768,
+  targetH = 1152
+): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => {
+      const canvas = document.createElement('canvas');
+      canvas.width = targetW;
+      canvas.height = targetH;
+      try {
+        const ctx = canvas.getContext('2d');
+        if (!ctx) {
+          resolve(dataUrl);
+          return;
+        }
+        ctx.imageSmoothingEnabled = true;
+        ctx.imageSmoothingQuality = 'high';
+        ctx.drawImage(img, 0, 0, targetW, targetH);
+        resolve(canvas.toDataURL('image/png'));
+      } catch (err) {
+        reject(err);
+      } finally {
+        canvas.width = 0;
+        canvas.height = 0;
+      }
+    };
+    img.onerror = () => reject(new Error('Failed to resize portrait image.'));
+    img.src = dataUrl;
+  });
+}
+
 export const CharacterEditor: React.FC = () => {
   const {
     characters,
@@ -139,6 +184,8 @@ export const CharacterEditor: React.FC = () => {
     setActiveCharacterId,
     createNewCharacter,
     requestDeleteCharacter,
+    bindLorebookToCharacter,
+    getResolvedLorebookForCharacter,
     character,
     setCharacter,
     updateCharacterField,
@@ -212,7 +259,10 @@ export const CharacterEditor: React.FC = () => {
   const extraContextImages = charDraft.extraContextImages || [];
   const handleAddExtraContextImages = (newImages: ContextReferenceImage[]) =>
     updateCharacterDraft({
-      extraContextImages: [...extraContextImages, ...newImages],
+      extraContextImages: [...extraContextImages, ...newImages].slice(
+        0,
+        MAX_CONTEXT_REFERENCE_IMAGES
+      ),
     });
   const handleRemoveExtraContextImage = (imgId: string) =>
     updateCharacterDraft({
@@ -280,6 +330,136 @@ export const CharacterEditor: React.FC = () => {
     string | null
   >(null);
 
+  // Separate AbortControllers per AI operation (prevents cross-cancellation & stuck spinners)
+  const conceptAbortRef = useRef<AbortController | null>(null);
+  const greetingAbortRef = useRef<AbortController | null>(null);
+  const statRuleAbortRef = useRef<AbortController | null>(null);
+  const reactionRuleAbortRef = useRef<AbortController | null>(null);
+  const importFileInputRef = useRef<HTMLInputElement | null>(null);
+  const timersRef = useRef<Set<number>>(new Set());
+  const isMountedRef = useRef(true);
+  const prevCharacterIdRef = useRef<string | undefined>(activeCharacterId);
+
+  const abortAllCharacterAiRequests = () => {
+    conceptAbortRef.current?.abort();
+    conceptAbortRef.current = null;
+    greetingAbortRef.current?.abort();
+    greetingAbortRef.current = null;
+    statRuleAbortRef.current?.abort();
+    statRuleAbortRef.current = null;
+    reactionRuleAbortRef.current?.abort();
+    reactionRuleAbortRef.current = null;
+    setIsGeneratingConcept(false);
+    setIsGeneratingGreeting(false);
+    setGeneratingStatRuleId(null);
+    setGeneratingReactionId(null);
+  };
+
+  // Resolved, always-up-to-date Linked Lorebook (synced by ID with Lorebooks area)
+  const resolvedLinkedLorebook = useMemo(
+    () => getResolvedLorebookForCharacter(character),
+    [getResolvedLorebookForCharacter, character]
+  );
+
+  // Strict NSFW detection (manual flag OR NSFW tag OR linked NSFW lorebook)
+  const isActiveCharFlaggedByTag = useMemo(
+    () => (character.tags || []).some((t) => isTagNsfwFlagged(t, tags)),
+    [character.tags, tags]
+  );
+  const isActiveCharFlaggedByLorebook = useMemo(
+    () =>
+      Boolean(
+        resolvedLinkedLorebook && isLorebookNsfw(resolvedLinkedLorebook, tags)
+      ),
+    [resolvedLinkedLorebook, tags]
+  );
+  const isActiveCharacterNsfw = useMemo(
+    () => isCharacterNsfw(character, tags, lorebooks),
+    [character, tags, lorebooks]
+  );
+  const isActiveCharacterShielded =
+    settings.hideNsfwTags && isActiveCharacterNsfw;
+
+  // Format linked lorebook context for AI generation (strictly strips NSFW when hideNsfwTags is ON)
+  const linkedLorebookContextSummary = useMemo(() => {
+    if (isActiveCharacterShielded || !resolvedLinkedLorebook) return '';
+    if (settings.hideNsfwTags && isLorebookNsfw(resolvedLinkedLorebook, tags)) {
+      return '';
+    }
+    const activeEntries = (resolvedLinkedLorebook.entries || []).filter(
+      (entry) => {
+        if (!entry.enabled) return false;
+        if (settings.hideNsfwTags && isLorebookEntryNsfw(entry, tags)) {
+          return false;
+        }
+        return Boolean((entry.content || '').trim());
+      }
+    );
+    const headerLines = [
+      `Linked Lorebook / World Info: ${resolvedLinkedLorebook.name || 'Untitled Lorebook'}`,
+      resolvedLinkedLorebook.description?.trim()
+        ? `World Overview: ${resolvedLinkedLorebook.description.trim()}`
+        : '',
+    ].filter(Boolean);
+    if (activeEntries.length === 0 && headerLines.length <= 1) return '';
+    const entryLines = activeEntries.slice(0, 24).map((entry) => {
+      const keys = (entry.keys || []).filter(Boolean).join(', ');
+      const title = entry.comment?.trim() || keys || 'Lore Entry';
+      const content = (entry.content || '').trim();
+      const snippet =
+        content.length > 500 ? `${content.slice(0, 500)}…` : content;
+      return `- ${title}${keys ? ` [${keys}]` : ''}: ${snippet}`;
+    });
+    return [...headerLines, ...entryLines].join('\n');
+  }, [
+    isActiveCharacterShielded,
+    resolvedLinkedLorebook,
+    settings.hideNsfwTags,
+    tags,
+  ]);
+
+  const selectableReactionPresets = useMemo(
+    () =>
+      settings.hideNsfwTags
+        ? SFW_REACTION_EXPRESSION_PRESETS
+        : [
+            ...SFW_REACTION_EXPRESSION_PRESETS,
+            ...NSFW_REACTION_EXPRESSION_PRESETS,
+          ],
+    [settings.hideNsfwTags]
+  );
+
+  const visibleLorebooksForLinking = useMemo(
+    () =>
+      settings.hideNsfwTags
+        ? lorebooks.filter((lb) => !isLorebookNsfw(lb, tags))
+        : lorebooks,
+    [lorebooks, settings.hideNsfwTags, tags]
+  );
+
+  const linkedLorebookSelectValue = useMemo(() => {
+    if (!resolvedLinkedLorebook) return '';
+    if (
+      settings.hideNsfwTags &&
+      isLorebookNsfw(resolvedLinkedLorebook, tags)
+    ) {
+      return '';
+    }
+    if (
+      visibleLorebooksForLinking.some(
+        (lb) => lb.id === resolvedLinkedLorebook.id
+      )
+    ) {
+      return resolvedLinkedLorebook.id;
+    }
+    return resolvedLinkedLorebook.id || '__embedded__';
+  }, [
+    resolvedLinkedLorebook,
+    visibleLorebooksForLinking,
+    settings.hideNsfwTags,
+    tags,
+  ]);
+
   const visionSupported = useMemo(
     () => doesBackendSupportVision(aiConfig),
     [aiConfig]
@@ -289,7 +469,7 @@ export const CharacterEditor: React.FC = () => {
   );
 
   const activeCharacterVisionUrls = useMemo(() => {
-    if (!visionSupported) return [];
+    if (!visionSupported || isActiveCharacterShielded) return [];
     const urls: string[] = [];
     if (hasPortraitImage && character.avatar) {
       urls.push(character.avatar);
@@ -302,27 +482,32 @@ export const CharacterEditor: React.FC = () => {
     return Array.from(new Set(urls));
   }, [
     visionSupported,
+    isActiveCharacterShielded,
     hasPortraitImage,
     character.avatar,
     extraContextImages,
   ]);
 
-  const abortRef = useRef<AbortController | null>(null);
-  const importFileInputRef = useRef<HTMLInputElement | null>(null);
-  const timersRef = useRef<Set<number>>(new Set());
-
   const scheduleTimer = (fn: () => void, ms: number) => {
     const id = window.setTimeout(() => {
       timersRef.current.delete(id);
-      fn();
+      if (isMountedRef.current) fn();
     }, ms);
     timersRef.current.add(id);
   };
 
-  // Portrait Upload & 2:3 Aspect-Ratio Check Handler
+  // Portrait Upload & 2:3 Aspect-Ratio Check Handler (rejects SVG, caps oversized 2:3 images)
   const handlePortraitImageSelected = async (file: File) => {
+    if (!isAllowedRasterImageFile(file)) {
+      setConceptError({
+        message:
+          'Unsupported image type. Please upload a PNG, JPG, or WebP raster image (SVG is blocked for security).',
+      });
+      return;
+    }
     try {
       const info = await readImageDimensions(file);
+      if (!isMountedRef.current) return;
       if (!info.isTwoThreeAspect) {
         // Image does not match SillyTavern 2:3 aspect ratio -> automatically open Interactive Cropper Modal
         setCropperState({
@@ -332,13 +517,23 @@ export const CharacterEditor: React.FC = () => {
           reason: 'aspect_mismatch',
         });
       } else {
-        updateCharacterField('avatar', info.dataUrl);
+        let finalUrl = info.dataUrl;
+        let finalW = info.width;
+        let finalH = info.height;
+        if (info.width > 1024 || info.height > 1536) {
+          finalUrl = await downscaleTwoThreePortrait(info.dataUrl, 768, 1152);
+          if (!isMountedRef.current) return;
+          finalW = 768;
+          finalH = 1152;
+        }
+        updateCharacterField('avatar', finalUrl);
         setImportStatusBanner(
-          `Applied 2:3 portrait (${info.width}×${info.height} px) to ${character.name}.`
+          `Applied 2:3 portrait (${finalW}×${finalH} px) to ${character.name}.`
         );
         scheduleTimer(() => setImportStatusBanner(null), 3500);
       }
     } catch (err: unknown) {
+      if (!isMountedRef.current) return;
       setConceptError({
         message:
           err instanceof Error
@@ -355,6 +550,7 @@ export const CharacterEditor: React.FC = () => {
     }
     try {
       const info = await readImageDimensions(character.avatar);
+      if (!isMountedRef.current) return;
       setCropperState({
         sourceUrl: info.dataUrl,
         naturalWidth: info.width,
@@ -362,6 +558,7 @@ export const CharacterEditor: React.FC = () => {
         reason: 'manual_adjust',
       });
     } catch {
+      if (!isMountedRef.current) return;
       setCropperState({
         sourceUrl: character.avatar,
         naturalWidth: 512,
@@ -380,6 +577,12 @@ export const CharacterEditor: React.FC = () => {
     if (list.length === 1) {
       const single = list[0];
       const lower = single.name.toLowerCase();
+      if (lower.endsWith('.svg') || single.type === 'image/svg+xml') {
+        setConceptError({
+          message: 'SVG files are not supported for security reasons. Use PNG, JPG, or WebP.',
+        });
+        return;
+      }
       const isNonPngImage =
         lower.endsWith('.jpg') ||
         lower.endsWith('.jpeg') ||
@@ -409,9 +612,11 @@ export const CharacterEditor: React.FC = () => {
 
     try {
       const res = await importFromFiles(list);
+      if (!isMountedRef.current) return;
       setImportStatusBanner(res.summary);
       scheduleTimer(() => setImportStatusBanner(null), 4000);
     } catch (err: unknown) {
+      if (!isMountedRef.current) return;
       setConceptError({
         message:
           err instanceof Error
@@ -421,15 +626,60 @@ export const CharacterEditor: React.FC = () => {
     }
   };
 
+  // Cleanup all active AI requests and timers on unmount
   useEffect(() => {
+    isMountedRef.current = true;
     return () => {
-      if (abortRef.current) {
-        abortRef.current.abort();
-      }
+      isMountedRef.current = false;
+      conceptAbortRef.current?.abort();
+      greetingAbortRef.current?.abort();
+      statRuleAbortRef.current?.abort();
+      reactionRuleAbortRef.current?.abort();
       timersRef.current.forEach((id) => window.clearTimeout(id));
       timersRef.current.clear();
     };
   }, []);
+
+  // Abort pending AI requests & clear temporary context images when switching active character
+  useEffect(() => {
+    if (prevCharacterIdRef.current !== activeCharacterId) {
+      prevCharacterIdRef.current = activeCharacterId;
+      abortAllCharacterAiRequests();
+      setConceptError(null);
+      setVisionFallbackBanner(null);
+      setCropperState(null);
+      if (extraContextImages.length > 0) {
+        updateCharacterDraft({ extraContextImages: [] });
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeCharacterId]);
+
+  // Strict SFW protection: auto-switch off NSFW character & abort AI if Hide NSFW is enabled
+  useEffect(() => {
+    if (!settings.hideNsfwTags) return;
+    if (rosterTagFilter !== 'all' && isTagNsfwFlagged(rosterTagFilter, tags)) {
+      updateCharacterDraft({ rosterTagFilter: 'all' });
+    }
+    if (isActiveCharacterNsfw) {
+      abortAllCharacterAiRequests();
+      const firstSfw = characters.find(
+        (c) => !isCharacterNsfw(c, tags, lorebooks)
+      );
+      if (firstSfw && firstSfw.id && firstSfw.id !== activeCharacterId) {
+        setActiveCharacterId(firstSfw.id);
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    settings.hideNsfwTags,
+    isActiveCharacterNsfw,
+    characters,
+    activeCharacterId,
+    tags,
+    lorebooks,
+    rosterTagFilter,
+  ]);
 
   // Ensure greeting index stays in bounds when switching characters
   useEffect(() => {
@@ -437,13 +687,17 @@ export const CharacterEditor: React.FC = () => {
     if (activeGreetingIdx >= totalGreetings) {
       setActiveGreetingIdx(0);
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [character.id, character.alternate_greetings?.length, activeGreetingIdx]);
 
-  // Compute token count for each character in the roster for sorting & display
+  // Compute accurate per-character token counts (never bleed active statBlock into other cards)
   const characterWithMetrics = useMemo(() => {
     return characters.map((charItem) => {
-      const charStatBlock = charItem.extensions?.statBlock || statBlock;
-      const charLorebook = charItem.character_book;
+      const charStatBlock =
+        charItem.id === activeCharacterId
+          ? statBlock
+          : charItem.extensions?.statBlock;
+      const charLorebook = getResolvedLorebookForCharacter(charItem);
       const breakdown = calculateCardTokenBreakdown(
         charItem,
         charLorebook,
@@ -454,12 +708,27 @@ export const CharacterEditor: React.FC = () => {
         totalTokens: breakdown.totalCardTokens,
       };
     });
-  }, [characters, statBlock]);
+  }, [
+    characters,
+    activeCharacterId,
+    statBlock,
+    getResolvedLorebookForCharacter,
+  ]);
+
+  const hiddenNsfwCharacterCount = useMemo(
+    () =>
+      settings.hideNsfwTags
+        ? characters.filter((c) => isCharacterNsfw(c, tags, lorebooks)).length
+        : 0,
+    [settings.hideNsfwTags, characters, tags, lorebooks]
+  );
+
+  const visibleRosterTotalCount = characters.length - hiddenNsfwCharacterCount;
 
   const filteredAndSortedRoster = useMemo(() => {
     const q = rosterSearch.trim().toLowerCase();
     const filtered = characterWithMetrics.filter(({ char }) => {
-      if (settings.hideNsfwTags && isCharacterNsfw(char, tags)) {
+      if (settings.hideNsfwTags && isCharacterNsfw(char, tags, lorebooks)) {
         return false;
       }
       const matchesTag =
@@ -496,19 +765,25 @@ export const CharacterEditor: React.FC = () => {
     rosterSort,
     settings.hideNsfwTags,
     tags,
+    lorebooks,
   ]);
 
   const toggleCharacterTag = (tagName: string) => {
-    const registered = ensureTagRegistered(tagName);
-    const canonicalName = registered ? registered.name : tagName.trim();
+    const trimmed = tagName.trim();
+    if (!trimmed) return;
     const exists = character.tags.some(
-      (t) => t.trim().toLowerCase() === canonicalName.toLowerCase()
+      (t) => t.trim().toLowerCase() === trimmed.toLowerCase()
     );
-    const nextRaw = exists
-      ? character.tags.filter(
-          (t) => t.trim().toLowerCase() !== canonicalName.toLowerCase()
-        )
-      : [...character.tags, canonicalName];
+    if (exists) {
+      const nextRaw = character.tags.filter(
+        (t) => t.trim().toLowerCase() !== trimmed.toLowerCase()
+      );
+      updateCharacterField('tags', sortTagsByContextOrder(nextRaw, tags));
+      return;
+    }
+    const registered = ensureTagRegistered(trimmed);
+    const canonicalName = registered ? registered.name : trimmed;
+    const nextRaw = [...character.tags, canonicalName];
     updateCharacterField(
       'tags',
       sortTagsByContextOrder(
@@ -602,9 +877,10 @@ export const CharacterEditor: React.FC = () => {
 
   // 1-Click AI Alternate Greeting Generator
   const handleGenerateAIGreeting = async () => {
-    if (abortRef.current) abortRef.current.abort();
+    if (isActiveCharacterShielded) return;
+    if (greetingAbortRef.current) greetingAbortRef.current.abort();
     const controller = new AbortController();
-    abortRef.current = controller;
+    greetingAbortRef.current = controller;
     setIsGeneratingGreeting(true);
     setConceptError(null);
 
@@ -624,6 +900,7 @@ export const CharacterEditor: React.FC = () => {
       character.post_history_instructions
         ? `Post-History Instructions:\n${character.post_history_instructions}`
         : '',
+      linkedLorebookContextSummary || '',
     ]
       .filter(Boolean)
       .join('\n\n');
@@ -650,6 +927,7 @@ export const CharacterEditor: React.FC = () => {
           activeTheme,
           allTags: tags,
           characterTags: character.tags,
+          hideNsfw: settings.hideNsfwTags,
           imageDataUrls:
             activeCharacterVisionUrls.length > 0
               ? activeCharacterVisionUrls
@@ -683,8 +961,11 @@ export const CharacterEditor: React.FC = () => {
         });
       }
     } finally {
-      if (!controller.signal.aborted) {
-        setIsGeneratingGreeting(false);
+      if (greetingAbortRef.current === controller) {
+        greetingAbortRef.current = null;
+        if (isMountedRef.current) {
+          setIsGeneratingGreeting(false);
+        }
       }
     }
   };
@@ -692,13 +973,14 @@ export const CharacterEditor: React.FC = () => {
   // Wizard Step 1: "Generate Full Character from Concept"
   const handleGenerateFullCharacterFromConcept = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (isActiveCharacterShielded) return;
     const usePortraitNow = visionSupported && hasPortraitImage;
     const hasAnyVisualContext = activeCharacterVisionUrls.length > 0;
     if (!conceptPrompt.trim() && !hasAnyVisualContext) return;
 
-    if (abortRef.current) abortRef.current.abort();
+    if (conceptAbortRef.current) conceptAbortRef.current.abort();
     const controller = new AbortController();
-    abortRef.current = controller;
+    conceptAbortRef.current = controller;
     setIsGeneratingConcept(true);
     setConceptError(null);
     setVisionFallbackBanner(null);
@@ -765,6 +1047,7 @@ export const CharacterEditor: React.FC = () => {
       character.post_history_instructions
         ? `Existing Post-History Instructions:\n${character.post_history_instructions}`
         : '',
+      linkedLorebookContextSummary || '',
     ]
       .filter(Boolean)
       .join('\n\n');
@@ -781,6 +1064,7 @@ export const CharacterEditor: React.FC = () => {
           activeTheme,
           allTags: tags,
           characterTags: character.tags,
+          hideNsfw: settings.hideNsfwTags,
           imageDataUrls:
             activeCharacterVisionUrls.length > 0
               ? activeCharacterVisionUrls
@@ -793,17 +1077,22 @@ export const CharacterEditor: React.FC = () => {
         if (detailed.visionFallbackWarning) {
           setVisionFallbackBanner(detailed.visionFallbackWarning);
         }
-        const parsed = parseAiJsonResponse<Partial<CharacterCardData>>(
+        const parsed = parseAiJsonResponse<Record<string, unknown>>(
           detailed.content
         );
+
+        const strOrKeep = (val: unknown, fallback: string): string =>
+          typeof val === 'string' ? val : fallback;
 
         setCharacter((prev) => {
           const otherNames = characters
             .filter((c) => c.id !== prev.id)
             .map((c) => c.name || 'Untitled');
-          const safeName = parsed.name?.trim()
+          const rawParsedName =
+            typeof parsed.name === 'string' ? parsed.name.trim() : '';
+          const safeName = rawParsedName
             ? ensureUniqueEntityName(
-                parsed.name.trim(),
+                rawParsedName,
                 otherNames,
                 prev.name || 'New Character'
               )
@@ -812,13 +1101,13 @@ export const CharacterEditor: React.FC = () => {
           return {
             ...prev,
             name: safeName,
-            nickname: parsed.nickname ?? prev.nickname,
-            description: parsed.description ?? prev.description,
-            personality: parsed.personality ?? prev.personality,
-            scenario: parsed.scenario ?? prev.scenario,
-            first_mes: parsed.first_mes ?? prev.first_mes,
-            mes_example: parsed.mes_example ?? prev.mes_example,
-            system_prompt: parsed.system_prompt ?? prev.system_prompt,
+            nickname: strOrKeep(parsed.nickname, prev.nickname || ''),
+            description: strOrKeep(parsed.description, prev.description),
+            personality: strOrKeep(parsed.personality, prev.personality),
+            scenario: strOrKeep(parsed.scenario, prev.scenario),
+            first_mes: strOrKeep(parsed.first_mes, prev.first_mes),
+            mes_example: strOrKeep(parsed.mes_example, prev.mes_example),
+            system_prompt: strOrKeep(parsed.system_prompt, prev.system_prompt),
           };
         });
       }
@@ -838,8 +1127,11 @@ export const CharacterEditor: React.FC = () => {
         });
       }
     } finally {
-      if (!controller.signal.aborted) {
-        setIsGeneratingConcept(false);
+      if (conceptAbortRef.current === controller) {
+        conceptAbortRef.current = null;
+        if (isMountedRef.current) {
+          setIsGeneratingConcept(false);
+        }
       }
     }
   };
@@ -927,7 +1219,7 @@ export const CharacterEditor: React.FC = () => {
       );
       nextTemplate = nextTemplate.replace(
         new RegExp(`\\{\\{stat:${escapedOld}\\}\\}`, 'gi'),
-        `{{stat:${renameHint.newPath}}}`
+        () => `{{stat:${renameHint.newPath}}}`
       );
     }
     return {
@@ -1103,9 +1395,10 @@ export const CharacterEditor: React.FC = () => {
     stat: StatItem,
     parentLabel?: string
   ) => {
-    if (abortRef.current) abortRef.current.abort();
+    if (isActiveCharacterShielded) return;
+    if (statRuleAbortRef.current) statRuleAbortRef.current.abort();
     const controller = new AbortController();
-    abortRef.current = controller;
+    statRuleAbortRef.current = controller;
     setGeneratingStatRuleId(stat.id);
     setConceptError(null);
 
@@ -1143,6 +1436,7 @@ export const CharacterEditor: React.FC = () => {
       character.post_history_instructions
         ? `Post-History Instructions:\n${character.post_history_instructions}`
         : '',
+      linkedLorebookContextSummary || '',
       otherStatsSummary ? `Other Tracked Stats:\n${otherStatsSummary}` : '',
     ]
       .filter(Boolean)
@@ -1176,6 +1470,7 @@ export const CharacterEditor: React.FC = () => {
           activeTheme,
           allTags: tags,
           characterTags: character.tags,
+          hideNsfw: settings.hideNsfwTags,
           imageDataUrls:
             activeCharacterVisionUrls.length > 0
               ? activeCharacterVisionUrls
@@ -1202,8 +1497,11 @@ export const CharacterEditor: React.FC = () => {
         });
       }
     } finally {
-      if (!controller.signal.aborted) {
-        setGeneratingStatRuleId(null);
+      if (statRuleAbortRef.current === controller) {
+        statRuleAbortRef.current = null;
+        if (isMountedRef.current) {
+          setGeneratingStatRuleId(null);
+        }
       }
     }
   };
@@ -1213,27 +1511,69 @@ export const CharacterEditor: React.FC = () => {
     const enabledStatBlock = { ...statBlock, enableDMTracker: true };
     setStatBlock(enabledStatBlock);
 
-    const compiledInstructions = compileStatBlockPrompt(enabledStatBlock);
-    const initialRenderedBlock = renderInitialStatBlockInstance(enabledStatBlock);
+    const compiledInstructions = compileStatBlockPrompt(enabledStatBlock).trim();
+    const initialRenderedBlock =
+      renderInitialStatBlockInstance(enabledStatBlock).trim();
 
-    // Strip any previously compiled [System Directive: Dynamic DM/GM Stat Tracker] block cleanly without touching other directives
-    const cleanPostHistory = (character.post_history_instructions || '')
-      .replace(
-        /\n*\[System Directive: Dynamic DM\/GM Stat Tracker\][\s\S]*?(?=\n*\[System Directive:|$)/i,
-        ''
-      )
-      .trim();
+    const delimitedStatDirective = compiledInstructions
+      ? `<!-- TAVERNSMITH:STAT_TRACKER:START -->\n${compiledInstructions}\n<!-- TAVERNSMITH:STAT_TRACKER:END -->`
+      : '';
 
-    const updatedPostHistory = [cleanPostHistory, compiledInstructions]
-      .filter(Boolean)
-      .join('\n\n');
+    // Replace existing delimited or legacy Stat Tracker block cleanly without touching user instructions or Reaction triggers
+    const rawPostHistory = character.post_history_instructions || '';
+    const statDelimitedRegex =
+      /\n*<!-- TAVERNSMITH:STAT_TRACKER:START -->[\s\S]*?<!-- TAVERNSMITH:STAT_TRACKER:END -->\n*/i;
+    const legacyStatRegex =
+      /\n*\[System Directive: Dynamic DM\/GM Stat Tracker\][\s\S]*?(?=\n*(?:<!-- TAVERNSMITH:|\[System Directive:)|$)/i;
 
-    // Append initial stat block to first_mes if not already present
+    let updatedPostHistory = rawPostHistory;
+    if (statDelimitedRegex.test(updatedPostHistory)) {
+      updatedPostHistory = updatedPostHistory
+        .replace(statDelimitedRegex, () =>
+          delimitedStatDirective ? `\n\n${delimitedStatDirective}\n\n` : '\n\n'
+        )
+        .replace(/\n{3,}/g, '\n\n')
+        .trim();
+    } else if (legacyStatRegex.test(updatedPostHistory)) {
+      updatedPostHistory = updatedPostHistory
+        .replace(legacyStatRegex, () =>
+          delimitedStatDirective ? `\n\n${delimitedStatDirective}\n\n` : '\n\n'
+        )
+        .replace(/\n{3,}/g, '\n\n')
+        .trim();
+    } else {
+      updatedPostHistory = [updatedPostHistory.trim(), delimitedStatDirective]
+        .filter(Boolean)
+        .join('\n\n');
+    }
+
+    // Inject or update initial stat block in first_mes without creating duplicates on repeated clicks
     const currentFirstMes = (character.first_mes || '').trim();
-    const updatedFirstMes =
-      initialRenderedBlock && !currentFirstMes.includes(initialRenderedBlock.trim())
-        ? `${currentFirstMes}\n\n${initialRenderedBlock.trim()}`.trim()
-        : currentFirstMes;
+    const delimitedInitialBlock = initialRenderedBlock
+      ? `<!-- TAVERNSMITH:INITIAL_STATS:START -->\n${initialRenderedBlock}\n<!-- TAVERNSMITH:INITIAL_STATS:END -->`
+      : '';
+    const initialDelimitedRegex =
+      /\n*<!-- TAVERNSMITH:INITIAL_STATS:START -->[\s\S]*?<!-- TAVERNSMITH:INITIAL_STATS:END -->\n*/i;
+
+    let updatedFirstMes = currentFirstMes;
+    if (initialRenderedBlock) {
+      if (initialDelimitedRegex.test(updatedFirstMes)) {
+        updatedFirstMes = updatedFirstMes
+          .replace(initialDelimitedRegex, () => `\n\n${delimitedInitialBlock}\n\n`)
+          .replace(/\n{3,}/g, '\n\n')
+          .trim();
+      } else if (updatedFirstMes.includes(initialRenderedBlock)) {
+        // Already present verbatim without markers — wrap in place once so future edits stay clean
+        updatedFirstMes = updatedFirstMes.replace(
+          initialRenderedBlock,
+          () => delimitedInitialBlock
+        );
+      } else {
+        updatedFirstMes = [updatedFirstMes, delimitedInitialBlock]
+          .filter(Boolean)
+          .join('\n\n');
+      }
+    }
 
     setCharacter((prev) => ({
       ...prev,
@@ -1246,7 +1586,7 @@ export const CharacterEditor: React.FC = () => {
     }));
 
     setCompiledBanner(
-      'Added your Stat Tracker rules to Post-History Instructions and your starting stats to the First Message.'
+      'Updated Stat Tracker rules in Post-History Instructions and starting stats in First Message (existing custom notes preserved).'
     );
     scheduleTimer(() => setCompiledBanner(null), 4000);
   };
@@ -1278,22 +1618,14 @@ export const CharacterEditor: React.FC = () => {
 
   const handleUploadReactionFiles = async (files: FileList | File[] | null) => {
     if (!files || files.length === 0) return;
-    const validFiles = Array.from(files).filter((file) => {
-      const lower = file.name.toLowerCase();
-      return (
-        file.type === 'image/png' ||
-        file.type === 'image/jpeg' ||
-        file.type === 'image/webp' ||
-        lower.endsWith('.png') ||
-        lower.endsWith('.jpg') ||
-        lower.endsWith('.jpeg') ||
-        lower.endsWith('.webp')
-      );
-    });
+    const validFiles = Array.from(files).filter((file) =>
+      isAllowedRasterImageFile(file)
+    );
 
     if (validFiles.length === 0) {
       setConceptError({
-        message: 'Please select valid .png, .jpg, or .webp reaction images.',
+        message:
+          'Please select valid .png, .jpg, or .webp reaction images (SVG is blocked for security).',
       });
       return;
     }
@@ -1306,6 +1638,7 @@ export const CharacterEditor: React.FC = () => {
       const addedItems: ReactionImageItem[] = [];
       for (let i = 0; i < validFiles.length; i++) {
         const compressed = await compressImageForReactionAsset(validFiles[i], 640);
+        if (!isMountedRef.current) return;
         addedItems.push({
           id: `react-${Date.now()}-${i}-${Math.random().toString(36).slice(2, 6)}`,
           name: compressed.nameStem,
@@ -1315,7 +1648,7 @@ export const CharacterEditor: React.FC = () => {
         });
       }
 
-      if (addedItems.length > 0) {
+      if (addedItems.length > 0 && isMountedRef.current) {
         setCharacter((prev) => ({
           ...prev,
           reactionImages: [...(prev.reactionImages || []), ...addedItems],
@@ -1326,6 +1659,7 @@ export const CharacterEditor: React.FC = () => {
         scheduleTimer(() => setReactionBanner(null), 4000);
       }
     } catch (err: unknown) {
+      if (!isMountedRef.current) return;
       setConceptError({
         message:
           err instanceof Error
@@ -1333,17 +1667,19 @@ export const CharacterEditor: React.FC = () => {
             : 'Failed to process reaction image(s).',
       });
     } finally {
-      setIsUploadingReactions(false);
+      if (isMountedRef.current) {
+        setIsUploadingReactions(false);
+      }
     }
   };
 
   const handleAddReactionUrl = (e?: React.FormEvent) => {
     if (e) e.preventDefault();
-    const cleanUrl = reactionUrlInput.trim();
-    if (!cleanUrl) return;
-    if (!/^(https?:\/\/|data:image\/)/i.test(cleanUrl)) {
+    const cleanUrl = sanitizeMediaUri(reactionUrlInput);
+    if (!cleanUrl) {
       setConceptError({
-        message: 'Reaction image URL must start with https://, http://, or data:image/.',
+        message:
+          'Reaction image URL must be a valid https://, http://, or raster data:image/ (PNG/JPG/WebP/GIF) URI.',
       });
       return;
     }
@@ -1351,7 +1687,10 @@ export const CharacterEditor: React.FC = () => {
     const cleanName =
       reactionUrlName.trim().replace(/\s+/g, '_').toLowerCase() || 'neutral';
     const pathMatch = cleanUrl.split('?')[0].match(/\.([a-zA-Z0-9]+)$/);
-    const ext = pathMatch && pathMatch[1] ? pathMatch[1].toLowerCase() : 'png';
+    const ext =
+      pathMatch && pathMatch[1] && pathMatch[1].toLowerCase() !== 'svg'
+        ? pathMatch[1].toLowerCase()
+        : 'png';
 
     const newItem: ReactionImageItem = {
       id: `react-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
@@ -1394,14 +1733,16 @@ export const CharacterEditor: React.FC = () => {
   };
 
   const handleDownloadReactionSprite = async (item: ReactionImageItem) => {
+    const safeUri = sanitizeMediaUri(item.uri);
+    if (!safeUri) return;
     const filename = `${sanitizeFilename(character.name || 'character')}_${sanitizeFilename(item.name || 'reaction')}.${item.ext || 'webp'}`;
     try {
-      const response = await fetch(item.uri);
+      const response = await fetch(safeUri);
       const blob = await response.blob();
       triggerBrowserDownload(blob, filename);
     } catch {
       const anchor = document.createElement('a');
-      anchor.href = item.uri;
+      anchor.href = safeUri;
       anchor.download = filename;
       anchor.target = '_blank';
       anchor.rel = 'noopener noreferrer';
@@ -1412,9 +1753,10 @@ export const CharacterEditor: React.FC = () => {
   };
 
   const handleGenerateReactionRuleWithAI = async (item: ReactionImageItem) => {
-    if (abortRef.current) abortRef.current.abort();
+    if (isActiveCharacterShielded) return;
+    if (reactionRuleAbortRef.current) reactionRuleAbortRef.current.abort();
     const controller = new AbortController();
-    abortRef.current = controller;
+    reactionRuleAbortRef.current = controller;
     setGeneratingReactionId(item.id);
     setConceptError(null);
 
@@ -1435,6 +1777,7 @@ export const CharacterEditor: React.FC = () => {
       character.description ? `Description:\n${character.description}` : '',
       character.personality ? `Personality:\n${character.personality}` : '',
       character.scenario ? `Scenario:\n${character.scenario}` : '',
+      linkedLorebookContextSummary || '',
       otherReactionsSummary
         ? `Other Configured Reactions:\n${otherReactionsSummary}`
         : '',
@@ -1473,6 +1816,7 @@ export const CharacterEditor: React.FC = () => {
           activeTheme,
           allTags: tags,
           characterTags: character.tags,
+          hideNsfw: settings.hideNsfwTags,
           imageDataUrls:
             visionImagesForCall && visionImagesForCall.length > 0
               ? visionImagesForCall
@@ -1499,22 +1843,29 @@ export const CharacterEditor: React.FC = () => {
         });
       }
     } finally {
-      if (!controller.signal.aborted) {
-        setGeneratingReactionId(null);
+      if (reactionRuleAbortRef.current === controller) {
+        reactionRuleAbortRef.current = null;
+        if (isMountedRef.current) {
+          setGeneratingReactionId(null);
+        }
       }
     }
   };
 
   const handleCompileReactionRulesToCard = () => {
-    const cleanPostHistory = (character.post_history_instructions || '')
-      .replace(
-        /\n*\[System Directive: Character Reaction & Expression Triggers\][\s\S]*?(?=\n*\[System Directive:|$)/i,
-        ''
-      )
-      .trim();
+    const rawPostHistory = character.post_history_instructions || '';
+    const reactionDelimitedRegex =
+      /\n*<!-- TAVERNSMITH:REACTIONS:START -->[\s\S]*?<!-- TAVERNSMITH:REACTIONS:END -->\n*/i;
+    const legacyReactionRegex =
+      /\n*\[System Directive: Character Reaction & Expression Triggers\][\s\S]*?(?=\n*(?:<!-- TAVERNSMITH:|\[System Directive:)|$)/i;
 
     if (reactionImages.length === 0) {
-      updateCharacterField('post_history_instructions', cleanPostHistory);
+      const stripped = rawPostHistory
+        .replace(reactionDelimitedRegex, '\n\n')
+        .replace(legacyReactionRegex, '\n\n')
+        .replace(/\n{3,}/g, '\n\n')
+        .trim();
+      updateCharacterField('post_history_instructions', stripped);
       setReactionBanner(
         'Cleared previous Reaction & Expression Triggers block from Post-History Instructions.'
       );
@@ -1535,18 +1886,33 @@ export const CharacterEditor: React.FC = () => {
     });
 
     const compiledBlock = [
+      '<!-- TAVERNSMITH:REACTIONS:START -->',
       '[System Directive: Character Reaction & Expression Triggers]',
-      'Match {{char}}\'s emotional state to the closest reaction below and include its expression cue when the trigger condition occurs:',
+      "Match {{char}}'s emotional state to the closest reaction below and include its expression cue when the trigger condition occurs:",
       ...ruleLines,
+      '<!-- TAVERNSMITH:REACTIONS:END -->',
     ].join('\n');
 
-    const updatedPostHistory = [cleanPostHistory, compiledBlock]
-      .filter(Boolean)
-      .join('\n\n');
+    let updatedPostHistory = rawPostHistory;
+    if (reactionDelimitedRegex.test(updatedPostHistory)) {
+      updatedPostHistory = updatedPostHistory
+        .replace(reactionDelimitedRegex, () => `\n\n${compiledBlock}\n\n`)
+        .replace(/\n{3,}/g, '\n\n')
+        .trim();
+    } else if (legacyReactionRegex.test(updatedPostHistory)) {
+      updatedPostHistory = updatedPostHistory
+        .replace(legacyReactionRegex, () => `\n\n${compiledBlock}\n\n`)
+        .replace(/\n{3,}/g, '\n\n')
+        .trim();
+    } else {
+      updatedPostHistory = [updatedPostHistory.trim(), compiledBlock]
+        .filter(Boolean)
+        .join('\n\n');
+    }
 
     updateCharacterField('post_history_instructions', updatedPostHistory);
     setReactionBanner(
-      `Compiled ${reactionImages.length} reaction trigger rule${reactionImages.length === 1 ? '' : 's'} into Post-History Instructions (Stat Tracker preserved).`
+      `Compiled ${reactionImages.length} reaction trigger rule${reactionImages.length === 1 ? '' : 's'} into Post-History Instructions (Stat Tracker & custom notes preserved).`
     );
     scheduleTimer(() => setReactionBanner(null), 4000);
   };
@@ -1806,7 +2172,11 @@ export const CharacterEditor: React.FC = () => {
                   <div
                     key={stat.id}
                     draggable
-                    onDragStart={() => setDraggedStatIdx(idx)}
+                    onDragStart={(e) => {
+                      e.dataTransfer.setData('text/plain', String(idx));
+                      e.dataTransfer.effectAllowed = 'move';
+                      setDraggedStatIdx(idx);
+                    }}
                     onDragOver={(e) => {
                       e.preventDefault();
                       if (draggedStatIdx !== null && draggedStatIdx !== idx) {
@@ -2654,7 +3024,7 @@ export const CharacterEditor: React.FC = () => {
                     {/* Thumbnail Preview */}
                     <div className="relative aspect-[2/3] w-full overflow-hidden rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-900/90 flex items-center justify-center">
                       <img
-                        src={item.uri}
+                        src={sanitizeMediaUri(item.uri)}
                         alt={item.name || 'reaction'}
                         className="h-full w-full object-contain"
                       />
@@ -2695,12 +3065,12 @@ export const CharacterEditor: React.FC = () => {
                               name: e.target.value,
                             })
                           }
-                          placeholder="e.g., blush, smug, desire"
+                          placeholder="e.g., blush, smug, smile"
                           className="theme-focus-ring flex-1 min-w-0 rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-2.5 py-1.5 font-mono text-xs font-semibold text-slate-900 dark:text-white"
                         />
                         <select
                           value={
-                            REACTION_EXPRESSION_PRESETS.includes(item.name)
+                            selectableReactionPresets.includes(item.name)
                               ? item.name
                               : ''
                           }
@@ -2715,7 +3085,7 @@ export const CharacterEditor: React.FC = () => {
                           className="theme-focus-ring w-28 shrink-0 rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-2 py-1.5 text-[11px] font-medium text-slate-700 dark:text-slate-200 cursor-pointer"
                         >
                           <option value="">Presets...</option>
-                          {REACTION_EXPRESSION_PRESETS.map((preset) => (
+                          {selectableReactionPresets.map((preset) => (
                             <option key={preset} value={preset}>
                               {preset}
                             </option>
@@ -2838,8 +3208,12 @@ export const CharacterEditor: React.FC = () => {
                   key={idx}
                   type="button"
                   draggable={isAlt}
-                  onDragStart={() => {
-                    if (isAlt) setDraggedAltGreetingIdx(altIdx);
+                  onDragStart={(e) => {
+                    if (isAlt) {
+                      e.dataTransfer.setData('text/plain', String(altIdx));
+                      e.dataTransfer.effectAllowed = 'move';
+                      setDraggedAltGreetingIdx(altIdx);
+                    }
                   }}
                   onDragOver={(e) => {
                     if (!isAlt) return;
@@ -3001,6 +3375,7 @@ export const CharacterEditor: React.FC = () => {
         tooltip="The opening message {{char}} sends when a new chat begins. Use *italics* for actions and quotes for spoken dialogue."
         rows={7}
         isPermanentTokenField={false}
+        extraContextSummary={linkedLorebookContextSummary || undefined}
         extraContextImages={extraContextImages}
       />
     </div>
@@ -3078,8 +3453,16 @@ export const CharacterEditor: React.FC = () => {
                 style={{ color: 'var(--theme-accent)' }}
               />
               <h2 className="text-xs font-bold uppercase tracking-wider text-slate-700 dark:text-slate-200">
-                Character Roster ({characters.length})
+                Character Roster ({visibleRosterTotalCount})
               </h2>
+              {hiddenNsfwCharacterCount > 0 && (
+                <span
+                  title={`${hiddenNsfwCharacterCount} NSFW character(s) hidden by SFW Mode`}
+                  className="rounded border border-emerald-500/30 bg-emerald-500/10 px-1.5 py-0.5 font-mono text-[9px] font-semibold text-emerald-700 dark:text-emerald-300"
+                >
+                  {hiddenNsfwCharacterCount} hidden
+                </span>
+              )}
             </div>
             <button
               type="button"
@@ -3133,11 +3516,16 @@ export const CharacterEditor: React.FC = () => {
           <div
             onDragOver={(e) => {
               e.preventDefault();
+              e.stopPropagation();
               setIsDraggingFile(true);
             }}
-            onDragLeave={() => setIsDraggingFile(false)}
+            onDragLeave={(e) => {
+              e.stopPropagation();
+              setIsDraggingFile(false);
+            }}
             onDrop={(e) => {
               e.preventDefault();
+              e.stopPropagation();
               setIsDraggingFile(false);
               void handleFilesSelected(e.dataTransfer.files);
             }}
@@ -3271,7 +3659,7 @@ export const CharacterEditor: React.FC = () => {
                           <div className="text-xs font-semibold text-slate-900 dark:text-white truncate">
                             {char.name || 'Untitled Character'}
                           </div>
-                          {isCharacterNsfw(char, tags) && (
+                          {isCharacterNsfw(char, tags, lorebooks) && (
                             <span className="shrink-0 rounded bg-rose-500/15 border border-rose-500/30 px-1 py-0.2 font-mono text-[9px] font-bold uppercase text-rose-600 dark:text-rose-400">
                               NSFW
                             </span>
@@ -3318,6 +3706,19 @@ export const CharacterEditor: React.FC = () => {
                       Click <strong>+ New Card</strong> above or drop a SillyTavern <code>.PNG</code> / <code>.JSON</code> card here to begin.
                     </div>
                   </>
+                ) : visibleRosterTotalCount === 0 &&
+                  hiddenNsfwCharacterCount > 0 ? (
+                  <>
+                    <div className="font-medium text-emerald-600 dark:text-emerald-400">
+                      All {hiddenNsfwCharacterCount} character
+                      {hiddenNsfwCharacterCount === 1 ? ' is' : 's are'} hidden
+                      by SFW Mode
+                    </div>
+                    <div>
+                      Create a new SFW card or turn off{' '}
+                      <strong>Hide NSFW Content</strong> in Options.
+                    </div>
+                  </>
                 ) : (
                   <div>No characters match your search or tag filter.</div>
                 )}
@@ -3336,12 +3737,55 @@ export const CharacterEditor: React.FC = () => {
             className="h-4 w-4"
             style={{ color: 'var(--theme-accent)' }}
           />
-          <span>Roster ({characters.length})</span>
+          <span>Roster ({visibleRosterTotalCount})</span>
         </button>
       )}
 
       {/* Main Character Workbench Area */}
       <div className="flex-1 min-w-0 w-full space-y-6">
+        {isActiveCharacterShielded ? (
+          <div
+            style={{
+              borderColor:
+                'color-mix(in srgb, var(--theme-accent) 40%, transparent)',
+            }}
+            className="rounded-2xl border bg-white dark:bg-slate-900 p-8 sm:p-10 text-center space-y-4 shadow-xs"
+          >
+            <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-full border border-emerald-500/30 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400">
+              <ShieldCheck className="h-6 w-6" />
+            </div>
+            <div className="space-y-1.5 max-w-md mx-auto">
+              <h1 className="text-base font-bold text-slate-900 dark:text-white">
+                NSFW Character Hidden (SFW Mode Active)
+              </h1>
+              <p className="text-xs leading-relaxed text-slate-600 dark:text-slate-300">
+                <strong>Hide NSFW Content</strong> is enabled, so characters
+                flagged as NSFW (by manual toggle, NSFW tags, or a linked NSFW
+                lorebook) are completely hidden from view and blocked from being
+                sent as context to any AI backend.
+              </p>
+            </div>
+            <div className="flex flex-wrap items-center justify-center gap-2.5 pt-2">
+              <button
+                type="button"
+                onClick={() => createNewCharacter()}
+                style={{ borderColor: 'var(--theme-accent)' }}
+                className="theme-hover-outline inline-flex items-center gap-1.5 rounded-lg border bg-slate-900 dark:bg-white px-4 py-2 text-xs font-semibold text-white dark:text-slate-900 cursor-pointer"
+              >
+                <Plus className="h-3.5 w-3.5" />
+                <span>Create New SFW Character</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setActiveTab('options')}
+                className="theme-hover-outline inline-flex items-center gap-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 px-4 py-2 text-xs font-medium text-slate-700 dark:text-slate-200 cursor-pointer"
+              >
+                <span>Open Options</span>
+              </button>
+            </div>
+          </div>
+        ) : (
+          <>
         {/* Top Workbench Header */}
         <div className="flex flex-wrap items-center justify-between gap-4 border-b border-slate-200 dark:border-slate-800 pb-4">
           <div className="min-w-0">
@@ -3349,9 +3793,17 @@ export const CharacterEditor: React.FC = () => {
               <h1 className="text-xl font-bold tracking-tight text-slate-900 dark:text-white truncate">
                 {character.name || 'Untitled Character'}
               </h1>
-              {isCharacterNsfw(character, tags) && (
+              {isActiveCharacterNsfw && (
                 <span
-                  title="Automatically flagged NSFW because an NSFW (18+) tag is attached or manual NSFW flag is enabled."
+                  title={`Flagged NSFW via: ${[
+                    character.isNsfw ? 'Manual NSFW flag' : '',
+                    isActiveCharFlaggedByTag ? 'NSFW tag' : '',
+                    isActiveCharFlaggedByLorebook
+                      ? 'Linked NSFW lorebook'
+                      : '',
+                  ]
+                    .filter(Boolean)
+                    .join(', ')}`}
                   className="inline-flex items-center gap-1 rounded-md border border-rose-500/40 bg-rose-500/15 px-2 py-0.5 font-mono text-[10px] font-bold uppercase text-rose-600 dark:text-rose-300"
                 >
                   <ShieldAlert className="h-3 w-3" />
@@ -3364,13 +3816,9 @@ export const CharacterEditor: React.FC = () => {
                   setCharacter((prev) => ({
                     ...prev,
                     isNsfw: !prev.isNsfw,
-                    extensions: {
-                      ...prev.extensions,
-                      isNsfw: !prev.isNsfw,
-                    },
                   }))
                 }
-                title="Toggle explicit manual NSFW flag on this character (characters with NSFW tags are also auto-flagged NSFW)"
+                title="Toggle explicit manual NSFW flag on this character (characters with NSFW tags or linked NSFW lorebooks are also automatically flagged NSFW)"
                 className={`rounded-md border px-2 py-0.5 text-[10px] font-semibold cursor-pointer transition-colors ${
                   character.isNsfw
                     ? 'border-rose-500/40 bg-rose-500/10 text-rose-600 dark:text-rose-300'
@@ -3393,6 +3841,15 @@ export const CharacterEditor: React.FC = () => {
               </strong>{' '}
               · Permanent: {tokenBreakdown.permanentTokens} tkn · Initial:{' '}
               {tokenBreakdown.temporaryTokens} tkn
+              {resolvedLinkedLorebook && (
+                <>
+                  {' · '}
+                  <span className="inline-flex items-center gap-1 text-emerald-700 dark:text-emerald-400 font-medium">
+                    <BookOpen className="h-3 w-3 inline" />
+                    Lorebook: {resolvedLinkedLorebook.name || 'Linked'}
+                  </span>
+                </>
+              )}
             </p>
           </div>
 
@@ -3402,13 +3859,13 @@ export const CharacterEditor: React.FC = () => {
               onClick={() =>
                 exportCharacterAsPng(
                   character,
-                  character.character_book,
+                  resolvedLinkedLorebook,
                   activeTheme.color
                 )
               }
               style={{ borderColor: 'var(--theme-accent)' }}
               className="theme-hover-outline flex items-center gap-1.5 rounded-lg border bg-white dark:bg-zinc-900 px-3 py-1.5 text-xs font-semibold text-slate-900 dark:text-white cursor-pointer"
-              title="Export SillyTavern PNG Card with embedded V2 chara & V3 ccv3 tEXt chunks"
+              title="Export SillyTavern PNG Card with embedded V2 chara & V3 ccv3 tEXt chunks (includes synced linked lorebook)"
             >
               <ImageIcon
                 className="h-3.5 w-3.5"
@@ -3423,11 +3880,11 @@ export const CharacterEditor: React.FC = () => {
                 exportCharacterAsJson(
                   character,
                   settings.cardSpecVersion,
-                  character.character_book
+                  resolvedLinkedLorebook
                 )
               }
               className="theme-hover-outline flex items-center gap-1.5 rounded-lg border border-slate-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 px-3 py-1.5 text-xs font-medium text-slate-700 dark:text-slate-200 cursor-pointer"
-              title="Export SillyTavern JSON Card"
+              title="Export SillyTavern JSON Card (includes synced linked lorebook)"
             >
               <Download
                 className="h-3.5 w-3.5"
@@ -3584,10 +4041,13 @@ export const CharacterEditor: React.FC = () => {
                     </div>
                     <span className="text-xs text-slate-500">
                       Uses Active Theme ({activeTheme.name}) &amp; Selected Tags
+                      {resolvedLinkedLorebook
+                        ? ` · Linked Lorebook (${resolvedLinkedLorebook.name})`
+                        : ''}
                     </span>
                   </div>
                   <p className="text-xs text-slate-500 dark:text-slate-400">
-                    Describe a character idea in 1–3 sentences (attached Portrait &amp; Context Images are included automatically when your selected model supports images) and let the AI draft the Name, Description, Personality, Scenario, First Message, and Example Dialogue.
+                    Describe a character idea in 1–3 sentences (attached Portrait, Context Images, &amp; Linked Lorebook are included automatically) and let the AI draft the Name, Description, Personality, Scenario, First Message, and Example Dialogue.
                   </p>
                   <div className="flex flex-col sm:flex-row gap-2.5">
                     <input
@@ -3657,9 +4117,58 @@ export const CharacterEditor: React.FC = () => {
                   }}
                   className="rounded-xl border bg-white dark:bg-slate-900 p-5 space-y-4"
                 >
-                  <h3 className="text-sm font-semibold text-slate-900 dark:text-white">
-                    Identity, Portrait &amp; Tags
-                  </h3>
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <h3 className="text-sm font-semibold text-slate-900 dark:text-white">
+                      Identity, Portrait &amp; Tags
+                    </h3>
+                    <div className="flex flex-wrap items-center gap-2 text-xs">
+                      <span className="text-slate-500">Linked Lorebook:</span>
+                      <select
+                        value={linkedLorebookSelectValue}
+                        onChange={(e) => {
+                          if (e.target.value === '') {
+                            updateCharacterField('character_book', undefined);
+                            return;
+                          }
+                          const found = visibleLorebooksForLinking.find(
+                            (l) => l.id === e.target.value
+                          );
+                          if (found) {
+                            if (character.id) {
+                              bindLorebookToCharacter(character.id, found);
+                            } else {
+                              updateCharacterField('character_book', found);
+                            }
+                          }
+                        }}
+                        className="theme-focus-ring rounded-md border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 px-2.5 py-1 text-xs font-medium text-slate-800 dark:text-slate-200 cursor-pointer"
+                      >
+                        <option value="">None (Unlinked)</option>
+                        {resolvedLinkedLorebook &&
+                          (!settings.hideNsfwTags ||
+                            !isLorebookNsfw(resolvedLinkedLorebook, tags)) &&
+                          !visibleLorebooksForLinking.some(
+                            (lb) => lb.id === resolvedLinkedLorebook.id
+                          ) && (
+                            <option
+                              value={
+                                resolvedLinkedLorebook.id || '__embedded__'
+                              }
+                            >
+                              {resolvedLinkedLorebook.name ||
+                                'Embedded Lorebook'}{' '}
+                              ({resolvedLinkedLorebook.entries?.length ?? 0}{' '}
+                              entries)
+                            </option>
+                          )}
+                        {visibleLorebooksForLinking.map((lb) => (
+                          <option key={lb.id} value={lb.id}>
+                            {lb.name} ({lb.entries.length} entries)
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
 
                   <div className="flex flex-col sm:flex-row gap-6 items-start">
                     {renderPortraitUploaderSlot()}
@@ -3765,6 +4274,7 @@ export const CharacterEditor: React.FC = () => {
                   tooltip="How {{char}} looks, what they wear, their background, and key traits."
                   rows={7}
                   isPermanentTokenField={true}
+                  extraContextSummary={linkedLorebookContextSummary || undefined}
                   extraContextImages={extraContextImages}
                 />
                 <SmartEditor
@@ -3775,6 +4285,7 @@ export const CharacterEditor: React.FC = () => {
                   tooltip="How {{char}} acts, speaks, and reacts to others."
                   rows={5}
                   isPermanentTokenField={true}
+                  extraContextSummary={linkedLorebookContextSummary || undefined}
                   extraContextImages={extraContextImages}
                 />
               </div>
@@ -3791,6 +4302,7 @@ export const CharacterEditor: React.FC = () => {
                   tooltip="Where the story starts and the situation between {{char}} and {{user}}."
                   rows={4}
                   isPermanentTokenField={true}
+                  extraContextSummary={linkedLorebookContextSummary || undefined}
                   extraContextImages={extraContextImages}
                 />
                 {renderGreetingsCarousel()}
@@ -3808,6 +4320,7 @@ export const CharacterEditor: React.FC = () => {
                   tooltip="Sample back-and-forth lines using <START>, {{user}}, and {{char}} to show the AI how {{char}} talks."
                   rows={6}
                   isPermanentTokenField={false}
+                  extraContextSummary={linkedLorebookContextSummary || undefined}
                   extraContextImages={extraContextImages}
                 />
                 <SmartEditor
@@ -3818,6 +4331,7 @@ export const CharacterEditor: React.FC = () => {
                   tooltip="Optional custom rules for how the AI should roleplay this character."
                   rows={4}
                   isPermanentTokenField={true}
+                  extraContextSummary={linkedLorebookContextSummary || undefined}
                   extraContextImages={extraContextImages}
                 />
                 <SmartEditor
@@ -3830,6 +4344,7 @@ export const CharacterEditor: React.FC = () => {
                   tooltip="High-priority reminders placed near the bottom of the chat right before the AI replies."
                   rows={4}
                   isPermanentTokenField={true}
+                  extraContextSummary={linkedLorebookContextSummary || undefined}
                   extraContextImages={extraContextImages}
                 />
                 <SmartEditor
@@ -3840,6 +4355,7 @@ export const CharacterEditor: React.FC = () => {
                   tooltip="Notes for other players (not sent to the AI during chat)."
                   rows={3}
                   isPermanentTokenField={false}
+                  extraContextSummary={linkedLorebookContextSummary || undefined}
                   extraContextImages={extraContextImages}
                 />
               </div>
@@ -3971,44 +4487,56 @@ export const CharacterEditor: React.FC = () => {
                 </div>
 
                 {/* Linked Lorebook Selector */}
-                <div className="flex items-center gap-2 text-xs">
+                <div className="flex flex-wrap items-center gap-2 text-xs">
                   <span className="text-slate-500">Linked Lorebook:</span>
                   <select
-                    value={character.character_book?.id || ''}
+                    value={linkedLorebookSelectValue}
                     onChange={(e) => {
                       if (e.target.value === '') {
                         updateCharacterField('character_book', undefined);
                         return;
                       }
-                      const found = lorebooks.find(
+                      const found = visibleLorebooksForLinking.find(
                         (l) => l.id === e.target.value
                       );
                       if (found) {
-                        updateCharacterField('character_book', found);
+                        if (character.id) {
+                          bindLorebookToCharacter(character.id, found);
+                        } else {
+                          updateCharacterField('character_book', found);
+                        }
                       }
                     }}
                     className="theme-focus-ring rounded-md border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 px-2.5 py-1 text-xs font-medium text-slate-800 dark:text-slate-200 cursor-pointer"
                   >
                     <option value="">None (Unlinked)</option>
-                    {character.character_book &&
-                      !lorebooks.some(
-                        (lb) => lb.id === character.character_book?.id
+                    {resolvedLinkedLorebook &&
+                      (!settings.hideNsfwTags ||
+                        !isLorebookNsfw(resolvedLinkedLorebook, tags)) &&
+                      !visibleLorebooksForLinking.some(
+                        (lb) => lb.id === resolvedLinkedLorebook.id
                       ) && (
                         <option
-                          value={character.character_book.id || '__embedded__'}
+                          value={resolvedLinkedLorebook.id || '__embedded__'}
                         >
-                          {character.character_book.name ||
-                            'Embedded Lorebook'}{' '}
-                          ({character.character_book.entries?.length ?? 0}{' '}
-                          entries)
+                          {resolvedLinkedLorebook.name || 'Embedded Lorebook'} (
+                          {resolvedLinkedLorebook.entries?.length ?? 0} entries)
                         </option>
                       )}
-                    {lorebooks.map((lb) => (
+                    {visibleLorebooksForLinking.map((lb) => (
                       <option key={lb.id} value={lb.id}>
                         {lb.name} ({lb.entries.length} entries)
                       </option>
                     ))}
                   </select>
+                  {resolvedLinkedLorebook && (
+                    <span
+                      title="Linked lorebook stays synced by ID, is embedded on .PNG/.JSON export, and is included in AI generation context."
+                      className="rounded border border-emerald-500/30 bg-emerald-500/10 px-1.5 py-0.5 font-mono text-[10px] font-semibold text-emerald-700 dark:text-emerald-300"
+                    >
+                      Synced · Export &amp; AI Context
+                    </span>
+                  )}
                 </div>
               </div>
 
@@ -4131,6 +4659,7 @@ export const CharacterEditor: React.FC = () => {
                 tooltip="How {{char}} looks, what they wear, their backstory, and key traits. Always included in chat."
                 rows={6}
                 isPermanentTokenField={true}
+                extraContextSummary={linkedLorebookContextSummary || undefined}
                 extraContextImages={extraContextImages}
               />
 
@@ -4149,6 +4678,7 @@ export const CharacterEditor: React.FC = () => {
                   tooltip="How {{char}} acts, speaks, thinks, and reacts to others."
                   rows={5}
                   isPermanentTokenField={true}
+                  extraContextSummary={linkedLorebookContextSummary || undefined}
                   extraContextImages={extraContextImages}
                 />
 
@@ -4160,6 +4690,7 @@ export const CharacterEditor: React.FC = () => {
                   tooltip="Where the story starts and the situation between {{char}} and {{user}}."
                   rows={5}
                   isPermanentTokenField={true}
+                  extraContextSummary={linkedLorebookContextSummary || undefined}
                   extraContextImages={extraContextImages}
                 />
               </div>
@@ -4175,6 +4706,7 @@ export const CharacterEditor: React.FC = () => {
                 tooltip="Sample chats using <START>, {{user}}, and {{char}} to teach the AI how {{char}} speaks and formats replies."
                 rows={5}
                 isPermanentTokenField={false}
+                extraContextSummary={linkedLorebookContextSummary || undefined}
                 extraContextImages={extraContextImages}
               />
 
@@ -4193,6 +4725,7 @@ export const CharacterEditor: React.FC = () => {
                   tooltip="Optional custom rules that override or add to SillyTavern's main prompt for this character."
                   rows={4}
                   isPermanentTokenField={true}
+                  extraContextSummary={linkedLorebookContextSummary || undefined}
                   extraContextImages={extraContextImages}
                 />
 
@@ -4206,6 +4739,7 @@ export const CharacterEditor: React.FC = () => {
                   tooltip="High-priority reminders added near the end of chat history right before the AI replies. Stat Tracker rules also go here."
                   rows={4}
                   isPermanentTokenField={true}
+                  extraContextSummary={linkedLorebookContextSummary || undefined}
                   extraContextImages={extraContextImages}
                 />
               </div>
@@ -4218,10 +4752,13 @@ export const CharacterEditor: React.FC = () => {
                 tooltip="Tips and notes for users downloading your card (never sent to the AI or counted as chat tokens)."
                 rows={3}
                 isPermanentTokenField={false}
+                extraContextSummary={linkedLorebookContextSummary || undefined}
                 extraContextImages={extraContextImages}
               />
             </div>
           </div>
+        )}
+          </>
         )}
       </div>
     </div>

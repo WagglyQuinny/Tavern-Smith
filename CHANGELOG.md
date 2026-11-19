@@ -2,6 +2,52 @@
 
 All notable changes to **TavernSmith** are documented in this file. This file is synced with the in-app **About & Changelog** modal (`src/utils/changelogData.ts`) and the automated GitHub Release workflows (`.github/workflows/version-update.yml` & `.github/workflows/release.yml`).
 
+## [Unreleased] - Security Hardening, App-Private Vault, Live Models, Strict NSFW Mode & Linked Lorebooks
+
+### 🔐 Security & Privacy Hardening
+- **Local-Only Server Binding & CSRF/DNS-Rebinding Protection**: Bound Express (`server.ts`), Vite dev/preview (`vite.config.ts`), and standalone portable servers (`server.cjs` & `server.py`) strictly to `127.0.0.1`, enforcing `Host`, `Origin`, `Sec-Fetch-Site`, and JSON `Content-Type` validation on all `/api/*` endpoints and blocking static HTTP access to `./Saves/`, `./.tavernsmith-app/`, `.env*`, `.git/`, and server scripts.
+- **Separate App-Private AES-256-GCM API Key Vault (No PIN Required)**: Moved encrypted API keys out of `./Saves/` into `./.tavernsmith-app/credentials.vault.enc` with a separate `0600` local key (`vault.key`) via dedicated `GET/POST /api/vault` endpoints. Legacy `./Saves/_tavernsmith_vault.enc` files auto-migrate seamlessly (with a one-time PIN unlock prompt only if a legacy PIN-protected vault exists). Added `Saves/` and `.tavernsmith-app/` to `.gitignore`.
+- **Fixed Single `./Saves/` Root & Symlink Confinement**: Locked disk persistence strictly to `./Saves/` (`Characters/`, `Lorebooks/`, `Themes/`, `Tags/`) with `realpath` symlink confinement and `.json`-only deletion guards across all four server runtimes.
+- **SVG/XSS Media Hardening & Secret Export Scanner**: Blocked SVG uploads and `javascript:`/`data:image/svg+xml` URIs across portrait, reaction, and context image uploads (`sanitizeMediaUri`, `isAllowedRasterImageFile`); replaced Gemini `?key=` query params with `x-goog-api-key` headers; upgraded `JsonInspector` to detect real API key patterns (`sk-`, `AIza`, `gsk_`, `xai-`, `Bearer `, non-empty `apiKey`) as export errors.
+- **Strict NSFW Hiding Across Entire UI & AI Context**: Enabling **Hide NSFW Content** now completely hides or shields NSFW characters (manual flag, NSFW tags, or linked NSFW lorebook), NSFW lorebooks/entries, NSFW-tagged themes, NSFW saved files, TopBar/Sidebar snapshots, and Raw JSON views — and strips all NSFW context before any AI prompt is constructed or sent.
+
+### 🚀 Highlights & Feature Additions
+- **Live-Only AI Models + Local Loaded vs. Installed Detection**: Removed all hardcoded/fake model lists; every provider displays only models actively returned by its endpoint. Local servers (Ollama, LM Studio, KoboldCPP) now distinguish **Currently Loaded** (`🟢`) vs. **Installed — Not Loaded** (`⚪`) models. Added direct Anthropic Messages API support and fixed OpenRouter `/api/v1` and Gemini URL routing.
+- **ID-Synced Character ↔ Lorebook Linking & AI Context**: Characters linked to a lorebook stay synced by lorebook ID, automatically embed the latest linked lorebook on `.png` and `.json` exports, inject linked lorebook entries into AI generation context (respecting NSFW hiding), and import embedded `character_book` lorebooks directly into the Lorebooks area.
+- **Global Tag Deletion ("Yeet") & Targeted Reset Defaults**: Deleting a tag permanently strips it from every character, lorebook, entry, and theme without resurrecting on reload (persisting `deletedDefaultTagIds` / `deletedDefaultThemeIds`). **Reset Defaults** restores only deleted or modified built-in Themes and Tags while leaving custom items, characters, lorebooks, settings, and API keys untouched.
+- **Strict Backup Import/Export Scope**: Workspace backup export and import strictly include Characters, Lorebooks, Themes, and Tags — never settings, active theme selection, AI configuration, or API key vault data.
+- **Smarter Automated Release & Changelog Workflows**: Upgraded `.github/workflows/version-update.yml` to promote curated `## [Unreleased]` notes, parse structured git commit bodies with `execFileSync` (zero shell interpolation or `eval`), map every project file accurately, and remove hardcoded placeholder text. Hardened `.github/workflows/release.yml` embedded servers and exact-tag release-note extraction.
+
+### 🛠️ Bug Fixes, Memory & Stability
+- **Fixed Stale AI Callbacks, Uncancelled Streams & Abort Leaks**: Added dedicated per-operation `AbortController` refs, entity-switch aborts, unmount cleanup, and `finally` stream reader cancellation across `CharacterEditor`, `LorebookEditor`, `SmartEditor`, `ThemesAndTagsView`, and `aiService`.
+- **Fixed Card I/O & Token Accounting Bugs**: Eliminated duplicate avatar base64 embedding inside `extensions.tavernsmith` (reducing PNG/JSON export bloat), preserved non-PNG avatars and third-party `extensions`, preserved World Info `position` and `priority`, fixed `$` replacement corruption in `renderInitialStatBlockInstance`, and fixed double-counting of `stat_block` tokens.
+- **Fixed Editor, Drag-and-Drop & Canvas Issues**: Fixed `SmartEditor` `insertMacro` selection replacement, ghost-text `maxTokens` inflation, and backdrop scroll/placeholder alignment; fixed non-sticky manual `isNsfw` flag; fixed Firefox drag-and-drop (`dataTransfer.setData`), inner dropzone `stopPropagation`, and Wizard Step 3 keyword typing; upgraded `PortraitCropperModal` to non-passive wheel zoom with guaranteed canvas cleanup; fixed `JsonInspector` raw JSON edits not to overwrite standalone lorebooks; fixed `TopBar` save error reporting and `SidebarNav` legacy tab alias highlighting.
+
+### 📂 Component & File Changes
+- `server.ts — Hardened Local Express Server, Fixed ./Saves/ Disk API & App-Private Vault`
+- `vite.config.ts — Hardened Vite Dev/Preview Middleware & Local Security Guards`
+- `.github/workflows/release.yml — Hardened Standalone Portable Servers (server.cjs / server.py) & Exact Tag Release Notes`
+- `.github/workflows/version-update.yml — Upgraded Automated Changelog & Version Updater Workflow`
+- `.gitignore — Ignored Local Saves/ and .tavernsmith-app/ Directories`
+- `src/types.ts — Added Live Model Statuses, Vault State Response & Deleted Default Tracking Types`
+- `src/utils/cryptoVault.ts — Rebuilt App-Private PIN-Free AES-256-GCM Vault with Serialized Writes & Legacy Migration`
+- `src/utils/cardIO.ts — Added Media URI Sanitization, SVG Rejection, Deduplicated PNG/JSON Exports & World Info Preservation`
+- `src/utils/tokenCounter.ts — Fixed Dollar-Sign Macro Replacement & Stat Block Token Double-Counting`
+- `src/services/aiService.ts — Removed Hardcoded Models, Added Loaded/Not-Loaded Local Detection, Direct Anthropic Support & SFW Filtering`
+- `src/context/StoreContext.tsx — Implemented Global Tag Yeeting, Targeted Reset Defaults, Strict Backup Scope, ID-Synced Lorebooks & Strict NSFW Helpers`
+- `src/views/OptionsView.tsx — Updated Vault Status Card, Live Model Optgroups, Fixed ./Saves/ Tree & Strict Backup UI`
+- `src/views/ThemesAndTagsView.tsx — Added Strict SFW Theme/Tag Hiding, AbortControllers & Restore Default Themes & Tags`
+- `src/components/CharacterEditor.tsx — Added SFW Shield, Dedicated AbortControllers, Non-Sticky NSFW Flag & ID-Synced Lorebook Context/Export`
+- `src/components/LorebookEditor.tsx — Added SFW Shield, ID-Synced Character Binding, Raw Keyword Drafts & Dedicated AbortControllers`
+- `src/components/SmartEditor.tsx — Fixed Macro Insertion, Ghost-Text Tokens, Backdrop Sync, Unmount Aborts & SVG Rejection`
+- `src/components/TagSelector.tsx — Enforced Strict SFW Tag Filtering & Creation Guards`
+- `src/components/JsonInspector.tsx — Added SFW Shield, Real Secret Scanner, Resolved Lorebook Serialization & Safe Raw JSON Edits`
+- `src/components/PortraitCropperModal.tsx — Added Non-Passive Wheel Zoom, Touch Guards & Guaranteed Canvas Cleanup`
+- `src/components/ContextImagesBar.tsx — Blocked SVG Uploads, Capped Reference Images at 6 & Added Unmount Guard`
+- `src/components/TopBar.tsx — Added SFW Theme Filtering, Unmount-Safe Save Timer & Accurate Save Error State`
+- `src/components/SidebarNav.tsx — Fixed Tab Alias Highlighting & SFW Snapshot Shielding`
+- `src/App.tsx — Updated Vault Path Hint & Tag Deletion Confirmation Copy`
+
 ## [v4.7.0] - 2026-11-19
 
 ### 🚀 Highlights & Feature Additions

@@ -233,7 +233,7 @@ export function renderInitialStatBlockInstance(statBlock: StatBlockConfig): stri
     const renderedVal = formatSingleStatDefault(stat);
     const escapedPath = path.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     const pattern = new RegExp(`\\{\\{stat:${escapedPath}\\}\\}`, 'gi');
-    output = output.replace(pattern, renderedVal);
+    output = output.replace(pattern, () => renderedVal);
   }
 
   // Fallback: match bare {{stat:Label}} if someone manually wrote a sub-stat without parent prefix
@@ -243,7 +243,7 @@ export function renderInitialStatBlockInstance(statBlock: StatBlockConfig): stri
     const renderedVal = formatSingleStatDefault(stat);
     const escapedLabel = cleanLabel.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     const pattern = new RegExp(`\\{\\{stat:${escapedLabel}\\}\\}`, 'gi');
-    output = output.replace(pattern, renderedVal);
+    output = output.replace(pattern, () => renderedVal);
   }
 
   return output;
@@ -351,6 +351,16 @@ export function calculateCardTokenBreakdown(
   const compiledStats = compileStatBlockPrompt(statBlock);
   const stat_block = estimateTokens(compiledStats);
 
+  // Avoid double-counting stat block tokens once compiled into post_history_instructions or system_prompt
+  const statBlockAlreadyCompiled =
+    Boolean(compiledStats) &&
+    ((character.post_history_instructions || '').includes(
+      '[System Directive: Dynamic DM/GM Stat Tracker]'
+    ) ||
+      (character.system_prompt || '').includes(
+        '[System Directive: Dynamic DM/GM Stat Tracker]'
+      ));
+
   const loreStats = calculateLorebookTokens(lorebook);
 
   const permanentTokens =
@@ -360,7 +370,7 @@ export function calculateCardTokenBreakdown(
     scenario +
     system_prompt +
     post_history_instructions +
-    stat_block +
+    (statBlockAlreadyCompiled ? 0 : stat_block) +
     loreStats.constant;
 
   const temporaryTokens = first_mes + mes_example;

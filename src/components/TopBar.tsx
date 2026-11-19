@@ -1,14 +1,19 @@
-import React, { useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Palette,
   Activity,
   Save,
   Check,
+  AlertTriangle,
   PanelLeftClose,
   PanelLeftOpen,
   Settings,
 } from 'lucide-react';
-import { useStore } from '../context/StoreContext';
+import {
+  isCharacterNsfw,
+  isThemeNsfw,
+  useStore,
+} from '../context/StoreContext';
 import { AppLogo } from './AppLogo';
 
 export const TopBar: React.FC = () => {
@@ -20,21 +25,75 @@ export const TopBar: React.FC = () => {
     themes,
     activeTheme,
     setActiveThemeId,
+    tags,
+    settings,
+    character,
+    lorebooks,
     tokenBreakdown,
     saveAndSyncNow,
     lastSavedAt,
     isDirty,
   } = useStore();
 
-  const [justSaved, setJustSaved] = useState(false);
+  const [saveFeedback, setSaveFeedback] = useState<'idle' | 'saved' | 'error'>(
+    'idle'
+  );
+  const [saveErrorDetail, setSaveErrorDetail] = useState<string | null>(null);
+  const feedbackTimerRef = useRef<number | null>(null);
+  const isMountedRef = useRef(true);
+
+  useEffect(() => {
+    isMountedRef.current = true;
+    return () => {
+      isMountedRef.current = false;
+      if (feedbackTimerRef.current !== null) {
+        window.clearTimeout(feedbackTimerRef.current);
+      }
+    };
+  }, []);
+
+  const visibleThemes = useMemo(
+    () =>
+      settings.hideNsfwTags
+        ? themes.filter((t) => !isThemeNsfw(t, tags))
+        : themes,
+    [themes, tags, settings.hideNsfwTags]
+  );
+
+  // If SFW mode hides the currently active theme, automatically fall back to the first SFW theme
+  useEffect(() => {
+    if (!settings.hideNsfwTags) return;
+    if (!isThemeNsfw(activeTheme, tags)) return;
+    if (visibleThemes.length > 0 && visibleThemes[0].id !== activeTheme.id) {
+      setActiveThemeId(visibleThemes[0].id);
+    }
+  }, [settings.hideNsfwTags, activeTheme, tags, visibleThemes, setActiveThemeId]);
+
+  const isCharShielded =
+    settings.hideNsfwTags && isCharacterNsfw(character, tags, lorebooks);
 
   const handleSaveAndSync = async () => {
-    await saveAndSyncNow();
-    setJustSaved(true);
-    window.setTimeout(() => setJustSaved(false), 1800);
+    const res = await saveAndSyncNow();
+    if (!isMountedRef.current) return;
+    if (feedbackTimerRef.current !== null) {
+      window.clearTimeout(feedbackTimerRef.current);
+    }
+    if (res.ok) {
+      setSaveErrorDetail(null);
+      setSaveFeedback('saved');
+    } else {
+      setSaveErrorDetail(res.message || 'Failed to sync saves to disk.');
+      setSaveFeedback('error');
+    }
+    feedbackTimerRef.current = window.setTimeout(() => {
+      feedbackTimerRef.current = null;
+      if (isMountedRef.current) {
+        setSaveFeedback('idle');
+      }
+    }, res.ok ? 1800 : 3500);
   };
 
-  const totalTokens = tokenBreakdown.totalCardTokens;
+  const totalTokens = isCharShielded ? 0 : tokenBreakdown.totalCardTokens;
   const tokenBadgeColor =
     totalTokens > 2500
       ? 'text-rose-500 border-rose-500/40 bg-rose-500/10'
@@ -43,6 +102,9 @@ export const TopBar: React.FC = () => {
         : 'text-emerald-500 border-emerald-500/40 bg-emerald-500/10';
 
   const isOptionsActive = activeTab === 'options';
+  const dropdownThemeValue = visibleThemes.some((t) => t.id === activeTheme.id)
+    ? activeTheme.id
+    : (visibleThemes[0]?.id ?? '');
 
   return (
     <header className="sticky top-0 z-30 flex h-14 w-full items-center justify-between border-b border-slate-200 dark:border-slate-800 bg-white/95 dark:bg-slate-950/95 px-4 backdrop-blur-md">
@@ -108,19 +170,26 @@ export const TopBar: React.FC = () => {
           </span>
           <select
             aria-label="Active Context Theme"
-            value={activeTheme.id}
-            onChange={(e) => setActiveThemeId(e.target.value)}
-            className="bg-transparent text-xs font-medium text-slate-800 dark:text-slate-100 focus:outline-none cursor-pointer"
+            value={dropdownThemeValue}
+            onChange={(e) => {
+              if (e.target.value) setActiveThemeId(e.target.value);
+            }}
+            disabled={visibleThemes.length === 0}
+            className="bg-transparent text-xs font-medium text-slate-800 dark:text-slate-100 focus:outline-none cursor-pointer disabled:opacity-50"
           >
-            {themes.map((t) => (
-              <option
-                key={t.id}
-                value={t.id}
-                className="bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100"
-              >
-                {t.name}
-              </option>
-            ))}
+            {visibleThemes.length === 0 ? (
+              <option value="">No SFW Themes</option>
+            ) : (
+              visibleThemes.map((t) => (
+                <option
+                  key={t.id}
+                  value={t.id}
+                  className="bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100"
+                >
+                  {t.name}
+                </option>
+              ))
+            )}
           </select>
         </div>
 
@@ -128,12 +197,18 @@ export const TopBar: React.FC = () => {
         <button
           type="button"
           onClick={() => setActiveTab('inspector')}
-          title="Estimated total tokens for this card — click to view Raw JSON & Export"
+          title={
+            isCharShielded
+              ? 'Active character is hidden by SFW Mode'
+              : 'Estimated total tokens for this card — click to view Raw JSON & Export'
+          }
           className={`flex items-center gap-1.5 rounded-lg border px-2.5 py-1 font-mono text-xs font-medium tabular-nums transition-all cursor-pointer ${tokenBadgeColor}`}
         >
           <Activity className="h-3.5 w-3.5 shrink-0" />
-          <span>{totalTokens.toLocaleString()}</span>
-          <span className="hidden md:inline text-[10px] opacity-80">tok</span>
+          <span>{isCharShielded ? 'SFW' : totalTokens.toLocaleString()}</span>
+          {!isCharShielded && (
+            <span className="hidden md:inline text-[10px] opacity-80">tok</span>
+          )}
         </button>
 
         {/* Save Button */}
@@ -141,20 +216,34 @@ export const TopBar: React.FC = () => {
           type="button"
           onClick={() => void handleSaveAndSync()}
           title={
-            lastSavedAt
-              ? `Last saved at ${lastSavedAt}. Click to save Characters, Lorebooks, Tags & Themes to ./Saves/.`
-              : 'Save Characters, Lorebooks, Tags & Themes to ./Saves/'
+            saveFeedback === 'error' && saveErrorDetail
+              ? saveErrorDetail
+              : lastSavedAt
+                ? `Last saved at ${lastSavedAt}. Click to save Characters, Lorebooks, Tags & Themes to ./Saves/.`
+                : 'Save Characters, Lorebooks, Tags & Themes to ./Saves/'
           }
           style={{
-            borderColor: justSaved ? '#10b981' : 'var(--theme-accent)',
+            borderColor:
+              saveFeedback === 'saved'
+                ? '#10b981'
+                : saveFeedback === 'error'
+                  ? '#f43f5e'
+                  : 'var(--theme-accent)',
           }}
           className="theme-hover-outline flex items-center gap-1.5 rounded-lg border bg-slate-50 dark:bg-slate-900 px-2.5 py-1 text-xs font-semibold text-slate-800 dark:text-slate-100 cursor-pointer"
         >
-          {justSaved ? (
+          {saveFeedback === 'saved' ? (
             <>
               <Check className="h-3.5 w-3.5 text-emerald-500" />
               <span className="hidden sm:inline text-emerald-500">
                 Saved
+              </span>
+            </>
+          ) : saveFeedback === 'error' ? (
+            <>
+              <AlertTriangle className="h-3.5 w-3.5 text-rose-500" />
+              <span className="hidden sm:inline text-rose-500">
+                Save Failed
               </span>
             </>
           ) : (

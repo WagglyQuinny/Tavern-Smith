@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import {
   Search,
   Plus,
@@ -85,6 +85,16 @@ export const TagSelector: React.FC<TagSelectorProps> = ({
     return ['All', ...Array.from(set)];
   }, [tags, hideNsfw]);
 
+  // Reset category & quick-create NSFW state whenever SFW mode hides the active selection
+  useEffect(() => {
+    if (!categories.includes(activeCategory)) {
+      setActiveCategory('All');
+    }
+    if (hideNsfw && quickNewTagNsfw) {
+      setQuickNewTagNsfw(false);
+    }
+  }, [categories, activeCategory, hideNsfw, quickNewTagNsfw]);
+
   // Filter tags for the visual grid
   const filteredTags = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
@@ -108,21 +118,10 @@ export const TagSelector: React.FC<TagSelectorProps> = ({
     });
   }, [tags, hideNsfw, activeCategory, searchQuery]);
 
-  // Selected tags displayed as removable chips at top (hiding NSFW ones visually if Hide NSFW Content is ON in Options)
+  // Selected tags displayed as removable chips at top (hiding NSFW ones when Hide NSFW Content is ON in Options)
   const visibleSelectedTagNames = useMemo(() => {
-    return selectedTags.filter((rawName) => {
-      if (!hideNsfw) return true;
-      const lower = rawName.trim().toLowerCase();
-      const baseName = lower.includes(':') ? lower.split(':')[0].trim() : lower;
-      const matched = tags.find(
-        (t) =>
-          t.name.trim().toLowerCase() === lower ||
-          t.name.trim().toLowerCase() === baseName
-      );
-      if (matched && isTagNsfw(matched)) return false;
-      if (lower.includes('nsfw') || lower.includes('18+')) return false;
-      return true;
-    });
+    if (!hideNsfw) return selectedTags;
+    return selectedTags.filter((rawName) => !isTagNsfwFlagged(rawName, tags));
   }, [selectedTags, tags, hideNsfw]);
 
   const hiddenSelectedNsfwCount =
@@ -158,25 +157,39 @@ export const TagSelector: React.FC<TagSelectorProps> = ({
     const existing = tags.find(
       (t) => t.name.trim().toLowerCase() === clean.toLowerCase()
     );
+    if (hideNsfw && existing && isTagNsfw(existing)) {
+      setQuickNewTagName('');
+      return;
+    }
+
     let resolvedName = existing ? existing.name : clean;
     let nextCatalog = tags;
 
     if (!existing) {
+      const allowNsfw = !hideNsfw && quickNewTagNsfw;
       const targetCat: TagCategory =
         activeCategory !== 'All'
           ? migrateLegacyTagCategory(activeCategory, clean, '')
-          : quickNewTagNsfw
+          : allowNsfw
             ? 'NSFW & Kinks'
             : 'Custom';
       const resolvedNsfw =
-        quickNewTagNsfw ||
-        targetCat === 'Genitals' ||
-        targetCat === 'NSFW & Kinks' ||
-        targetCat === 'Extreme & Hentai Physics';
+        !hideNsfw &&
+        (allowNsfw ||
+          targetCat === 'Genitals' ||
+          targetCat === 'NSFW & Kinks' ||
+          targetCat === 'Extreme & Hentai Physics');
+      const safeCat: TagCategory =
+        hideNsfw &&
+        (targetCat === 'Genitals' ||
+          targetCat === 'NSFW & Kinks' ||
+          targetCat === 'Extreme & Hentai Physics')
+          ? 'Custom'
+          : targetCat;
       const { tag: createdTag } = upsertCustomTag({
         name: clean,
         color: resolvedNsfw ? '#f43f5e' : '#a855f7',
-        category: targetCat,
+        category: safeCat,
         isNsfw: resolvedNsfw,
         aiContextDescription: `Incorporate thematic, tonal, and character elements consistent with "${clean}".`,
       });
@@ -216,11 +229,11 @@ export const TagSelector: React.FC<TagSelectorProps> = ({
             </span>
             <Tooltip content={tooltip} />
             <span className="rounded bg-slate-200/80 dark:bg-slate-800 px-1.5 py-0.5 font-mono text-[10px] font-semibold text-slate-700 dark:text-slate-300">
-              {selectedTags.length} selected
+              {visibleSelectedTagNames.length} selected
             </span>
             {hiddenSelectedNsfwCount > 0 && (
               <span
-                title="18+ tags are hidden right now (Options -> Hide NSFW Content), but still count when generating."
+                title="18+ tags are hidden and excluded from AI generation while Hide NSFW Content is enabled in Options."
                 className="rounded border border-amber-500/30 bg-amber-500/10 px-1.5 py-0.5 font-mono text-[10px] text-amber-600 dark:text-amber-400"
               >
                 +{hiddenSelectedNsfwCount} NSFW hidden
@@ -265,7 +278,7 @@ export const TagSelector: React.FC<TagSelectorProps> = ({
                   style={{ backgroundColor: chipColor }}
                 />
                 <span>{tagName}</span>
-                {tagFlaggedNsfw && (
+                {!hideNsfw && tagFlaggedNsfw && (
                   <span className="rounded bg-rose-500/20 px-1 py-0.2 font-mono text-[9px] font-bold uppercase text-rose-600 dark:text-rose-300">
                     NSFW
                   </span>
@@ -324,19 +337,21 @@ export const TagSelector: React.FC<TagSelectorProps> = ({
             placeholder="Quick-create tag..."
             className="w-36 sm:w-44 rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-2.5 py-1.5 text-xs text-slate-900 dark:text-white focus:outline-none"
           />
-          <button
-            type="button"
-            onClick={() => setQuickNewTagNsfw((prev) => !prev)}
-            title="Flag this new tag as NSFW (18+)"
-            className={`flex items-center gap-1 rounded-lg border px-2 py-1.5 text-[11px] font-semibold cursor-pointer transition-colors ${
-              quickNewTagNsfw
-                ? 'border-rose-500 bg-rose-500/15 text-rose-600 dark:text-rose-300'
-                : 'border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 text-slate-500 dark:text-slate-400'
-            }`}
-          >
-            <ShieldAlert className="h-3 w-3" />
-            <span>NSFW</span>
-          </button>
+          {!hideNsfw && (
+            <button
+              type="button"
+              onClick={() => setQuickNewTagNsfw((prev) => !prev)}
+              title="Flag this new tag as NSFW (18+)"
+              className={`flex items-center gap-1 rounded-lg border px-2 py-1.5 text-[11px] font-semibold cursor-pointer transition-colors ${
+                quickNewTagNsfw
+                  ? 'border-rose-500 bg-rose-500/15 text-rose-600 dark:text-rose-300'
+                  : 'border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 text-slate-500 dark:text-slate-400'
+              }`}
+            >
+              <ShieldAlert className="h-3 w-3" />
+              <span>NSFW</span>
+            </button>
+          )}
           <button
             type="button"
             onClick={handleQuickCreateAndAttach}

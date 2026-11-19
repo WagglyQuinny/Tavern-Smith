@@ -43,22 +43,16 @@ import {
 } from '../utils/cardIO';
 import {
   AI_BACKEND_PRESETS,
-  buildMergedGeminiModelList,
   ConnectionTestResult,
-  GEMINI_PRIORITY_MODELS,
   getProviderKeyId,
-  isDeprecatedGeminiModel,
   testBackendConnection,
 } from '../services/aiService';
 import {
-  decryptProviderKeysFromVault,
   encryptAndSaveProviderKeys,
-  getInMemoryDecryptedKeys,
-  loadProviderModelsMap,
-  readEncryptedVaultEnvelope,
-  registerVaultDiskFlushCallback,
+  LEGACY_VAULT_FILENAME,
+  loadAppVaultFromServer,
   saveProviderModelsMap,
-  setInMemoryVaultEnvelope,
+  unlockAndMigrateLegacyVault,
   VAULT_FILENAME,
 } from '../utils/cryptoVault';
 import {
@@ -66,7 +60,7 @@ import {
   sortTagsByContextOrder,
 } from '../utils/tagOrder';
 
-export { VAULT_FILENAME };
+export { VAULT_FILENAME, LEGACY_VAULT_FILENAME };
 export const META_FILENAME = '_tavernsmith_meta.json';
 export const UNIFIED_INTERNAL_ROOT = './Saves/';
 const TAB_DRAFT_SESSION_KEY = 'tavernsmith_tab_draft_cache_v2';
@@ -2711,27 +2705,20 @@ const RETIRED_BUILTIN_TAG_KEYS = new Set<string>([
  */
 export function isTagNsfwFlagged(tag: TagDefinition): boolean {
   const cat = (tag.category || '').toLowerCase();
-  if (cat === 'genitals') return true;
-  if (tag.isNsfw !== undefined) return Boolean(tag.isNsfw);
-  if (cat.includes('nsfw') || cat.includes('extreme') || cat.includes('hentai')) {
+  if (
+    cat === 'genitals' ||
+    cat.includes('nsfw') ||
+    cat.includes('extreme') ||
+    cat.includes('hentai')
+  ) {
     return true;
   }
+  if (tag.isNsfw !== undefined) return Boolean(tag.isNsfw);
   const n = (tag.name || '').toLowerCase();
-  return n.includes('nsfw') || n.includes('18+') || n.includes('explicit');
+  return /\b(nsfw|18\+|smut|erotica|hentai|explicit)\b/i.test(n);
 }
 
-/**
- * Automatically computes whether a Character is NSFW:
- * Returns true if manually flagged (`char.isNsfw` or `char.extensions?.isNsfw`)
- * OR if at least one attached tag on the character (or its embedded lorebook) has `isNsfw: true`.
- */
-export function isCharacterNsfw(
-  char: CharacterCardData | undefined | null,
-  allTags: TagDefinition[]
-): boolean {
-  if (!char) return false;
-  if (char.isNsfw || char.extensions?.isNsfw) return true;
-
+function buildNsfwTagLookup(allTags: readonly TagDefinition[]): Set<string> {
   const nsfwTagNames = new Set<string>();
   for (const t of allTags) {
     if (isTagNsfwFlagged(t)) {
@@ -2739,22 +2726,57 @@ export function isCharacterNsfw(
       nsfwTagNames.add(t.id.toLowerCase());
     }
   }
+  return nsfwTagNames;
+}
 
-  for (const rawTag of char.tags || []) {
+function tagListContainsNsfw(
+  tagsList: readonly string[] | undefined,
+  nsfwTagNames: Set<string>
+): boolean {
+  for (const rawTag of tagsList || []) {
     const clean = (rawTag || '').trim().toLowerCase();
     if (!clean) continue;
     const baseName = clean.includes(':') ? clean.split(':')[0].trim() : clean;
     if (
       nsfwTagNames.has(clean) ||
       nsfwTagNames.has(baseName) ||
-      clean.includes('nsfw') ||
-      clean.includes('18+')
+      /\b(nsfw|18\+|smut|erotica|hentai|explicit)\b/i.test(clean)
     ) {
       return true;
     }
   }
-
   return false;
+}
+
+/**
+ * Returns true if a single LorebookEntry carries any NSFW tag.
+ */
+export function isLorebookEntryNsfw(
+  entry: { tags?: string[] } | undefined | null,
+  allTags: readonly TagDefinition[]
+): boolean {
+  if (!entry || !Array.isArray(entry.tags) || entry.tags.length === 0) {
+    return false;
+  }
+  return tagListContainsNsfw(entry.tags, buildNsfwTagLookup(allTags));
+}
+
+/**
+ * Computes whether a ContextTheme is NSFW based on its flag, name, or associated tags.
+ */
+export function isThemeNsfw(
+  theme: ContextTheme | undefined | null,
+  allTags: readonly TagDefinition[]
+): boolean {
+  if (!theme) return false;
+  if (theme.isNsfw) return true;
+  if (/\b(nsfw|18\+|smut|erotica|hentai|explicit)\b/i.test(theme.name || '')) {
+    return true;
+  }
+  if (!Array.isArray(theme.associatedTags) || theme.associatedTags.length === 0) {
+    return false;
+  }
+  return tagListContainsNsfw(theme.associatedTags, buildNsfwTagLookup(allTags));
 }
 
 /**
@@ -2764,42 +2786,57 @@ export function isCharacterNsfw(
  */
 export function isLorebookNsfw(
   lb: Lorebook | undefined | null,
-  allTags: TagDefinition[]
+  allTags: readonly TagDefinition[]
 ): boolean {
   if (!lb) return false;
   if (lb.isNsfw) return true;
 
-  const nsfwTagNames = new Set<string>();
-  for (const t of allTags) {
-    if (isTagNsfwFlagged(t)) {
-      nsfwTagNames.add(t.name.trim().toLowerCase());
-      nsfwTagNames.add(t.id.toLowerCase());
-    }
-  }
-
-  const checkList = (tagsList?: string[]) => {
-    for (const rawTag of tagsList || []) {
-      const clean = (rawTag || '').trim().toLowerCase();
-      if (!clean) continue;
-      const baseName = clean.includes(':') ? clean.split(':')[0].trim() : clean;
-      if (
-        nsfwTagNames.has(clean) ||
-        nsfwTagNames.has(baseName) ||
-        clean.includes('nsfw') ||
-        clean.includes('18+')
-      ) {
-        return true;
-      }
-    }
-    return false;
-  };
-
-  if (checkList(lb.tags)) return true;
+  const nsfwTagNames = buildNsfwTagLookup(allTags);
+  if (tagListContainsNsfw(lb.tags, nsfwTagNames)) return true;
   for (const entry of lb.entries || []) {
-    if (checkList(entry.tags)) return true;
+    if (tagListContainsNsfw(entry.tags, nsfwTagNames)) return true;
   }
 
   return false;
+}
+
+/**
+ * Automatically computes whether a Character is NSFW:
+ * Returns true if manually flagged (`char.isNsfw` or `char.extensions?.isNsfw`),
+ * OR if at least one attached tag on the character has `isNsfw: true`,
+ * OR if its linked/embedded lorebook is NSFW.
+ */
+export function isCharacterNsfw(
+  char: CharacterCardData | undefined | null,
+  allTags: readonly TagDefinition[],
+  allLorebooks?: readonly Lorebook[]
+): boolean {
+  if (!char) return false;
+  if (char.isNsfw || char.extensions?.isNsfw) return true;
+
+  const nsfwTagNames = buildNsfwTagLookup(allTags);
+  if (tagListContainsNsfw(char.tags, nsfwTagNames)) return true;
+
+  if (char.character_book) {
+    const resolvedBook =
+      (char.character_book.id && allLorebooks
+        ? allLorebooks.find((b) => b.id === char.character_book?.id)
+        : undefined) || char.character_book;
+    if (isLorebookNsfw(resolvedBook, allTags)) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+function sanitizeCssHexColor(raw: unknown, fallback: string): string {
+  if (typeof raw !== 'string') return fallback;
+  const trimmed = raw.trim();
+  if (/^#(?:[0-9a-f]{3}|[0-9a-f]{6}|[0-9a-f]{8})$/i.test(trimmed)) {
+    return trimmed;
+  }
+  return fallback;
 }
 
 /**
@@ -2896,6 +2933,10 @@ const builtInTagByNameMap = new Map(
   DEFAULT_TAGS.map((b) => [b.name.trim().toLowerCase(), b])
 );
 
+const builtInTagByIdMap = new Map(
+  DEFAULT_TAGS.map((b) => [b.id.toLowerCase(), b])
+);
+
 const builtInThemeByIdMap = new Map(
   DEFAULT_CONTEXT_THEMES.map((t) => [t.id.toLowerCase(), t])
 );
@@ -2951,7 +2992,7 @@ export function compactThemeForStorage(
   return {
     id: theme.id,
     name: theme.name.trim() || 'Custom Theme',
-    color: theme.color || '#6366f1',
+    color: sanitizeCssHexColor(theme.color, '#6366f1'),
     aiContextPrompt: theme.aiContextPrompt || '',
     ...(tags.length > 0 ? { associatedTags: tags } : {}),
     ...(theme.isBuiltIn ? { isBuiltIn: true } : {}),
@@ -2995,10 +3036,7 @@ export function normalizeIncomingTheme(
       `theme-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
     ...(diskFileName ? { savedFileName: diskFileName } : {}),
     name: rawName,
-    color:
-      typeof obj.color === 'string' && obj.color.trim()
-        ? obj.color.trim()
-        : builtIn?.color || '#6366f1',
+    color: sanitizeCssHexColor(obj.color, builtIn?.color || '#6366f1'),
     aiContextPrompt:
       typeof obj.aiContextPrompt === 'string'
         ? obj.aiContextPrompt
@@ -3010,10 +3048,20 @@ export function normalizeIncomingTheme(
 
 export function mergeWithDefaultThemes(
   customOrDiskThemes?: unknown[] | null,
-  tagCatalog: TagDefinition[] = DEFAULT_TAGS
+  tagCatalog: TagDefinition[] = DEFAULT_TAGS,
+  deletedDefaultThemeIds?: readonly string[]
 ): ContextTheme[] {
+  const deletedSet = new Set(
+    (deletedDefaultThemeIds || []).map((id) => id.trim().toLowerCase())
+  );
   const resultMap = new Map<string, ContextTheme>();
   for (const b of DEFAULT_CONTEXT_THEMES) {
+    if (
+      deletedSet.has(b.id.toLowerCase()) ||
+      deletedSet.has(b.name.trim().toLowerCase())
+    ) {
+      continue;
+    }
     resultMap.set(b.name.trim().toLowerCase(), {
       ...b,
       associatedTags: sortTagsByContextOrder(b.associatedTags || [], tagCatalog),
@@ -3024,6 +3072,13 @@ export function mergeWithDefaultThemes(
     for (const raw of customOrDiskThemes) {
       const normalized = normalizeIncomingTheme(raw, tagCatalog);
       if (!normalized) continue;
+      if (
+        normalized.isBuiltIn &&
+        (deletedSet.has(normalized.id.toLowerCase()) ||
+          deletedSet.has(normalized.name.trim().toLowerCase()))
+      ) {
+        continue;
+      }
       const key = normalized.name.trim().toLowerCase();
       const existingById = Array.from(resultMap.entries()).find(
         ([, v]) => v.id === normalized.id
@@ -3059,6 +3114,17 @@ export function mergeWithDefaultThemes(
     }
   }
 
+  // Always guarantee at least the Basic theme exists
+  if (resultMap.size === 0 && DEFAULT_CONTEXT_THEMES[0]) {
+    resultMap.set(DEFAULT_CONTEXT_THEMES[0].name.trim().toLowerCase(), {
+      ...DEFAULT_CONTEXT_THEMES[0],
+      associatedTags: sortTagsByContextOrder(
+        DEFAULT_CONTEXT_THEMES[0].associatedTags || [],
+        tagCatalog
+      ),
+    });
+  }
+
   return Array.from(resultMap.values());
 }
 
@@ -3082,7 +3148,7 @@ export function compactTagForStorage(
   return {
     id: tag.id,
     name: tag.name.trim(),
-    color: tag.color || '#a855f7',
+    color: sanitizeCssHexColor(tag.color, '#a855f7'),
     category: tag.category || 'Custom',
     ...(includeIsNsfw ? { isNsfw: isNsfwVal } : {}),
     ...(desc ? { aiContextDescription: desc } : {}),
@@ -3106,7 +3172,7 @@ export function extractCustomUserTags(
     if (RETIRED_BUILTIN_TAG_KEYS.has(key) || RETIRED_BUILTIN_TAG_KEYS.has(idKey)) {
       continue;
     }
-    const builtIn = builtInTagByNameMap.get(key);
+    const builtIn = builtInTagByNameMap.get(key) || builtInTagByIdMap.get(idKey);
 
     if (!builtIn) {
       customOnly.push({ ...tag });
@@ -3122,6 +3188,7 @@ export function extractCustomUserTags(
     const builtInDesc = (builtIn.aiContextDescription || '').trim();
 
     if (
+      tag.name.trim() !== builtIn.name.trim() ||
       Boolean(tag.isNsfw) !== Boolean(builtIn.isNsfw) ||
       (currentDesc && currentDesc !== builtInDesc) ||
       (tag.color &&
@@ -3130,8 +3197,10 @@ export function extractCustomUserTags(
     ) {
       customOnly.push({
         ...builtIn,
+        id: tag.id || builtIn.id,
+        name: tag.name.trim() || builtIn.name,
         savedFileName: tag.savedFileName,
-        color: tag.color || builtIn.color,
+        color: sanitizeCssHexColor(tag.color, builtIn.color),
         category: tag.category || builtIn.category,
         isNsfw: Boolean(tag.isNsfw),
         aiContextDescription: currentDesc || builtIn.aiContextDescription,
@@ -3145,13 +3214,21 @@ export function extractCustomUserTags(
 }
 
 /**
- * Always loads the built-in `DEFAULT_TAGS` (including their `isNsfw` flags, categories,
- * colors, and `aiDescription`) 100% fresh from source code, and merges user-created/customized tags on top.
+ * Loads the built-in `DEFAULT_TAGS` (excluding any explicitly deleted built-in tag IDs)
+ * and merges user-created/customized tags on top.
  */
 export function mergeWithDefaultTags(
-  customOrMetaTags?: Array<TagDefinition | Record<string, unknown>> | null
+  customOrMetaTags?: Array<TagDefinition | Record<string, unknown>> | null,
+  deletedDefaultTagIds?: readonly string[]
 ): TagDefinition[] {
-  const freshBuiltIns: TagDefinition[] = DEFAULT_TAGS.map((b) => ({
+  const deletedSet = new Set(
+    (deletedDefaultTagIds || []).map((id) => id.trim().toLowerCase())
+  );
+  const freshBuiltIns: TagDefinition[] = DEFAULT_TAGS.filter(
+    (b) =>
+      !deletedSet.has(b.id.toLowerCase()) &&
+      !deletedSet.has(b.name.trim().toLowerCase())
+  ).map((b) => ({
     ...b,
   }));
 
@@ -3160,8 +3237,10 @@ export function mergeWithDefaultTags(
   }
 
   const builtInIndexByName = new Map<string, number>();
+  const builtInIndexById = new Map<string, number>();
   freshBuiltIns.forEach((b, idx) => {
     builtInIndexByName.set(b.name.trim().toLowerCase(), idx);
+    builtInIndexById.set(b.id.toLowerCase(), idx);
   });
 
   const userCustomTags: TagDefinition[] = [];
@@ -3176,7 +3255,12 @@ export function mergeWithDefaultTags(
     const key = rawName.toLowerCase();
     const idKey =
       typeof incoming.id === 'string' ? incoming.id.trim().toLowerCase() : '';
-    if (RETIRED_BUILTIN_TAG_KEYS.has(key) || RETIRED_BUILTIN_TAG_KEYS.has(idKey)) {
+    if (
+      RETIRED_BUILTIN_TAG_KEYS.has(key) ||
+      RETIRED_BUILTIN_TAG_KEYS.has(idKey) ||
+      deletedSet.has(key) ||
+      (idKey && deletedSet.has(idKey))
+    ) {
       continue;
     }
 
@@ -3216,7 +3300,9 @@ export function mergeWithDefaultTags(
               : ''
       ).trim();
 
-    const builtInIdx = builtInIndexByName.get(key);
+    const builtInIdx =
+      (idKey ? builtInIndexById.get(idKey) : undefined) ??
+      builtInIndexByName.get(key);
     if (builtInIdx !== undefined) {
       const targetBuiltIn = freshBuiltIns[builtInIdx];
       const resolvedDesc = incomingDesc || targetBuiltIn.aiContextDescription;
@@ -3231,7 +3317,8 @@ export function mergeWithDefaultTags(
       freshBuiltIns[builtInIdx] = {
         ...targetBuiltIn,
         ...(diskFileName ? { savedFileName: diskFileName } : {}),
-        color: incomingColor || targetBuiltIn.color,
+        name: rawName,
+        color: sanitizeCssHexColor(incomingColor, targetBuiltIn.color),
         category: resolvedBuiltInCategory,
         isNsfw:
           resolvedBuiltInCategory === 'Genitals'
@@ -3268,7 +3355,7 @@ export function mergeWithDefaultTags(
           : `tag-custom-${Date.now()}-${userCustomTags.length}`,
       ...(diskFileName ? { savedFileName: diskFileName } : {}),
       name: rawName,
-      color: incomingColor || '#a855f7',
+      color: sanitizeCssHexColor(incomingColor, '#a855f7'),
       category: resolvedCategory,
       isNsfw: resolvedIsNsfw,
       aiContextDescription: resolvedDesc,
@@ -3420,44 +3507,60 @@ export const DEFAULT_CHARACTER: CharacterCardData = {
   },
 };
 
-function sanitizeModelName(rawModel?: string, preset?: AIPresetId): string {
+const LEGACY_FAKE_GEMINI_MODELS = new Set([
+  'gemini-4-pro',
+  'gemini-4-flash',
+  'gemini-4.0-pro',
+  'gemini-4.0-flash',
+  'gemini-3.8-pro',
+  'gemini-3.8-flash',
+  'gemini-3.5-pro',
+  'gemini-3.5-flash',
+]);
+
+function isLegacyFakeGeminiModel(rawModel?: string): boolean {
+  const clean = (rawModel || '').trim().replace(/^models\//i, '').toLowerCase();
+  return LEGACY_FAKE_GEMINI_MODELS.has(clean);
+}
+
+function sanitizeModelName(rawModel?: string, _preset?: AIPresetId): string {
   const clean = (rawModel || '').trim().replace(/^models\//i, '');
   if (!clean) {
-    if (!preset || preset === 'gemini') {
-      return 'gemini-3.8-flash';
-    }
-    const found = AI_BACKEND_PRESETS.find((p) => p.id === preset);
-    return found?.defaultModel || 'gemini-3.8-flash';
+    return '';
   }
   return clean;
 }
 
 function sanitizeAvailableModelsList(
   models?: string[],
-  fallback?: string[],
-  preset?: AIPresetId
+  _fallback?: string[],
+  _preset?: AIPresetId
 ): string[] {
-  const source = Array.isArray(models) && models.length > 0 ? models : fallback || [];
-  if (!preset || preset === 'gemini') {
-    return buildMergedGeminiModelList(source);
+  if (!Array.isArray(models) || models.length === 0) {
+    return [];
   }
-  const filtered = Array.from(
-    new Set(source.map((m) => (m || '').trim()).filter(Boolean))
+  return Array.from(
+    new Set(
+      models
+        .map((m) => (typeof m === 'string' ? m.trim().replace(/^models\//i, '') : ''))
+        .filter(Boolean)
+    )
   );
-  return filtered.length > 0 ? filtered : [...GEMINI_PRIORITY_MODELS];
 }
 
 export const DEFAULT_AI_CONFIG: AIBackendConfig = {
   preset: 'gemini',
-  url: '/api/gemini',
+  url: 'https://generativelanguage.googleapis.com/v1beta/openai',
   apiKey: '',
-  modelName: 'gemini-3.8-flash',
+  modelName: '',
   compatibilityFormat: 'auto',
   temperature: 0.78,
-  maxTokens: 16384,
+  maxTokens: 8192,
   ghostTextEnabled: true,
   debounceMs: 650,
-  availableModels: [...GEMINI_PRIORITY_MODELS],
+  availableModels: [],
+  loadedModels: [],
+  modelStatuses: {},
   savedProviderKeys: {},
   savedProviderModels: {},
 };
@@ -3477,28 +3580,121 @@ export const DEFAULT_SETTINGS: AppSettings = {
   hideNsfwTags: true,
 };
 
+function scrubUrlSecrets(rawUrl?: string): string {
+  const trimmed = (rawUrl || '').trim();
+  if (!trimmed) return '';
+  try {
+    const parsed = new URL(trimmed);
+    if (parsed.username || parsed.password) {
+      parsed.username = '';
+      parsed.password = '';
+    }
+    const sensitiveParams = [
+      'key',
+      'api_key',
+      'apikey',
+      'token',
+      'access_token',
+      'auth',
+      'secret',
+    ];
+    for (const p of sensitiveParams) {
+      parsed.searchParams.delete(p);
+    }
+    return parsed.toString().replace(/\/+$/, '');
+  } catch {
+    return trimmed
+      .replace(/([?&](?:key|api_key|apikey|token|access_token|auth|secret)=)[^&#]*/gi, '$1')
+      .replace(/([?&](?:key|api_key|apikey|token|access_token|auth|secret)=)(?:&|$)/gi, '');
+  }
+}
+
 /**
- * Strips plaintext API keys from `AIBackendConfig` before writing non-secret settings to `_tavernsmith_meta.json`.
- * All API keys are stored exclusively in the AES-256-GCM encrypted vault (`./Saves/_tavernsmith_vault.enc`).
+ * Strips plaintext API keys and URL query credentials from `AIBackendConfig` before writing
+ * non-secret settings to `_tavernsmith_meta.json`.
+ * All API keys are stored exclusively in the separate AES-256-GCM encrypted app vault
+ * (`./.tavernsmith-app/credentials.vault.enc`), outside `./Saves/`.
  */
 function stripApiKeysForStorage(config: AIBackendConfig): AIBackendConfig {
   return {
     ...config,
+    url: scrubUrlSecrets(config.url),
     apiKey: '',
     savedProviderKeys: {},
   };
 }
 
+let pendingVaultSaveTimer: ReturnType<typeof setTimeout> | null = null;
+let pendingVaultKeysSnapshot: Record<string, string> | null = null;
+let lastPersistedVaultKeysSignature = '';
+let onVaultSavedListeners: Array<() => void> = [];
+
+function normalizeKeysForSignature(keysMap: Record<string, string>): string {
+  const entries = Object.entries(keysMap || {})
+    .map(([k, v]) => [k, typeof v === 'string' ? v.trim() : ''] as const)
+    .filter(([, v]) => Boolean(v))
+    .sort(([a], [b]) => a.localeCompare(b));
+  return JSON.stringify(entries);
+}
+
+function notifyVaultSavedListeners(): void {
+  for (const listener of onVaultSavedListeners) {
+    try {
+      listener();
+    } catch {
+      // Ignore listener errors
+    }
+  }
+}
+
+export function flushPendingVaultKeySave(): Promise<void> {
+  if (pendingVaultSaveTimer !== null) {
+    clearTimeout(pendingVaultSaveTimer);
+    pendingVaultSaveTimer = null;
+  }
+  if (!pendingVaultKeysSnapshot) {
+    return Promise.resolve();
+  }
+  const snapshot = pendingVaultKeysSnapshot;
+  pendingVaultKeysSnapshot = null;
+  const sig = normalizeKeysForSignature(snapshot);
+  lastPersistedVaultKeysSignature = sig;
+  return encryptAndSaveProviderKeys(snapshot)
+    .then(() => {
+      notifyVaultSavedListeners();
+    })
+    .catch(() => {
+      // Ignore transient encryption/network errors
+    });
+}
+
 function savePersistedProviderCredentials(
   savedProviderKeys: Record<string, string>,
-  savedProviderModels: Record<string, string>
+  savedProviderModels: Record<string, string>,
+  immediate = false
 ): void {
   saveProviderModelsMap(savedProviderModels);
-  void encryptAndSaveProviderKeys(savedProviderKeys);
+  const sig = normalizeKeysForSignature(savedProviderKeys);
+  if (sig === lastPersistedVaultKeysSignature && !pendingVaultKeysSnapshot) {
+    return;
+  }
+  pendingVaultKeysSnapshot = { ...savedProviderKeys };
+  if (pendingVaultSaveTimer !== null) {
+    clearTimeout(pendingVaultSaveTimer);
+    pendingVaultSaveTimer = null;
+  }
+  if (immediate) {
+    void flushPendingVaultKeySave();
+    return;
+  }
+  pendingVaultSaveTimer = setTimeout(() => {
+    void flushPendingVaultKeySave();
+  }, 450);
 }
 
 /**
  * Synchronizes `savedProviderKeys` and `savedProviderModels` whenever `AIBackendConfig` updates.
+ * Automatically restores each backend's saved API key when switching presets.
  */
 export function syncAIConfigProviderCredentials(
   prev: AIBackendConfig,
@@ -3518,63 +3714,69 @@ export function syncAIConfigProviderCredentials(
     keysMap[prevProviderId] = prev.apiKey;
     keysMap[prev.preset] = prev.apiKey;
   }
-  if (prev.modelName) {
+  if (prev.modelName && !isLegacyFakeGeminiModel(prev.modelName)) {
     const cleanPrevModel = sanitizeModelName(prev.modelName, prev.preset);
-    modelsMap[prevProviderId] = cleanPrevModel;
-    modelsMap[prev.preset] = cleanPrevModel;
+    if (cleanPrevModel) {
+      modelsMap[prevProviderId] = cleanPrevModel;
+      modelsMap[prev.preset] = cleanPrevModel;
+    }
   }
 
   const nextProviderId = getProviderKeyId(next.preset);
-  const presetMeta = AI_BACKEND_PRESETS.find((p) => p.id === next.preset);
 
   if (next.preset !== prev.preset) {
     const restoredKey =
       keysMap[nextProviderId] ?? keysMap[next.preset] ?? '';
-    const restoredModel = sanitizeModelName(
-      modelsMap[nextProviderId] ??
-        modelsMap[next.preset] ??
-        presetMeta?.defaultModel ??
-        next.modelName,
-      next.preset
-    );
+    const candidateSavedModel =
+      modelsMap[nextProviderId] ?? modelsMap[next.preset] ?? '';
+    const restoredModel = isLegacyFakeGeminiModel(candidateSavedModel)
+      ? ''
+      : sanitizeModelName(candidateSavedModel, next.preset);
 
     keysMap[nextProviderId] = restoredKey;
     keysMap[next.preset] = restoredKey;
-    modelsMap[nextProviderId] = restoredModel;
-    modelsMap[next.preset] = restoredModel;
+    if (restoredModel) {
+      modelsMap[nextProviderId] = restoredModel;
+      modelsMap[next.preset] = restoredModel;
+    }
 
-    savePersistedProviderCredentials(keysMap, modelsMap);
+    savePersistedProviderCredentials(keysMap, modelsMap, true);
 
     return {
       ...next,
       apiKey: restoredKey,
       modelName: restoredModel,
-      availableModels: sanitizeAvailableModelsList(
-        next.availableModels,
-        presetMeta?.suggestedModels,
-        next.preset
-      ),
+      availableModels: [],
+      loadedModels: [],
+      modelStatuses: {},
       savedProviderKeys: keysMap,
       savedProviderModels: modelsMap,
     };
   }
 
   const cleanNextModel = sanitizeModelName(next.modelName, next.preset);
-  keysMap[nextProviderId] = next.apiKey;
-  keysMap[next.preset] = next.apiKey;
-  modelsMap[nextProviderId] = cleanNextModel;
-  modelsMap[next.preset] = cleanNextModel;
+  const nextApiKey = typeof next.apiKey === 'string' ? next.apiKey : '';
+  keysMap[nextProviderId] = nextApiKey;
+  keysMap[next.preset] = nextApiKey;
+  if (cleanNextModel) {
+    modelsMap[nextProviderId] = cleanNextModel;
+    modelsMap[next.preset] = cleanNextModel;
+  }
 
-  savePersistedProviderCredentials(keysMap, modelsMap);
+  savePersistedProviderCredentials(keysMap, modelsMap, false);
 
   return {
     ...next,
+    apiKey: nextApiKey,
     modelName: cleanNextModel,
-    availableModels: sanitizeAvailableModelsList(
-      next.availableModels,
-      presetMeta?.suggestedModels,
-      next.preset
-    ),
+    availableModels: sanitizeAvailableModelsList(next.availableModels),
+    loadedModels: Array.isArray(next.loadedModels)
+      ? Array.from(new Set(next.loadedModels.filter(Boolean)))
+      : [],
+    modelStatuses:
+      next.modelStatuses && typeof next.modelStatuses === 'object'
+        ? { ...next.modelStatuses }
+        : {},
     savedProviderKeys: keysMap,
     savedProviderModels: modelsMap,
   };
@@ -3639,9 +3841,22 @@ export function formatSafeTimestamp(
   );
 }
 
+function safeEpochToIso(
+  raw: number | undefined | null,
+  fallbackIso: string
+): string {
+  if (typeof raw !== 'number' || !Number.isFinite(raw) || raw <= 0) {
+    return fallbackIso;
+  }
+  const ms = raw < 10_000_000_000 ? raw * 1000 : raw;
+  const d = new Date(ms);
+  return Number.isNaN(d.getTime()) ? fallbackIso : d.toISOString();
+}
+
 /**
- * Builds the file tree representation (`Characters/`, `Lorebooks/`, `_tavernsmith_meta.json`, `_tavernsmith_vault.enc`)
- * when constructing an export bundle or previewing disk files.
+ * Builds the file tree representation (`Characters/`, `Lorebooks/`, `Themes/`, `Tags/`, `_tavernsmith_meta.json`)
+ * when previewing `./Saves/` files. Note: API key credentials live separately in `./.tavernsmith-app/`
+ * and are NEVER included in `./Saves/`.
  */
 export function buildUnifiedSavedFiles(
   characters: CharacterCardData[],
@@ -3654,6 +3869,10 @@ export function buildUnifiedSavedFiles(
 ): SavedFileEntry[] {
   const nowIso = timestampIso || new Date().toISOString();
   const entries: SavedFileEntry[] = [];
+  const lorebookById = new Map<string, Lorebook>();
+  for (const lb of lorebooks) {
+    if (lb.id) lorebookById.set(lb.id, lb);
+  }
 
   const usedCharFileNames = new Set<string>();
   for (const char of characters) {
@@ -3664,18 +3883,15 @@ export function buildUnifiedSavedFiles(
             return char.savedFileName;
           })()
         : ensureUniqueSavedFileName(char.name, usedCharFileNames, 'character');
+    const resolvedBook = char.character_book?.id
+      ? lorebookById.get(char.character_book.id) || char.character_book
+      : char.character_book;
     const charJson = JSON.stringify(
-      serializeCharacterCard(char, spec, char.character_book),
+      serializeCharacterCard(char, spec, resolvedBook),
       null,
       2
     );
-    const updatedIso = char.modification_date
-      ? new Date(
-          char.modification_date < 10_000_000_000
-            ? char.modification_date * 1000
-            : char.modification_date
-        ).toISOString()
-      : nowIso;
+    const updatedIso = safeEpochToIso(char.modification_date, nowIso);
     entries.push({
       id: `Characters/${fileName}`,
       folderPath: 'Characters/',
@@ -3697,13 +3913,7 @@ export function buildUnifiedSavedFiles(
           })()
         : ensureUniqueSavedFileName(lb.name, usedLoreFileNames, 'lorebook');
     const loreJson = JSON.stringify(serializeLorebookCard(lb), null, 2);
-    const updatedIso = lb.modification_date
-      ? new Date(
-          lb.modification_date < 10_000_000_000
-            ? lb.modification_date * 1000
-            : lb.modification_date
-        ).toISOString()
-      : nowIso;
+    const updatedIso = safeEpochToIso(lb.modification_date, nowIso);
     entries.push({
       id: `Lorebooks/${fileName}`,
       folderPath: 'Lorebooks/',
@@ -3750,7 +3960,9 @@ export function buildUnifiedSavedFiles(
             return tag.savedFileName;
           })()
         : ensureUniqueSavedFileName(tag.name, usedTagFileNames, 'tag');
-    const builtInMatch = builtInTagByNameMap.get(tag.name.trim().toLowerCase());
+    const builtInMatch =
+      builtInTagByNameMap.get(tag.name.trim().toLowerCase()) ||
+      builtInTagByIdMap.get((tag.id || '').trim().toLowerCase());
     const tagJson = JSON.stringify({
       ...compactTagForStorage(tag, builtInMatch),
       _tavernsmithType: 'tag',
@@ -3782,20 +3994,6 @@ export function buildUnifiedSavedFiles(
     content: metaJson,
   });
 
-  const vaultEnvelope = readEncryptedVaultEnvelope();
-  if (vaultEnvelope) {
-    const vaultJson = JSON.stringify(vaultEnvelope, null, 2);
-    entries.push({
-      id: `/${VAULT_FILENAME}`,
-      folderPath: '/',
-      fileName: VAULT_FILENAME,
-      kind: 'vault',
-      sizeBytes: new Blob([vaultJson]).size,
-      updatedAt: vaultEnvelope.updatedAt || nowIso,
-      content: vaultJson,
-    });
-  }
-
   return entries;
 }
 
@@ -3813,6 +4011,9 @@ interface StoreContextValue {
   createNewCharacter: (partial?: Partial<CharacterCardData>) => string;
   deleteCharacter: (id: string) => void;
   bindLorebookToCharacter: (characterId: string, lorebookToBind: Lorebook) => void;
+  getResolvedLorebookForCharacter: (
+    char: CharacterCardData | undefined | null
+  ) => Lorebook | undefined;
   // Active Character Accessors
   character: CharacterCardData;
   setCharacter: React.Dispatch<React.SetStateAction<CharacterCardData>>;
@@ -3866,7 +4067,7 @@ interface StoreContextValue {
   ) => boolean;
   resolveNameConflict: (newUniqueName: string) => void;
   dismissNameConflict: () => void;
-  // AI Config, Persistent Connection State & Settings
+  // AI Config, Persistent Connection State & Separate App Vault
   aiConfig: AIBackendConfig;
   setAiConfig: React.Dispatch<React.SetStateAction<AIBackendConfig>>;
   switchAIPreset: (presetId: AIPresetId) => void;
@@ -3878,6 +4079,10 @@ interface StoreContextValue {
   ) => Promise<ConnectionTestResult | null>;
   disconnectAiBackend: () => void;
   clearAiConnectionFeedback: () => void;
+  vaultRevision: number;
+  unlockLegacyVault: (
+    pin: string
+  ) => Promise<{ ok: boolean; error?: string; migratedCount?: number }>;
   settings: AppSettings;
   setSettings: React.Dispatch<React.SetStateAction<AppSettings>>;
   updateSettings: (partial: Partial<AppSettings>) => void;
@@ -3921,6 +4126,7 @@ interface StoreContextValue {
     scopeKey: string,
     partial: Partial<SmartEditorFieldDraft>
   ) => void;
+  purgeSmartEditorDraftsByPrefix: (prefix: string) => void;
   inspectorDraft: InspectorTabDraft;
   updateInspectorDraft: (partial: Partial<InspectorTabDraft>) => void;
 }
@@ -3960,7 +4166,6 @@ export function createBlankCharacter(
   };
 
   return {
-    id: newId,
     name: 'New Character',
     nickname: '',
     description: '',
@@ -3978,12 +4183,15 @@ export function createBlankCharacter(
     reactionImages: [],
     creation_date: nowSec,
     modification_date: nowSec,
+    isNsfw: false,
+    ...partial,
+    id: partial?.id || newId,
     extensions: {
       talkativeness: '0.5',
       fav: false,
       statBlock: blankStatBlock,
+      ...(partial?.extensions || {}),
     },
-    ...partial,
   };
 }
 
@@ -3991,7 +4199,6 @@ export function createBlankLorebook(partial?: Partial<Lorebook>): Lorebook {
   const nowSec = Math.floor(Date.now() / 1000);
   const newId = `lorebook-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
   return {
-    id: newId,
     name: 'New World Lorebook',
     description: 'World info and lore entries for SillyTavern.',
     scan_depth: 4,
@@ -3999,8 +4206,10 @@ export function createBlankLorebook(partial?: Partial<Lorebook>): Lorebook {
     recursive_scanning: true,
     tags: [],
     modification_date: nowSec,
+    isNsfw: false,
     entries: [],
     ...partial,
+    id: partial?.id || newId,
   };
 }
 
@@ -4025,6 +4234,7 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
     useState<ConnectionTestResult | null>(null);
   const aiTestAbortRef = useRef<AbortController | null>(null);
   const themeSaveTimerRef = useRef<number | null>(null);
+  const [vaultRevision, setVaultRevision] = useState<number>(0);
   const [settings, setSettingsState] = useState<AppSettings>(DEFAULT_SETTINGS);
   const [lastSavedAt, setLastSavedAt] = useState<string | null>(null);
   const [isDirty, setIsDirty] = useState<boolean>(false);
@@ -4049,8 +4259,14 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
     []
   );
 
+  // Debounce sessionStorage writes for UI drafts to avoid JSON.stringify churn on every keystroke
   useEffect(() => {
-    saveWorkspaceDraftCacheToSession(workspaceDraftCache);
+    const timer = window.setTimeout(() => {
+      saveWorkspaceDraftCacheToSession(workspaceDraftCache);
+    }, 250);
+    return () => {
+      window.clearTimeout(timer);
+    };
   }, [workspaceDraftCache]);
 
   const updateCharacterDraft = useCallback(
@@ -4110,6 +4326,21 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
     []
   );
 
+  const purgeSmartEditorDraftsByPrefix = useCallback((prefix: string) => {
+    if (!prefix) return;
+    setWorkspaceDraftCache((prev) => {
+      let changed = false;
+      const nextSmart = { ...prev.smartEditorDrafts };
+      for (const k of Object.keys(nextSmart)) {
+        if (k.startsWith(prefix)) {
+          delete nextSmart[k];
+          changed = true;
+        }
+      }
+      return changed ? { ...prev, smartEditorDrafts: nextSmart } : prev;
+    });
+  }, []);
+
   // Track the exact on-disk `.json` filename for each Character, Lorebook, Theme, and Tag ID
   // so renaming or deleting targets the exact `.json` file without colliding duplicates.
   const charDiskFileNamesRef = useRef<Map<string, string>>(new Map());
@@ -4117,7 +4348,10 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
   const themeDiskFileNamesRef = useRef<Map<string, string>>(new Map());
   const tagDiskFileNamesRef = useRef<Map<string, string>>(new Map());
   const initialDiskHydrationDoneRef = useRef<boolean>(false);
-  const initialMountFetchedRef = useRef<boolean>(false);
+  const diskHydrationSucceededRef = useRef<boolean>(false);
+  const deletedDefaultTagIdsRef = useRef<string[]>([]);
+  const deletedDefaultThemeIdsRef = useRef<string[]>([]);
+  const autosaveInFlightRef = useRef<boolean>(false);
 
   // Synchronous state mirrors & serialized disk operation queue to prevent delete/save races
   const charactersRef = useRef<CharacterCardData[]>(characters);
@@ -4129,7 +4363,20 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
   const activeCharacterIdRef = useRef<string>(activeCharacterId);
   const activeLorebookIdRef = useRef<string>(activeLorebookId);
   const diskMutationVersionRef = useRef<number>(0);
+  const contentMutationVersionRef = useRef<number>(0);
+  const lastSyncedVersionRef = useRef<number>(0);
   const diskOpQueueRef = useRef<Promise<unknown>>(Promise.resolve());
+
+  const markDirtyChange = useCallback((isContentMutation = true) => {
+    diskMutationVersionRef.current += 1;
+    if (isContentMutation) {
+      contentMutationVersionRef.current += 1;
+    }
+    if (initialDiskHydrationDoneRef.current) {
+      latestWorkspaceRef.current.isDirty = true;
+      setIsDirty(true);
+    }
+  }, []);
 
   const enqueueDiskOperation = useCallback(<T,>(op: () => Promise<T>): Promise<T> => {
     const next = diskOpQueueRef.current.then(op, op);
@@ -4138,17 +4385,20 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
   }, []);
 
   const setCharacters: React.Dispatch<React.SetStateAction<CharacterCardData[]>> =
-    useCallback((updater) => {
-      diskMutationVersionRef.current += 1;
-      setCharactersState((prev) => {
-        const rawNext = typeof updater === 'function' ? updater(prev) : updater;
-        const catalog = tagsRef.current;
-        const next = rawNext.map((c) => normalizeCharacterTagsWithCatalog(c, catalog));
-        charactersRef.current = next;
-        latestWorkspaceRef.current.characters = next;
-        return next;
-      });
-    }, []);
+    useCallback(
+      (updater) => {
+        markDirtyChange(true);
+        setCharactersState((prev) => {
+          const rawNext = typeof updater === 'function' ? updater(prev) : updater;
+          const catalog = tagsRef.current;
+          const next = rawNext.map((c) => normalizeCharacterTagsWithCatalog(c, catalog));
+          charactersRef.current = next;
+          latestWorkspaceRef.current.characters = next;
+          return next;
+        });
+      },
+      [markDirtyChange]
+    );
 
   const setActiveCharacterId = useCallback((id: string) => {
     activeCharacterIdRef.current = id;
@@ -4157,17 +4407,20 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
   }, []);
 
   const setLorebooks: React.Dispatch<React.SetStateAction<Lorebook[]>> =
-    useCallback((updater) => {
-      diskMutationVersionRef.current += 1;
-      setLorebooksState((prev) => {
-        const rawNext = typeof updater === 'function' ? updater(prev) : updater;
-        const catalog = tagsRef.current;
-        const next = rawNext.map((l) => normalizeLorebookTagsWithCatalog(l, catalog));
-        lorebooksRef.current = next;
-        latestWorkspaceRef.current.lorebooks = next;
-        return next;
-      });
-    }, []);
+    useCallback(
+      (updater) => {
+        markDirtyChange(true);
+        setLorebooksState((prev) => {
+          const rawNext = typeof updater === 'function' ? updater(prev) : updater;
+          const catalog = tagsRef.current;
+          const next = rawNext.map((l) => normalizeLorebookTagsWithCatalog(l, catalog));
+          lorebooksRef.current = next;
+          latestWorkspaceRef.current.lorebooks = next;
+          return next;
+        });
+      },
+      [markDirtyChange]
+    );
 
   const setActiveLorebookId = useCallback((id: string) => {
     activeLorebookIdRef.current = id;
@@ -4176,85 +4429,123 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
   }, []);
 
   const setThemes: React.Dispatch<React.SetStateAction<ContextTheme[]>> =
-    useCallback((updater) => {
-      diskMutationVersionRef.current += 1;
-      setThemesState((prev) => {
-        const rawNext = typeof updater === 'function' ? updater(prev) : updater;
-        const catalog = tagsRef.current;
-        const next = rawNext.map((theme) => {
-          const sorted = sortTagsByContextOrder(
-            theme.associatedTags || [],
-            catalog
-          );
-          return stringArraysEqual(theme.associatedTags || [], sorted)
-            ? theme
-            : { ...theme, associatedTags: sorted };
+    useCallback(
+      (updater) => {
+        markDirtyChange(true);
+        setThemesState((prev) => {
+          const rawNext = typeof updater === 'function' ? updater(prev) : updater;
+          const catalog = tagsRef.current;
+          const next = rawNext.map((theme) => {
+            const sorted = sortTagsByContextOrder(
+              theme.associatedTags || [],
+              catalog
+            );
+            return stringArraysEqual(theme.associatedTags || [], sorted)
+              ? theme
+              : { ...theme, associatedTags: sorted };
+          });
+          themesRef.current = next;
+          latestWorkspaceRef.current.themes = next;
+          return next;
         });
-        themesRef.current = next;
-        latestWorkspaceRef.current.themes = next;
-        return next;
-      });
-    }, []);
+      },
+      [markDirtyChange]
+    );
 
   const setTags: React.Dispatch<React.SetStateAction<TagDefinition[]>> =
-    useCallback((updater) => {
-      diskMutationVersionRef.current += 1;
-      setTagsState((prev) => {
-        const rawNext = typeof updater === 'function' ? updater(prev) : updater;
-        const next = rawNext.map((t) => {
-          const migrated = migrateLegacyTagCategory(
-            t.category,
-            t.name,
-            t.aiContextDescription || t.aiDescription || t.description
-          );
-          return migrated !== t.category ? { ...t, category: migrated } : t;
+    useCallback(
+      (updater) => {
+        markDirtyChange(true);
+        setTagsState((prev) => {
+          const rawNext = typeof updater === 'function' ? updater(prev) : updater;
+          const next = rawNext.map((t) => {
+            const migrated = migrateLegacyTagCategory(
+              t.category,
+              t.name,
+              t.aiContextDescription || t.aiDescription || t.description
+            );
+            return migrated !== t.category ? { ...t, category: migrated } : t;
+          });
+          tagsRef.current = next;
+          latestWorkspaceRef.current.tags = next;
+          return next;
         });
-        tagsRef.current = next;
-        latestWorkspaceRef.current.tags = next;
-        return next;
-      });
-    }, []);
+      },
+      [markDirtyChange]
+    );
 
   const setSettings: React.Dispatch<React.SetStateAction<AppSettings>> =
-    useCallback((updater) => {
-      diskMutationVersionRef.current += 1;
-      setSettingsState((prev) => {
-        const next = typeof updater === 'function' ? updater(prev) : updater;
-        settingsRef.current = next;
-        latestWorkspaceRef.current.settings = next;
-        return next;
-      });
-    }, []);
+    useCallback(
+      (updater) => {
+        markDirtyChange(false);
+        setSettingsState((prev) => {
+          const rawNext = typeof updater === 'function' ? updater(prev) : updater;
+          const next: AppSettings = {
+            ...rawNext,
+            activeSaveFolder: UNIFIED_INTERNAL_ROOT,
+            availableSaveFolders: DEFAULT_SAVE_FOLDERS,
+          };
+          settingsRef.current = next;
+          latestWorkspaceRef.current.settings = next;
+          return next;
+        });
+      },
+      [markDirtyChange]
+    );
 
+  // Subscribe to separate app-vault save completion events so Options UI refreshes automatically
   useEffect(() => {
+    const onSaved = () => setVaultRevision((r) => r + 1);
+    onVaultSavedListeners.push(onSaved);
     return () => {
+      onVaultSavedListeners = onVaultSavedListeners.filter((fn) => fn !== onSaved);
       if (aiTestAbortRef.current) {
         aiTestAbortRef.current.abort();
       }
       if (themeSaveTimerRef.current !== null) {
         window.clearTimeout(themeSaveTimerRef.current);
       }
+      void flushPendingVaultKeySave();
+    };
+  }, []);
+
+  // Warn before closing tab with unsaved workspace changes & flush pending API key vault writes
+  useEffect(() => {
+    const handleBeforeUnload = (e: BeforeUnloadEvent) => {
+      void flushPendingVaultKeySave();
+      if (latestWorkspaceRef.current.isDirty) {
+        e.preventDefault();
+        e.returnValue = '';
+      }
+    };
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    return () => {
+      window.removeEventListener('beforeunload', handleBeforeUnload);
     };
   }, []);
 
   const setAiConfig: React.Dispatch<React.SetStateAction<AIBackendConfig>> =
-    useCallback((updater) => {
-      diskMutationVersionRef.current += 1;
-      setAiConfigState((prev) => {
-        const rawNext =
-          typeof updater === 'function' ? updater(prev) : updater;
-        const synced = syncAIConfigProviderCredentials(prev, rawNext);
-        aiConfigRef.current = synced;
-        latestWorkspaceRef.current.aiConfig = synced;
-        return synced;
-      });
-    }, []);
+    useCallback(
+      (updater) => {
+        markDirtyChange(false);
+        setAiConfigState((prev) => {
+          const rawNext =
+            typeof updater === 'function' ? updater(prev) : updater;
+          const synced = syncAIConfigProviderCredentials(prev, rawNext);
+          aiConfigRef.current = synced;
+          latestWorkspaceRef.current.aiConfig = synced;
+          return synced;
+        });
+      },
+      [markDirtyChange]
+    );
 
   const disconnectAiBackend = useCallback(() => {
     if (aiTestAbortRef.current) {
       aiTestAbortRef.current.abort();
       aiTestAbortRef.current = null;
     }
+    setIsTestingAiConnection(false);
     setIsAiConnected(false);
     setAiConnectionResult(null);
   }, []);
@@ -4263,30 +4554,36 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
     setAiConnectionResult(null);
   }, []);
 
-  const switchAIPreset = useCallback((presetId: AIPresetId) => {
-    const found = AI_BACKEND_PRESETS.find((p) => p.id === presetId);
-    if (!found) return;
-    if (aiTestAbortRef.current) {
-      aiTestAbortRef.current.abort();
-      aiTestAbortRef.current = null;
-    }
-    setIsAiConnected(false);
-    setAiConnectionResult(null);
-    diskMutationVersionRef.current += 1;
-    setAiConfigState((prev) => {
-      const synced = syncAIConfigProviderCredentials(prev, {
-        ...prev,
-        preset: presetId,
-        url: found.defaultUrl,
-        modelName: found.defaultModel,
-        compatibilityFormat: 'auto',
-        availableModels: found.suggestedModels,
+  const switchAIPreset = useCallback(
+    (presetId: AIPresetId) => {
+      const found = AI_BACKEND_PRESETS.find((p) => p.id === presetId);
+      if (!found) return;
+      if (aiTestAbortRef.current) {
+        aiTestAbortRef.current.abort();
+        aiTestAbortRef.current = null;
+      }
+      setIsTestingAiConnection(false);
+      setIsAiConnected(false);
+      setAiConnectionResult(null);
+      markDirtyChange(false);
+      setAiConfigState((prev) => {
+        const synced = syncAIConfigProviderCredentials(prev, {
+          ...prev,
+          preset: presetId,
+          url: found.defaultUrl,
+          modelName: '',
+          compatibilityFormat: 'auto',
+          availableModels: [],
+          loadedModels: [],
+          modelStatuses: {},
+        });
+        aiConfigRef.current = synced;
+        latestWorkspaceRef.current.aiConfig = synced;
+        return synced;
       });
-      aiConfigRef.current = synced;
-      latestWorkspaceRef.current.aiConfig = synced;
-      return synced;
-    });
-  }, []);
+    },
+    [markDirtyChange]
+  );
 
   const aiConfig = aiConfigState;
 
@@ -4294,7 +4591,8 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
     async (
       overrideConfig?: AIBackendConfig
     ): Promise<ConnectionTestResult | null> => {
-      const targetConfig = overrideConfig ?? aiConfigState;
+      await flushPendingVaultKeySave();
+      const targetConfig = overrideConfig ?? aiConfigRef.current;
       if (aiTestAbortRef.current) {
         aiTestAbortRef.current.abort();
       }
@@ -4312,21 +4610,25 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
         setAiConnectionResult(result);
         setIsAiConnected(result.ok);
 
-        if (result.models.length > 0) {
-          diskMutationVersionRef.current += 1;
+        if (result.ok) {
+          markDirtyChange(false);
           setAiConfigState((prev) => {
-            const cleanModels = sanitizeAvailableModelsList(
-              result.models,
-              undefined,
-              prev.preset
-            );
-            const currentModelValid = cleanModels.includes(prev.modelName);
-            const preferredDefault = cleanModels.includes('gemini-3.8-flash')
-              ? 'gemini-3.8-flash'
-              : cleanModels[0];
+            const cleanModels = sanitizeAvailableModelsList(result.models);
+            const cleanLoaded = Array.isArray(result.loadedModels)
+              ? Array.from(new Set(result.loadedModels.filter(Boolean)))
+              : [];
+            const nextStatuses =
+              result.modelStatuses && typeof result.modelStatuses === 'object'
+                ? { ...result.modelStatuses }
+                : {};
+            const currentModelValid =
+              Boolean(prev.modelName) && cleanModels.includes(prev.modelName);
+            const preferredDefault = cleanLoaded[0] || cleanModels[0] || '';
             const synced = syncAIConfigProviderCredentials(prev, {
               ...prev,
               availableModels: cleanModels,
+              loadedModels: cleanLoaded,
+              modelStatuses: nextStatuses,
               modelName: currentModelValid ? prev.modelName : preferredDefault,
             });
             aiConfigRef.current = synced;
@@ -4338,12 +4640,13 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
       } catch {
         return null;
       } finally {
-        if (!controller.signal.aborted) {
+        if (aiTestAbortRef.current === controller) {
+          aiTestAbortRef.current = null;
           setIsTestingAiConnection(false);
         }
       }
     },
-    [aiConfigState]
+    [markDirtyChange]
   );
 
   const character = useMemo(() => {
@@ -4361,6 +4664,18 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
       DEFAULT_LOREBOOK
     );
   }, [lorebooks, activeLorebookId]);
+
+  const getResolvedLorebookForCharacter = useCallback(
+    (char: CharacterCardData | undefined | null): Lorebook | undefined => {
+      if (!char?.character_book) return undefined;
+      if (char.character_book.id) {
+        const live = lorebooks.find((lb) => lb.id === char.character_book?.id);
+        if (live) return live;
+      }
+      return char.character_book;
+    },
+    [lorebooks]
+  );
 
   const statBlock = useMemo<StatBlockConfig>(() => {
     return character.extensions?.statBlock || DEFAULT_STAT_BLOCK;
@@ -4393,27 +4708,14 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
   useEffect(() => {
     try {
       const root = document.documentElement;
-      root.style.setProperty('--theme-accent', activeTheme.color);
+      root.style.setProperty(
+        '--theme-accent',
+        sanitizeCssHexColor(activeTheme.color, '#6366f1')
+      );
     } catch {
       // Ignore DOM errors
     }
   }, [activeTheme.color]);
-
-  useEffect(() => {
-    if (initialDiskHydrationDoneRef.current) {
-      latestWorkspaceRef.current.isDirty = true;
-      setIsDirty(true);
-    }
-  }, [
-    characters,
-    activeCharacterId,
-    lorebooks,
-    activeLorebookId,
-    themes,
-    tags,
-    aiConfig,
-    settings,
-  ]);
 
   // Automatically register any new top-level tag attached to a Character, Lorebook, LorebookEntry, or ContextTheme
   useEffect(() => {
@@ -4487,6 +4789,17 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
       );
       if (found) return found;
 
+      // If this matches a previously deleted built-in tag, allow re-creating it by clearing its deleted marker
+      const lowerClean = clean.toLowerCase();
+      const builtInMatch = builtInTagByNameMap.get(lowerClean);
+      if (builtInMatch) {
+        deletedDefaultTagIdsRef.current = deletedDefaultTagIdsRef.current.filter(
+          (deletedId) =>
+            deletedId.toLowerCase() !== builtInMatch.id.toLowerCase() &&
+            deletedId.toLowerCase() !== lowerClean
+        );
+      }
+
       const currentTags = tagsRef.current;
       const usedTagFiles = new Set(
         currentTags
@@ -4506,19 +4819,27 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
       );
 
       const color =
-        AUTO_TAG_PALETTE[currentTags.length % AUTO_TAG_PALETTE.length] || '#a855f7';
-      const resolvedCat = migrateLegacyTagCategory(category, clean, '');
+        builtInMatch?.color ||
+        AUTO_TAG_PALETTE[currentTags.length % AUTO_TAG_PALETTE.length] ||
+        '#a855f7';
+      const resolvedCat =
+        builtInMatch?.category || migrateLegacyTagCategory(category, clean, '');
       const isNsfw =
-        resolvedCat === 'Genitals' ||
-        resolvedCat === 'NSFW & Kinks' ||
-        resolvedCat === 'Extreme & Hentai Physics' ||
-        clean.toLowerCase().includes('nsfw') ||
-        clean.toLowerCase().includes('18+');
-      const desc = `Incorporate thematic, tonal, and character elements consistent with "${clean}".`;
+        builtInMatch?.isNsfw ??
+        (resolvedCat === 'Genitals' ||
+          resolvedCat === 'NSFW & Kinks' ||
+          resolvedCat === 'Extreme & Hentai Physics' ||
+          lowerClean.includes('nsfw') ||
+          lowerClean.includes('18+'));
+      const desc =
+        builtInMatch?.aiContextDescription ||
+        `Incorporate thematic, tonal, and character elements consistent with "${clean}".`;
       const newTag: TagDefinition = {
-        id: `tag-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+        id:
+          builtInMatch?.id ||
+          `tag-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
         savedFileName: assignedFile,
-        name: clean,
+        name: builtInMatch?.name || clean,
         color,
         category: resolvedCat,
         isNsfw,
@@ -4527,19 +4848,20 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
         description: desc,
       };
       tagDiskFileNamesRef.current.set(newTag.id, assignedFile);
-      diskMutationVersionRef.current += 1;
+      markDirtyChange(true);
       const nextTags = [...currentTags, newTag];
       tagsRef.current = nextTags;
       latestWorkspaceRef.current.tags = nextTags;
       setTagsState(nextTags);
       return newTag;
     },
-    []
+    [markDirtyChange]
   );
 
   /**
-   * Hydrates React state from `/api/disk/state` (ONLY on initial app mount or explicit folder switch).
+   * Hydrates React state from `/api/disk/state` (ONLY on initial app mount or explicit rescan).
    * Strictly maps `./Saves/Characters/*.json` -> `characters[]` and `./Saves/Lorebooks/*.json` -> `lorebooks[]`.
+   * Credentials live separately in `./.tavernsmith-app/` and are loaded via `/api/vault`.
    */
   const applyDiskStateToWorkspace = useCallback(
     async (
@@ -4550,23 +4872,41 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
 
       const isStaleVersion =
         typeof options?.expectedVersion === 'number' &&
-        options.expectedVersion !== diskMutationVersionRef.current;
+        options.expectedVersion !== contentMutationVersionRef.current;
 
-      if (diskState.resolvedPath || diskState.diskRoot) {
-        setDiskResolvedPath(diskState.resolvedPath || diskState.diskRoot);
-      }
+      setDiskResolvedPath('./Saves/');
 
       if (Array.isArray(diskState.files)) {
-        setDiskFiles(diskState.files);
+        setDiskFiles(
+          diskState.files.filter(
+            (f) => f.kind !== 'vault' && f.fileName !== LEGACY_VAULT_FILENAME
+          )
+        );
       }
 
-      // Never clobber user edits made before initial mount scan resolved or while mutations occurred
+      // Never clobber user content edits made before initial mount scan resolved
       if (
         isStaleVersion ||
-        (options?.isInitialMount && diskMutationVersionRef.current > 0)
+        (options?.isInitialMount && contentMutationVersionRef.current > 0)
       ) {
         return;
       }
+
+      // Restore deleted built-in tag/theme IDs so deleted built-in defaults stay deleted across reloads
+      const deletedTagIds = Array.isArray(diskState.meta?.deletedDefaultTagIds)
+        ? diskState.meta!.deletedDefaultTagIds.filter(
+            (id): id is string => typeof id === 'string' && Boolean(id.trim())
+          )
+        : [];
+      const deletedThemeIds = Array.isArray(
+        diskState.meta?.deletedDefaultThemeIds
+      )
+        ? diskState.meta!.deletedDefaultThemeIds.filter(
+            (id): id is string => typeof id === 'string' && Boolean(id.trim())
+          )
+        : [];
+      deletedDefaultTagIdsRef.current = deletedTagIds;
+      deletedDefaultThemeIdsRef.current = deletedThemeIds;
 
       // 1. Reconstruct Tags & Themes from `./Saves/Tags/*.json` & `./Saves/Themes/*.json`
       //    with backwards-compatible fallback to legacy `./Saves/_tavernsmith_meta.json`
@@ -4575,10 +4915,10 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
           ? diskState.meta.tags
           : [];
       const diskTagEntries = Array.isArray(diskState.tags) ? diskState.tags : [];
-      const mergedTags = mergeWithDefaultTags([
-        ...extractCustomUserTags(legacyMetaTags),
-        ...diskTagEntries,
-      ]);
+      const mergedTags = mergeWithDefaultTags(
+        [...extractCustomUserTags(legacyMetaTags), ...diskTagEntries],
+        deletedTagIds
+      );
 
       const nextTagFileNames = new Map<string, string>();
       for (const t of mergedTags) {
@@ -4600,7 +4940,8 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
         : [];
       const hydratedThemes = mergeWithDefaultThemes(
         [...legacyMetaThemes, ...diskThemeEntries],
-        mergedTags
+        mergedTags,
+        deletedThemeIds
       );
 
       const nextThemeFileNames = new Map<string, string>();
@@ -4628,12 +4969,12 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
             )
               ? candidateThemeId
               : hydratedThemes[0]?.id || prev.activeThemeId;
-            const nextSettings = {
+            const nextSettings: AppSettings = {
               ...prev,
               ...meta.settings,
               activeThemeId: resolvedThemeId,
-              activeSaveFolder:
-                meta.settings?.activeSaveFolder || UNIFIED_INTERNAL_ROOT,
+              activeSaveFolder: UNIFIED_INTERNAL_ROOT,
+              availableSaveFolders: DEFAULT_SAVE_FOLDERS,
             };
             settingsRef.current = nextSettings;
             latestWorkspaceRef.current.settings = nextSettings;
@@ -4646,9 +4987,11 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
             )
               ? meta.activeThemeId!
               : hydratedThemes[0]?.id || prev.activeThemeId;
-            const nextSettings = {
+            const nextSettings: AppSettings = {
               ...prev,
               activeThemeId: resolvedThemeId,
+              activeSaveFolder: UNIFIED_INTERNAL_ROOT,
+              availableSaveFolders: DEFAULT_SAVE_FOLDERS,
             };
             settingsRef.current = nextSettings;
             latestWorkspaceRef.current.settings = nextSettings;
@@ -4660,46 +5003,63 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
           const incomingAi = meta.aiConfig;
           const cleanPreset = incomingAi.preset || DEFAULT_AI_CONFIG.preset;
           const hydratedAvailable = sanitizeAvailableModelsList(
-            incomingAi.availableModels,
-            AI_BACKEND_PRESETS.find((p) => p.id === cleanPreset)?.suggestedModels,
-            cleanPreset
-          );
-          const migrateLegacyDefault = (rawModel: string | undefined, targetPreset: AIPresetId) => {
-            const clean = sanitizeModelName(rawModel, targetPreset);
-            if (
-              targetPreset === 'gemini' &&
-              isDeprecatedGeminiModel(clean) &&
-              !(Array.isArray(incomingAi.availableModels) && incomingAi.availableModels.includes(clean))
-            ) {
-              return 'gemini-3.8-flash';
-            }
-            return clean;
-          };
+            incomingAi.availableModels
+          ).filter((m) => !isLegacyFakeGeminiModel(m));
+
           const sanitizedModelsMap: Record<string, string> = {};
           if (
             incomingAi.savedProviderModels &&
             typeof incomingAi.savedProviderModels === 'object'
           ) {
             for (const [k, v] of Object.entries(incomingAi.savedProviderModels)) {
-              const mapPreset =
-                k === 'google' || k === 'gemini' ? 'gemini' : cleanPreset;
-              sanitizedModelsMap[k] = migrateLegacyDefault(v, mapPreset);
+              const cleanVal = sanitizeModelName(v);
+              if (cleanVal && !isLegacyFakeGeminiModel(cleanVal)) {
+                sanitizedModelsMap[k] = cleanVal;
+              }
             }
             saveProviderModelsMap(sanitizedModelsMap);
           }
+
+          const cleanActiveModel = isLegacyFakeGeminiModel(incomingAi.modelName)
+            ? ''
+            : sanitizeModelName(incomingAi.modelName, cleanPreset);
+          const presetMeta = AI_BACKEND_PRESETS.find((p) => p.id === cleanPreset);
+          const hydratedUrl =
+            incomingAi.url &&
+            !(cleanPreset === 'gemini' && incomingAi.url === '/api/gemini')
+              ? scrubUrlSecrets(incomingAi.url)
+              : presetMeta?.defaultUrl || DEFAULT_AI_CONFIG.url;
+
           setAiConfigState((prev) => {
+            const mergedKeys = { ...(prev.savedProviderKeys || {}) };
+            const activeProviderId = getProviderKeyId(cleanPreset);
+            const restoredKey =
+              mergedKeys[activeProviderId] ||
+              mergedKeys[cleanPreset] ||
+              (prev.preset === cleanPreset ? prev.apiKey : '') ||
+              '';
+            const parsedMaxTokens = Number(incomingAi.maxTokens);
+            const safeMaxTokens =
+              Number.isFinite(parsedMaxTokens) && parsedMaxTokens >= 256
+                ? Math.min(131072, Math.round(parsedMaxTokens))
+                : DEFAULT_AI_CONFIG.maxTokens;
+
             const nextAi: AIBackendConfig = {
               ...prev,
               ...incomingAi,
-              modelName: migrateLegacyDefault(incomingAi.modelName, cleanPreset),
+              preset: cleanPreset,
+              url: hydratedUrl,
+              modelName: cleanActiveModel,
               availableModels: hydratedAvailable,
+              loadedModels: [],
+              modelStatuses: {},
               savedProviderModels:
                 Object.keys(sanitizedModelsMap).length > 0
                   ? sanitizedModelsMap
                   : prev.savedProviderModels,
-              maxTokens: Math.max(8192, incomingAi.maxTokens || 16384),
-              apiKey: prev.apiKey,
-              savedProviderKeys: prev.savedProviderKeys,
+              maxTokens: safeMaxTokens,
+              apiKey: restoredKey,
+              savedProviderKeys: mergedKeys,
             };
             aiConfigRef.current = nextAi;
             latestWorkspaceRef.current.aiConfig = nextAi;
@@ -4708,8 +5068,112 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
         }
       }
 
-      // 2. Parse `./Saves/Characters/*.json` strictly as `characters[]`
+      // 2. Parse `./Saves/Lorebooks/*.json` strictly as `lorebooks[]` FIRST so linked characters can sync
+      const nextLoreFileNames = new Map<string, string>();
+      const seenLoreIds = new Set<string>();
+      const parsedLorebooks: Lorebook[] = [];
+      if (Array.isArray(diskState.lorebooks)) {
+        for (const rawEntry of diskState.lorebooks) {
+          if (!rawEntry || typeof rawEntry !== 'object') continue;
+          const outerObj = rawEntry as Record<string, unknown>;
+          const diskFileName =
+            typeof outerObj._diskFileName === 'string' && outerObj._diskFileName
+              ? outerObj._diskFileName
+              : typeof outerObj.fileName === 'string' && outerObj.fileName
+                ? outerObj.fileName
+                : typeof outerObj.savedFileName === 'string' &&
+                    outerObj.savedFileName
+                  ? outerObj.savedFileName
+                  : '';
+          const candidateLoreObj =
+            outerObj.parsed &&
+            typeof outerObj.parsed === 'object' &&
+            !Array.isArray(outerObj.parsed)
+              ? ({
+                  ...(outerObj.parsed as Record<string, unknown>),
+                  ...(diskFileName ? { _diskFileName: diskFileName } : {}),
+                } as Record<string, unknown>)
+              : outerObj;
+          if (candidateLoreObj._tavernsmithType === 'character') continue;
+          try {
+            const fallbackTitle =
+              (diskFileName || 'Lorebook.json').replace(/\.json$/i, '') ||
+              'Lorebook';
+            const normalizedBook = normalizeLorebookTagsWithCatalog(
+              normalizeLorebookObject(candidateLoreObj, fallbackTitle),
+              mergedTags
+            );
+            // Preserve strictly manual NSFW flag; tag/entry NSFW is evaluated dynamically by isLorebookNsfw
+            normalizedBook.isNsfw = Boolean(normalizedBook.isNsfw);
+            if (!normalizedBook.id || seenLoreIds.has(normalizedBook.id)) {
+              normalizedBook.id = `lorebook-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+            }
+            seenLoreIds.add(normalizedBook.id);
+            const resolvedName =
+              diskFileName || normalizedBook.savedFileName || '';
+            if (resolvedName) {
+              normalizedBook.savedFileName = resolvedName;
+            }
+            parsedLorebooks.push(normalizedBook);
+            if (normalizedBook.id && resolvedName) {
+              nextLoreFileNames.set(normalizedBook.id, resolvedName);
+            }
+          } catch {
+            if (diskFileName) {
+              const fallbackTitle =
+                diskFileName.replace(/\.json$/i, '').trim() ||
+                'Recovered Lorebook';
+              let fallbackId =
+                typeof candidateLoreObj.id === 'string' && candidateLoreObj.id
+                  ? candidateLoreObj.id
+                  : `lore-corrupt-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+              if (seenLoreIds.has(fallbackId)) {
+                fallbackId = `lore-corrupt-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+              }
+              seenLoreIds.add(fallbackId);
+              const fallbackBook = createBlankLorebook({
+                id: fallbackId,
+                name: fallbackTitle,
+                savedFileName: diskFileName,
+              });
+              parsedLorebooks.push(fallbackBook);
+              if (fallbackBook.id) {
+                nextLoreFileNames.set(fallbackBook.id, diskFileName);
+              }
+            }
+          }
+        }
+      }
+      const lorebookById = new Map<string, Lorebook>();
+      for (const lb of parsedLorebooks) {
+        if (lb.id) lorebookById.set(lb.id, lb);
+      }
+
+      loreDiskFileNamesRef.current = nextLoreFileNames;
+      lorebooksRef.current = parsedLorebooks;
+      latestWorkspaceRef.current.lorebooks = parsedLorebooks;
+      setLorebooksState(parsedLorebooks);
+      setActiveLorebookIdState((prevId) => {
+        let nextId = parsedLorebooks[0]?.id || '';
+        if (prevId && parsedLorebooks.some((l) => l.id === prevId)) {
+          nextId = prevId;
+        } else if (
+          options?.isInitialMount &&
+          diskState.meta?.activeLorebookId &&
+          parsedLorebooks.some(
+            (l) => l.id === diskState.meta?.activeLorebookId
+          )
+        ) {
+          nextId = diskState.meta.activeLorebookId;
+        }
+        activeLorebookIdRef.current = nextId;
+        latestWorkspaceRef.current.activeLorebookId = nextId;
+        return nextId;
+      });
+
+      // 3. Parse `./Saves/Characters/*.json` strictly as `characters[]` and sync linked lorebook snapshots by ID
       const nextCharFileNames = new Map<string, string>();
+      const seenCharIds = new Set<string>();
       const parsedCharacters: CharacterCardData[] = [];
       if (Array.isArray(diskState.characters)) {
         for (const rawEntry of diskState.characters) {
@@ -4746,7 +5210,22 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
                 parsedRes.character,
                 mergedTags
               );
-              sortedChar.isNsfw = isCharacterNsfw(sortedChar, mergedTags);
+              // Keep manual isNsfw flag separate from dynamic tag/lorebook NSFW evaluation
+              sortedChar.isNsfw = Boolean(
+                sortedChar.isNsfw || sortedChar.extensions?.isNsfw
+              );
+              if (
+                sortedChar.character_book?.id &&
+                lorebookById.has(sortedChar.character_book.id)
+              ) {
+                sortedChar.character_book = lorebookById.get(
+                  sortedChar.character_book.id
+                );
+              }
+              if (!sortedChar.id || seenCharIds.has(sortedChar.id)) {
+                sortedChar.id = `char-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+              }
+              seenCharIds.add(sortedChar.id);
               const resolvedName =
                 diskFileName || sortedChar.savedFileName || '';
               if (resolvedName) {
@@ -4758,16 +5237,20 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
               }
             }
           } catch {
-            // Even if the file on disk is empty or corrupted, bind its real disk filename so it stays deletable
             if (diskFileName) {
               const fallbackName =
                 diskFileName.replace(/\.json$/i, '').trim() ||
                 'Recovered Character';
+              let fallbackId =
+                typeof candidateCharObj.id === 'string' && candidateCharObj.id
+                  ? candidateCharObj.id
+                  : `char-corrupt-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+              if (seenCharIds.has(fallbackId)) {
+                fallbackId = `char-corrupt-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+              }
+              seenCharIds.add(fallbackId);
               const fallbackChar = createBlankCharacter({
-                id:
-                  typeof candidateCharObj.id === 'string' && candidateCharObj.id
-                    ? candidateCharObj.id
-                    : `char-corrupt-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+                id: fallbackId,
                 name: fallbackName,
                 savedFileName: diskFileName,
               });
@@ -4801,165 +5284,113 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
         return nextId;
       });
 
-      // 3. Parse `./Saves/Lorebooks/*.json` strictly as `lorebooks[]`
-      const nextLoreFileNames = new Map<string, string>();
-      const parsedLorebooks: Lorebook[] = [];
-      if (Array.isArray(diskState.lorebooks)) {
-        for (const rawEntry of diskState.lorebooks) {
-          if (!rawEntry || typeof rawEntry !== 'object') continue;
-          const outerObj = rawEntry as Record<string, unknown>;
-          const diskFileName =
-            typeof outerObj._diskFileName === 'string' && outerObj._diskFileName
-              ? outerObj._diskFileName
-              : typeof outerObj.fileName === 'string' && outerObj.fileName
-                ? outerObj.fileName
-                : typeof outerObj.savedFileName === 'string' &&
-                    outerObj.savedFileName
-                  ? outerObj.savedFileName
-                  : '';
-          const candidateLoreObj =
-            outerObj.parsed &&
-            typeof outerObj.parsed === 'object' &&
-            !Array.isArray(outerObj.parsed)
-              ? ({
-                  ...(outerObj.parsed as Record<string, unknown>),
-                  ...(diskFileName ? { _diskFileName: diskFileName } : {}),
-                } as Record<string, unknown>)
-              : outerObj;
-          if (candidateLoreObj._tavernsmithType === 'character') continue;
-          try {
-            const fallbackTitle =
-              (diskFileName || 'Lorebook.json').replace(/\.json$/i, '') ||
-              'Lorebook';
-            const normalizedBook = normalizeLorebookTagsWithCatalog(
-              normalizeLorebookObject(candidateLoreObj, fallbackTitle),
-              mergedTags
-            );
-            normalizedBook.isNsfw = isLorebookNsfw(normalizedBook, mergedTags);
-            const resolvedName =
-              diskFileName || normalizedBook.savedFileName || '';
-            if (resolvedName) {
-              normalizedBook.savedFileName = resolvedName;
-            }
-            parsedLorebooks.push(normalizedBook);
-            if (normalizedBook.id && resolvedName) {
-              nextLoreFileNames.set(normalizedBook.id, resolvedName);
-            }
-          } catch {
-            // Even if the lorebook JSON is empty or corrupted, bind its real disk filename so it stays deletable
-            if (diskFileName) {
-              const fallbackTitle =
-                diskFileName.replace(/\.json$/i, '').trim() ||
-                'Recovered Lorebook';
-              const fallbackBook = createBlankLorebook({
-                id:
-                  typeof candidateLoreObj.id === 'string' && candidateLoreObj.id
-                    ? candidateLoreObj.id
-                    : `lore-corrupt-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-                name: fallbackTitle,
-                savedFileName: diskFileName,
-              });
-              parsedLorebooks.push(fallbackBook);
-              if (fallbackBook.id) {
-                nextLoreFileNames.set(fallbackBook.id, diskFileName);
-              }
-            }
-          }
-        }
-      }
-      loreDiskFileNamesRef.current = nextLoreFileNames;
-      lorebooksRef.current = parsedLorebooks;
-      latestWorkspaceRef.current.lorebooks = parsedLorebooks;
-      setLorebooksState(parsedLorebooks);
-      setActiveLorebookIdState((prevId) => {
-        let nextId = parsedLorebooks[0]?.id || '';
-        if (prevId && parsedLorebooks.some((l) => l.id === prevId)) {
-          nextId = prevId;
-        } else if (
-          options?.isInitialMount &&
-          diskState.meta?.activeLorebookId &&
-          parsedLorebooks.some(
-            (l) => l.id === diskState.meta?.activeLorebookId
-          )
-        ) {
-          nextId = diskState.meta.activeLorebookId;
-        }
-        activeLorebookIdRef.current = nextId;
-        latestWorkspaceRef.current.activeLorebookId = nextId;
-        return nextId;
-      });
-
-      // 4. Hydrate AES-256-GCM Encrypted Vault from `./Saves/_tavernsmith_vault.enc`
-      if (diskState.vault && typeof diskState.vault === 'object') {
-        try {
-          const decrypted = await decryptProviderKeysFromVault(
-            undefined,
-            diskState.vault
-          );
-          if (decrypted.ok) {
-            setAiConfigState((prev) => {
-              const mergedKeys: Record<string, string> = {
-                ...decrypted.keys,
-                ...(prev.savedProviderKeys || {}),
-              };
-              const activeProviderId = getProviderKeyId(prev.preset);
-              const restoredActiveKey =
-                prev.apiKey ||
-                mergedKeys[activeProviderId] ||
-                mergedKeys[prev.preset] ||
-                '';
-              if (restoredActiveKey) {
-                mergedKeys[activeProviderId] = restoredActiveKey;
-                mergedKeys[prev.preset] = restoredActiveKey;
-              }
-              const nextAi = {
-                ...prev,
-                apiKey: restoredActiveKey,
-                savedProviderKeys: mergedKeys,
-              };
-              aiConfigRef.current = nextAi;
-              latestWorkspaceRef.current.aiConfig = nextAi;
-              return nextAi;
-            });
-          }
-        } catch {
-          // Vault may be locked with custom PIN
-        }
-      }
-
       if (diskState.updatedAt) {
         setLastSavedAt(formatSafeTimestamp(diskState.updatedAt));
       }
+      lastSyncedVersionRef.current = diskMutationVersionRef.current;
     },
     []
   );
 
-  // Auto-Scan `./Saves/` ONCE on initial app mount
+  // Auto-Scan `./Saves/` and hydrate separate app-private encrypted vault (`./.tavernsmith-app/`) on mount
   useEffect(() => {
-    if (initialMountFetchedRef.current) return;
-    initialMountFetchedRef.current = true;
     let cancelled = false;
     purgeBrowserRuntimeCaches();
 
+    const applyVaultKeysToConfig = (keys: Record<string, string>) => {
+      if (cancelled) return;
+      const cleanKeys: Record<string, string> = {};
+      for (const [k, v] of Object.entries(keys || {})) {
+        if (typeof v === 'string' && v.trim()) {
+          cleanKeys[k] = v.trim();
+        }
+      }
+      lastPersistedVaultKeysSignature = normalizeKeysForSignature(cleanKeys);
+      setAiConfigState((prev) => {
+        const mergedKeys: Record<string, string> = {
+          ...cleanKeys,
+          ...(prev.savedProviderKeys || {}),
+        };
+        // Prefer vault key when prev entry is empty
+        for (const [k, v] of Object.entries(cleanKeys)) {
+          if (!mergedKeys[k]) mergedKeys[k] = v;
+        }
+        const activeProviderId = getProviderKeyId(prev.preset);
+        const restoredActiveKey =
+          prev.apiKey ||
+          mergedKeys[activeProviderId] ||
+          mergedKeys[prev.preset] ||
+          '';
+        if (restoredActiveKey) {
+          mergedKeys[activeProviderId] = restoredActiveKey;
+          mergedKeys[prev.preset] = restoredActiveKey;
+        }
+        const nextAi: AIBackendConfig = {
+          ...prev,
+          apiKey: restoredActiveKey,
+          savedProviderKeys: mergedKeys,
+        };
+        aiConfigRef.current = nextAi;
+        latestWorkspaceRef.current.aiConfig = nextAi;
+        return nextAi;
+      });
+      setVaultRevision((r) => r + 1);
+    };
+
+    const hydrateDiskWithRetry = async () => {
+      const delays = [0, 400, 1000, 2000];
+      for (const delayMs of delays) {
+        if (cancelled) return;
+        if (delayMs > 0) {
+          await new Promise((resolve) => window.setTimeout(resolve, delayMs));
+          if (cancelled) return;
+        }
+        try {
+          const res = await fetch('/api/disk/state', {
+            method: 'GET',
+            headers: { Accept: 'application/json' },
+            cache: 'no-store',
+          });
+          if (!res.ok) continue;
+          const data = (await res.json()) as DiskStateResponse;
+          if (cancelled) return;
+          if (data && data.ok) {
+            await applyDiskStateToWorkspace(data, { isInitialMount: true });
+            diskHydrationSucceededRef.current = true;
+            return;
+          }
+        } catch {
+          // Server may still be starting up; retry next backoff step
+        }
+      }
+    };
+
+    const hydrateVault = async () => {
+      try {
+        const vaultResult = await loadAppVaultFromServer();
+        if (cancelled) return;
+        if (vaultResult.ok && Object.keys(vaultResult.keys).length > 0) {
+          applyVaultKeysToConfig(vaultResult.keys);
+        } else {
+          setVaultRevision((r) => r + 1);
+        }
+      } catch {
+        if (!cancelled) {
+          setVaultRevision((r) => r + 1);
+        }
+      }
+    };
+
     (async () => {
       try {
-        const res = await fetch('/api/disk/state', {
-          method: 'GET',
-          headers: { Accept: 'application/json' },
-          cache: 'no-store',
-        });
-        if (!res.ok || cancelled) return;
-        const data = (await res.json()) as DiskStateResponse;
-        if (cancelled) return;
-        await applyDiskStateToWorkspace(data, { isInitialMount: true });
-      } catch {
-        // Ignore network error if server is still booting
+        await Promise.all([hydrateDiskWithRetry(), hydrateVault()]);
       } finally {
         if (!cancelled) {
           initialDiskHydrationDoneRef.current = true;
-          const hasPendingMutations = diskMutationVersionRef.current > 0;
-          latestWorkspaceRef.current.isDirty = hasPendingMutations;
-          setIsDirty(hasPendingMutations);
+          const hasUnsavedMutations =
+            diskMutationVersionRef.current > lastSyncedVersionRef.current;
+          latestWorkspaceRef.current.isDirty = hasUnsavedMutations;
+          setIsDirty(hasUnsavedMutations);
         }
       }
     })();
@@ -4969,38 +5400,57 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
     };
   }, [applyDiskStateToWorkspace]);
 
-  // Register Vault Disk Flush Callback so any key/PIN change in Options immediately writes `./Saves/_tavernsmith_vault.enc`
-  useEffect(() => {
-    registerVaultDiskFlushCallback((envelope) => {
-      const versionAtStart = diskMutationVersionRef.current;
-      void enqueueDiskOperation(async () => {
-        try {
-          const r = await fetch('/api/disk/save', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              vault: envelope,
-              customSavePath: latestWorkspaceRef.current.settings.activeSaveFolder,
-            }),
-          });
-          const diskState = (await r.json()) as DiskStateResponse;
-          if (
-            diskState &&
-            diskState.ok &&
-            Array.isArray(diskState.files) &&
-            diskMutationVersionRef.current === versionAtStart
-          ) {
-            setDiskFiles(diskState.files);
-          }
-        } catch {
-          // Ignore transient network error
+  const unlockLegacyVault = useCallback(
+    async (
+      pin: string
+    ): Promise<{ ok: boolean; error?: string; migratedCount?: number }> => {
+      const res = await unlockAndMigrateLegacyVault(pin);
+      if (!res.ok) {
+        setVaultRevision((r) => r + 1);
+        return {
+          ok: false,
+          error: res.error || 'Incorrect legacy vault PIN.',
+        };
+      }
+      const migratedCount = Object.keys(res.keys).filter((k) =>
+        Boolean(res.keys[k])
+      ).length;
+      lastPersistedVaultKeysSignature = normalizeKeysForSignature(res.keys);
+      setAiConfigState((prev) => {
+        const mergedKeys: Record<string, string> = {
+          ...(prev.savedProviderKeys || {}),
+          ...res.keys,
+        };
+        const activeProviderId = getProviderKeyId(prev.preset);
+        const restoredKey =
+          prev.apiKey ||
+          mergedKeys[activeProviderId] ||
+          mergedKeys[prev.preset] ||
+          '';
+        if (restoredKey) {
+          mergedKeys[activeProviderId] = restoredKey;
+          mergedKeys[prev.preset] = restoredKey;
         }
+        const nextAi: AIBackendConfig = {
+          ...prev,
+          apiKey: restoredKey,
+          savedProviderKeys: mergedKeys,
+        };
+        aiConfigRef.current = nextAi;
+        latestWorkspaceRef.current.aiConfig = nextAi;
+        return nextAi;
       });
-    });
-    return () => {
-      registerVaultDiskFlushCallback(null);
-    };
-  }, [enqueueDiskOperation]);
+      setVaultRevision((r) => r + 1);
+      // Remove legacy `_tavernsmith_vault.enc` entry from the in-memory saved files preview
+      setDiskFiles((prev) =>
+        prev.filter(
+          (f) => f.kind !== 'vault' && f.fileName !== LEGACY_VAULT_FILENAME
+        )
+      );
+      return { ok: true, migratedCount };
+    },
+    []
+  );
 
   // Duplicate Character / Lorebook Name Conflict State & Handlers
   const [nameConflictRequest, setNameConflictRequest] =
@@ -5088,10 +5538,21 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
               : l
           )
         );
+        // Keep embedded lorebook name synced on linked characters
+        setCharacters((prev) =>
+          prev.map((c) =>
+            c.character_book?.id === itemId
+              ? {
+                  ...c,
+                  character_book: { ...c.character_book, name: clean },
+                }
+              : c
+          )
+        );
       }
       setNameConflictRequest(null);
     },
-    [nameConflictRequest]
+    [nameConflictRequest, setCharacters, setLorebooks]
   );
 
   const dismissNameConflict = useCallback(() => {
@@ -5101,57 +5562,74 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
   const setCharacter: React.Dispatch<React.SetStateAction<CharacterCardData>> =
     useCallback(
       (updater) => {
-        diskMutationVersionRef.current += 1;
-        setCharactersState((prev) => {
-          const currentTags = tagsRef.current;
-          let nextList: CharacterCardData[];
-          if (prev.length === 0) {
-            const freshBase = createBlankCharacter();
+        markDirtyChange(true);
+        const currentChars = charactersRef.current;
+        const currentTags = tagsRef.current;
+        let nextActiveCharIdToSet: string | null = null;
+        let nextList: CharacterCardData[];
+
+        if (currentChars.length === 0) {
+          const freshBase = createBlankCharacter();
+          const next = normalizeCharacterTagsWithCatalog(
+            typeof updater === 'function' ? updater(freshBase) : updater,
+            currentTags
+          );
+          const manualIsNsfw = Boolean(next.isNsfw);
+          const assignedFile =
+            next.savedFileName ||
+            ensureUniqueSavedFileName(next.name, new Set(), 'character');
+          const created: CharacterCardData = {
+            ...next,
+            id: freshBase.id,
+            savedFileName: assignedFile,
+            isNsfw: manualIsNsfw,
+            extensions: {
+              ...(next.extensions || {}),
+              isNsfw: manualIsNsfw,
+            },
+            modification_date: Math.floor(Date.now() / 1000),
+          };
+          if (created.id) {
+            charDiskFileNamesRef.current.set(created.id, assignedFile);
+            nextActiveCharIdToSet = created.id;
+          }
+          nextList = [created];
+        } else {
+          const matchedTarget =
+            currentChars.find((c) => c.id === activeCharacterIdRef.current) ||
+            currentChars[0];
+          const targetId = matchedTarget.id;
+          nextList = currentChars.map((c) => {
+            if (c.id !== targetId) return c;
             const next = normalizeCharacterTagsWithCatalog(
-              typeof updater === 'function' ? updater(freshBase) : updater,
+              typeof updater === 'function' ? updater(c) : updater,
               currentTags
             );
-            const autoNsfw = isCharacterNsfw(next, currentTags);
-            const assignedFile =
-              next.savedFileName ||
-              ensureUniqueSavedFileName(next.name, new Set(), 'character');
-            const created: CharacterCardData = {
+            const manualIsNsfw = Boolean(next.isNsfw);
+            return {
               ...next,
-              id: freshBase.id,
-              savedFileName: assignedFile,
-              isNsfw: autoNsfw,
+              id: c.id,
+              isNsfw: manualIsNsfw,
+              extensions: {
+                ...(next.extensions || {}),
+                isNsfw: manualIsNsfw,
+              },
               modification_date: Math.floor(Date.now() / 1000),
             };
-            if (created.id) {
-              charDiskFileNamesRef.current.set(created.id, assignedFile);
-            }
-            activeCharacterIdRef.current = created.id!;
-            latestWorkspaceRef.current.activeCharacterId = created.id!;
-            setActiveCharacterIdState(created.id!);
-            nextList = [created];
-          } else {
-            const targetId = activeCharacterIdRef.current || prev[0]?.id || '';
-            nextList = prev.map((c) => {
-              if (c.id !== targetId) return c;
-              const next = normalizeCharacterTagsWithCatalog(
-                typeof updater === 'function' ? updater(c) : updater,
-                currentTags
-              );
-              const autoNsfw = isCharacterNsfw(next, currentTags);
-              return {
-                ...next,
-                id: c.id,
-                isNsfw: autoNsfw,
-                modification_date: Math.floor(Date.now() / 1000),
-              };
-            });
-          }
-          charactersRef.current = nextList;
-          latestWorkspaceRef.current.characters = nextList;
-          return nextList;
-        });
+          });
+        }
+
+        charactersRef.current = nextList;
+        latestWorkspaceRef.current.characters = nextList;
+        setCharactersState(nextList);
+
+        if (nextActiveCharIdToSet) {
+          activeCharacterIdRef.current = nextActiveCharIdToSet;
+          latestWorkspaceRef.current.activeCharacterId = nextActiveCharIdToSet;
+          setActiveCharacterIdState(nextActiveCharIdToSet);
+        }
       },
-      []
+      [markDirtyChange]
     );
 
   const updateCharacterField = useCallback(
@@ -5168,7 +5646,6 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
           },
           tagsRef.current
         );
-        updated.isNsfw = isCharacterNsfw(updated, tagsRef.current);
         return updated;
       });
     },
@@ -5198,57 +5675,92 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
   const setLorebook: React.Dispatch<React.SetStateAction<Lorebook>> =
     useCallback(
       (updater) => {
-        diskMutationVersionRef.current += 1;
-        setLorebooksState((prev) => {
-          const currentTags = tagsRef.current;
-          let nextList: Lorebook[];
-          if (prev.length === 0) {
-            const freshBase = createBlankLorebook();
+        markDirtyChange(true);
+        const currentBooks = lorebooksRef.current;
+        const currentTags = tagsRef.current;
+        let nextActiveBookIdToSet: string | null = null;
+        let updatedBook: Lorebook | null = null;
+        let nextList: Lorebook[];
+
+        if (currentBooks.length === 0) {
+          const freshBase = createBlankLorebook();
+          const next = normalizeLorebookTagsWithCatalog(
+            typeof updater === 'function' ? updater(freshBase) : updater,
+            currentTags
+          );
+          const manualIsNsfw = Boolean(next.isNsfw);
+          const assignedFile =
+            next.savedFileName ||
+            ensureUniqueSavedFileName(next.name, new Set(), 'lorebook');
+          const created: Lorebook = {
+            ...next,
+            id: freshBase.id,
+            savedFileName: assignedFile,
+            isNsfw: manualIsNsfw,
+            modification_date: Math.floor(Date.now() / 1000),
+          };
+          if (created.id) {
+            loreDiskFileNamesRef.current.set(created.id, assignedFile);
+            nextActiveBookIdToSet = created.id;
+          }
+          updatedBook = created;
+          nextList = [created];
+        } else {
+          const matchedTarget =
+            currentBooks.find((l) => l.id === activeLorebookIdRef.current) ||
+            currentBooks[0];
+          const targetId = matchedTarget.id;
+          nextList = currentBooks.map((l) => {
+            if (l.id !== targetId) return l;
             const next = normalizeLorebookTagsWithCatalog(
-              typeof updater === 'function' ? updater(freshBase) : updater,
+              typeof updater === 'function' ? updater(l) : updater,
               currentTags
             );
-            const autoNsfw = isLorebookNsfw(next, currentTags);
-            const assignedFile =
-              next.savedFileName ||
-              ensureUniqueSavedFileName(next.name, new Set(), 'lorebook');
-            const created: Lorebook = {
+            const manualIsNsfw = Boolean(next.isNsfw);
+            const resolved: Lorebook = {
               ...next,
-              id: freshBase.id,
-              savedFileName: assignedFile,
-              isNsfw: autoNsfw,
+              id: l.id,
+              isNsfw: manualIsNsfw,
               modification_date: Math.floor(Date.now() / 1000),
             };
-            if (created.id) {
-              loreDiskFileNamesRef.current.set(created.id, assignedFile);
-            }
-            activeLorebookIdRef.current = created.id!;
-            latestWorkspaceRef.current.activeLorebookId = created.id!;
-            setActiveLorebookIdState(created.id!);
-            nextList = [created];
-          } else {
-            const targetId = activeLorebookIdRef.current || prev[0]?.id || '';
-            nextList = prev.map((l) => {
-              if (l.id !== targetId) return l;
-              const next = normalizeLorebookTagsWithCatalog(
-                typeof updater === 'function' ? updater(l) : updater,
-                currentTags
-              );
-              const autoNsfw = isLorebookNsfw(next, currentTags);
-              return {
-                ...next,
-                id: l.id,
-                isNsfw: autoNsfw,
-                modification_date: Math.floor(Date.now() / 1000),
-              };
-            });
+            updatedBook = resolved;
+            return resolved;
+          });
+        }
+
+        lorebooksRef.current = nextList;
+        latestWorkspaceRef.current.lorebooks = nextList;
+        setLorebooksState(nextList);
+
+        if (nextActiveBookIdToSet) {
+          activeLorebookIdRef.current = nextActiveBookIdToSet;
+          latestWorkspaceRef.current.activeLorebookId = nextActiveBookIdToSet;
+          setActiveLorebookIdState(nextActiveBookIdToSet);
+        }
+
+        // Keep ALL characters linked to this lorebook ID synced with the latest lorebook state
+        if (updatedBook && updatedBook.id) {
+          const syncedBook = updatedBook;
+          const currentChars = charactersRef.current;
+          const hasLinkedChars = currentChars.some(
+            (c) => c.character_book?.id === syncedBook.id
+          );
+          if (hasLinkedChars) {
+            const nextChars = currentChars.map((c) =>
+              c.character_book?.id === syncedBook.id
+                ? {
+                    ...c,
+                    character_book: syncedBook,
+                  }
+                : c
+            );
+            charactersRef.current = nextChars;
+            latestWorkspaceRef.current.characters = nextChars;
+            setCharactersState(nextChars);
           }
-          lorebooksRef.current = nextList;
-          latestWorkspaceRef.current.lorebooks = nextList;
-          return nextList;
-        });
+        }
       },
-      []
+      [markDirtyChange]
     );
 
   // Keep a live ref of all workspace state for atomic saves
@@ -5304,8 +5816,9 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
 
   /**
    * Core serialized disk save helper (`POST /api/disk/save`) using the latest synchronous refs.
-   * React state is the single source of truth after initial mount; `saveToDisk` writes state to disk
-   * and ONLY updates the read-only Options file list & saved timestamp (never overwriting characters/lorebooks/tags/themes).
+   * React state is the single source of truth after initial mount; `saveToDisk` writes state to `./Saves/`
+   * and ONLY updates the read-only Options file list & saved timestamp (never overwriting workspace state).
+   * API keys are saved separately to `./.tavernsmith-app/` via `/api/vault`.
    */
   const runDiskSaveRequest = useCallback(
     async (
@@ -5318,6 +5831,13 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
       },
       expectedVersion?: number
     ): Promise<{ ok: boolean; message: string }> => {
+      if (mode === 'autosave' && !diskHydrationSucceededRef.current) {
+        return {
+          ok: false,
+          message: 'Skipped autosave until initial ./Saves/ sync succeeds.',
+        };
+      }
+
       const charsToSave = overrideState?.characters ?? charactersRef.current;
       const booksToSave = overrideState?.lorebooks ?? lorebooksRef.current;
       const themesToSave = overrideState?.themes ?? themesRef.current;
@@ -5383,6 +5903,15 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
       const usedLoreFiles = new Set<string>();
       const usedThemeFiles = new Set<string>();
       const usedTagFiles = new Set<string>();
+      const stagedCharFiles = new Map<string, string>();
+      const stagedLoreFiles = new Map<string, string>();
+      const stagedThemeFiles = new Map<string, string>();
+      const stagedTagFiles = new Map<string, string>();
+
+      const bookById = new Map<string, Lorebook>();
+      for (const lb of booksToSave) {
+        if (lb.id) bookById.set(lb.id, lb);
+      }
 
       const characterPayloads = charsToSave.map((c) => {
         const oldFileName =
@@ -5394,12 +5923,15 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
           'character'
         );
         if (c.id) {
-          charDiskFileNamesRef.current.set(c.id, fileName);
+          stagedCharFiles.set(c.id, fileName);
         }
+        const resolvedBook = c.character_book?.id
+          ? bookById.get(c.character_book.id) || c.character_book
+          : c.character_book;
         const payload = serializeCharacterCard(
           { ...c, savedFileName: fileName },
           settingsToSave.cardSpecVersion,
-          c.character_book
+          resolvedBook
         );
         return {
           fileName,
@@ -5418,7 +5950,7 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
           'lorebook'
         );
         if (lb.id) {
-          loreDiskFileNamesRef.current.set(lb.id, fileName);
+          stagedLoreFiles.set(lb.id, fileName);
         }
         const payload = serializeLorebookCard({
           ...lb,
@@ -5443,7 +5975,7 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
           'theme'
         );
         if (th.id) {
-          themeDiskFileNamesRef.current.set(th.id, fileName);
+          stagedThemeFiles.set(th.id, fileName);
         }
         const compactPayload = {
           ...compactThemeForStorage(th),
@@ -5468,11 +6000,11 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
           'tag'
         );
         if (tg.id) {
-          tagDiskFileNamesRef.current.set(tg.id, fileName);
+          stagedTagFiles.set(tg.id, fileName);
         }
-        const builtInMatch = builtInTagByNameMap.get(
-          tg.name.trim().toLowerCase()
-        );
+        const builtInMatch =
+          builtInTagByNameMap.get(tg.name.trim().toLowerCase()) ||
+          builtInTagByIdMap.get((tg.id || '').trim().toLowerCase());
         const compactPayload = {
           ...compactTagForStorage(tg, builtInMatch),
           _tavernsmithType: 'tag',
@@ -5484,28 +6016,26 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
         };
       });
 
-      // Include custom/modified Themes and Tags in _tavernsmith_meta.json as a fallback mirror alongside ./Saves/Themes/ & ./Saves/Tags/
       const metaPayload: TavernSmithMetaPayload = {
         schema: 'tavernsmith_meta_v1',
         updatedAt: nowIso,
         activeThemeId: settingsToSave.activeThemeId,
-        settings: settingsToSave,
+        settings: {
+          ...settingsToSave,
+          activeSaveFolder: UNIFIED_INTERNAL_ROOT,
+          availableSaveFolders: DEFAULT_SAVE_FOLDERS,
+        },
         aiConfig: stripApiKeysForStorage(aiConfigToSave),
         activeCharacterId: activeCharId,
         activeLorebookId: activeBookId,
         contextThemes: customThemesToSave,
         tags: customTagsToSave,
+        deletedDefaultTagIds: [...deletedDefaultTagIdsRef.current],
+        deletedDefaultThemeIds: [...deletedDefaultThemeIdsRef.current],
       };
 
-      let vaultEnvelope = readEncryptedVaultEnvelope();
-      const inMemKeys = getInMemoryDecryptedKeys();
-      if (!vaultEnvelope && Object.keys(inMemKeys).length > 0) {
-        vaultEnvelope = await encryptAndSaveProviderKeys(
-          inMemKeys,
-          undefined,
-          true
-        );
-      }
+      // Flush any pending API key vault writes to separate ./.tavernsmith-app/ storage
+      await flushPendingVaultKeySave();
 
       try {
         const res = await fetch('/api/disk/save', {
@@ -5517,8 +6047,6 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
             themes: themePayloads,
             tags: tagPayloads,
             meta: metaPayload,
-            vault: vaultEnvelope || undefined,
-            customSavePath: settingsToSave.activeSaveFolder,
           }),
         });
 
@@ -5527,27 +6055,39 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
         }
 
         const diskState = (await res.json()) as DiskStateResponse;
+        if (!diskState || !diskState.ok) {
+          throw new Error(diskState?.error || 'Disk save failed');
+        }
+
+        // Only commit new disk filename mappings after server confirmed the write succeeded
+        stagedCharFiles.forEach((fn, id) => charDiskFileNamesRef.current.set(id, fn));
+        stagedLoreFiles.forEach((fn, id) => loreDiskFileNamesRef.current.set(id, fn));
+        stagedThemeFiles.forEach((fn, id) => themeDiskFileNamesRef.current.set(id, fn));
+        stagedTagFiles.forEach((fn, id) => tagDiskFileNamesRef.current.set(id, fn));
+        diskHydrationSucceededRef.current = true;
+
         const noConcurrentMutation =
           diskMutationVersionRef.current === versionAtStart;
-        if (diskState && diskState.ok) {
-          if (diskState.resolvedPath || diskState.diskRoot) {
-            setDiskResolvedPath(diskState.resolvedPath || diskState.diskRoot);
-          }
-          if (Array.isArray(diskState.files) && noConcurrentMutation) {
-            setDiskFiles(diskState.files);
-          }
-          if (diskState.updatedAt && noConcurrentMutation) {
-            setLastSavedAt(formatSafeTimestamp(diskState.updatedAt));
-          }
+        setDiskResolvedPath('./Saves/');
+        if (Array.isArray(diskState.files) && noConcurrentMutation) {
+          setDiskFiles(
+            diskState.files.filter(
+              (f) => f.kind !== 'vault' && f.fileName !== LEGACY_VAULT_FILENAME
+            )
+          );
+        }
+        if (diskState.updatedAt && noConcurrentMutation) {
+          setLastSavedAt(formatSafeTimestamp(diskState.updatedAt));
         }
         if (noConcurrentMutation) {
+          lastSyncedVersionRef.current = versionAtStart;
           latestWorkspaceRef.current.isDirty = false;
           setIsDirty(false);
         }
 
         return {
           ok: true,
-          message: `Saved to ${diskState.diskRoot || './Saves/'} (${characterPayloads.length} Characters, ${lorebookPayloads.length} Lorebooks, ${themePayloads.length} Themes, ${tagPayloads.length} Tags).`,
+          message: `Saved to ./Saves/ (${characterPayloads.length} Characters, ${lorebookPayloads.length} Lorebooks, ${themePayloads.length} Themes, ${tagPayloads.length} Tags).`,
         };
       } catch {
         return {
@@ -5578,7 +6118,7 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
 
   const createNewCharacter = useCallback(
     (partial?: Partial<CharacterCardData>) => {
-      diskMutationVersionRef.current += 1;
+      markDirtyChange(true);
       const opVersion = diskMutationVersionRef.current;
       const currentChars = charactersRef.current;
       const fresh = createBlankCharacter(partial);
@@ -5599,7 +6139,12 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
       );
       fresh.name = uniqueName;
       fresh.savedFileName = uniqueFileName;
-      fresh.isNsfw = isCharacterNsfw(fresh, tagsRef.current);
+      const manualIsNsfw = Boolean(partial?.isNsfw || partial?.extensions?.isNsfw);
+      fresh.isNsfw = manualIsNsfw;
+      fresh.extensions = {
+        ...(fresh.extensions || {}),
+        isNsfw: manualIsNsfw,
+      };
 
       if (fresh.id) {
         charDiskFileNamesRef.current.set(fresh.id, uniqueFileName);
@@ -5626,12 +6171,12 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
 
       return fresh.id!;
     },
-    [enqueueDiskOperation, runDiskSaveRequest]
+    [enqueueDiskOperation, markDirtyChange, runDiskSaveRequest]
   );
 
   const createNewLorebook = useCallback(
     (partial?: Partial<Lorebook>) => {
-      diskMutationVersionRef.current += 1;
+      markDirtyChange(true);
       const opVersion = diskMutationVersionRef.current;
       const currentBooks = lorebooksRef.current;
       const fresh = createBlankLorebook(partial);
@@ -5652,7 +6197,7 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
       );
       fresh.name = uniqueName;
       fresh.savedFileName = uniqueFileName;
-      fresh.isNsfw = isLorebookNsfw(fresh, tagsRef.current);
+      fresh.isNsfw = Boolean(partial?.isNsfw);
 
       if (fresh.id) {
         loreDiskFileNamesRef.current.set(fresh.id, uniqueFileName);
@@ -5679,13 +6224,13 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
 
       return fresh.id!;
     },
-    [enqueueDiskOperation, runDiskSaveRequest]
+    [enqueueDiskOperation, markDirtyChange, runDiskSaveRequest]
   );
 
   // Unified Character Delete (updates React state & synchronous refs immediately, deletes on disk, and mirrors exact remaining state)
   const deleteCharacter = useCallback(
     (id: string) => {
-      diskMutationVersionRef.current += 1;
+      markDirtyChange(true);
       const opVersion = diskMutationVersionRef.current;
 
       const currentChars = charactersRef.current;
@@ -5716,7 +6261,7 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
       setCharactersState(remaining);
       setActiveCharacterIdState(nextActiveCharId);
 
-      // Purge any cached drafts belonging to the deleted character
+      // Purge cached drafts and transient reference images belonging to the deleted character
       setWorkspaceDraftCache((prev) => {
         const nextSmart = { ...prev.smartEditorDrafts };
         for (const k of Object.keys(nextSmart)) {
@@ -5727,7 +6272,11 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
         return {
           ...prev,
           character: wasActive
-            ? { ...prev.character, activeGreetingIdx: 0 }
+            ? {
+                ...prev.character,
+                activeGreetingIdx: 0,
+                extraContextImages: [],
+              }
             : prev.character,
           smartEditorDrafts: nextSmart,
         };
@@ -5758,7 +6307,6 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
               savedFileName: target?.savedFileName || undefined,
               name: target?.name || undefined,
               id,
-              customSavePath: settingsRef.current.activeSaveFolder,
             }),
           });
         } catch {
@@ -5774,13 +6322,13 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
         );
       });
     },
-    [enqueueDiskOperation, runDiskSaveRequest]
+    [enqueueDiskOperation, markDirtyChange, runDiskSaveRequest]
   );
 
-  // Unified Lorebook Delete (updates React state & synchronous refs immediately, deletes on disk, and mirrors exact remaining state)
+  // Unified Lorebook Delete (updates React state & synchronous refs immediately, unlinks any referencing characters, and deletes on disk)
   const deleteLorebook = useCallback(
     (id: string) => {
-      diskMutationVersionRef.current += 1;
+      markDirtyChange(true);
       const opVersion = diskMutationVersionRef.current;
 
       const currentBooks = lorebooksRef.current;
@@ -5811,7 +6359,24 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
       setLorebooksState(remaining);
       setActiveLorebookIdState(nextActiveBookId);
 
-      // Purge any cached drafts belonging to the deleted lorebook
+      // Unlink deleted lorebook from any characters referencing it by ID
+      const currentChars = charactersRef.current;
+      if (currentChars.some((c) => c.character_book?.id === id)) {
+        const unlinkedChars = currentChars.map((c) =>
+          c.character_book?.id === id
+            ? {
+                ...c,
+                character_book: undefined,
+                modification_date: Math.floor(Date.now() / 1000),
+              }
+            : c
+        );
+        charactersRef.current = unlinkedChars;
+        latestWorkspaceRef.current.characters = unlinkedChars;
+        setCharactersState(unlinkedChars);
+      }
+
+      // Purge cached drafts and transient reference images belonging to the deleted lorebook
       setWorkspaceDraftCache((prev) => {
         const nextSmart = { ...prev.smartEditorDrafts };
         for (const k of Object.keys(nextSmart)) {
@@ -5825,6 +6390,8 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
             ? {
                 ...prev.lorebook,
                 selectedEntryId: remaining[0]?.entries[0]?.id ?? null,
+                extraContextImages: [],
+                loreTempRefImageUrl: undefined,
               }
             : prev.lorebook,
           smartEditorDrafts: nextSmart,
@@ -5856,7 +6423,6 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
               savedFileName: target?.savedFileName || undefined,
               name: target?.name || undefined,
               id,
-              customSavePath: settingsRef.current.activeSaveFolder,
             }),
           });
         } catch {
@@ -5872,7 +6438,7 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
         );
       });
     },
-    [enqueueDiskOperation, runDiskSaveRequest]
+    [enqueueDiskOperation, markDirtyChange, runDiskSaveRequest]
   );
 
   const THEME_SWATCHES = useMemo(
@@ -5891,7 +6457,7 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
 
   const createNewTheme = useCallback(
     (partial?: Partial<ContextTheme>): ContextTheme => {
-      diskMutationVersionRef.current += 1;
+      markDirtyChange(true);
       const opVersion = diskMutationVersionRef.current;
       const currentThemes = themesRef.current;
       const uniqueName = ensureUniqueEntityName(
@@ -5899,6 +6465,16 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
         currentThemes.map((t) => t.name || 'Custom Theme'),
         'Custom Theme'
       );
+      const lowerName = uniqueName.trim().toLowerCase();
+      const matchingBuiltIn = builtInThemeByNameMap.get(lowerName);
+      if (matchingBuiltIn) {
+        deletedDefaultThemeIdsRef.current = deletedDefaultThemeIdsRef.current.filter(
+          (delId) =>
+            delId.toLowerCase() !== matchingBuiltIn.id.toLowerCase() &&
+            delId.toLowerCase() !== lowerName
+        );
+      }
+
       const usedThemeFiles = new Set(
         currentThemes
           .map((t) =>
@@ -5921,10 +6497,10 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
           `theme-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
         savedFileName: uniqueFileName,
         name: uniqueName,
-        color:
-          partial?.color ||
-          THEME_SWATCHES[currentThemes.length % THEME_SWATCHES.length] ||
-          '#ec4899',
+        color: sanitizeCssHexColor(
+          partial?.color,
+          THEME_SWATCHES[currentThemes.length % THEME_SWATCHES.length] || '#ec4899'
+        ),
         aiContextPrompt:
           partial?.aiContextPrompt ??
           `Write in a compelling ${uniqueName} style with strong atmospheric detail.`,
@@ -5940,9 +6516,11 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
       latestWorkspaceRef.current.themes = nextThemes;
       setThemesState(nextThemes);
 
-      const nextSettings = {
+      const nextSettings: AppSettings = {
         ...settingsRef.current,
         activeThemeId: created.id,
+        activeSaveFolder: UNIFIED_INTERNAL_ROOT,
+        availableSaveFolders: DEFAULT_SAVE_FOLDERS,
       };
       settingsRef.current = nextSettings;
       latestWorkspaceRef.current.settings = nextSettings;
@@ -5963,7 +6541,7 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
 
       return created;
     },
-    [THEME_SWATCHES, enqueueDiskOperation, runDiskSaveRequest]
+    [THEME_SWATCHES, enqueueDiskOperation, markDirtyChange, runDiskSaveRequest]
   );
 
   const updateTheme = useCallback(
@@ -5972,9 +6550,7 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
       const target = currentThemes.find((t) => t.id === id);
       if (!target) return;
 
-      diskMutationVersionRef.current += 1;
-      latestWorkspaceRef.current.isDirty = true;
-      setIsDirty(true);
+      markDirtyChange(true);
 
       const usedThemeFiles = new Set(
         currentThemes
@@ -6005,11 +6581,17 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
         ? sortTagsByContextOrder(partial.associatedTags, tagsRef.current)
         : undefined;
 
+      const sanitizedColor =
+        partial.color !== undefined
+          ? sanitizeCssHexColor(partial.color, target.color)
+          : target.color;
+
       const nextThemes = currentThemes.map((t) =>
         t.id === id
           ? {
               ...t,
               ...partial,
+              color: sanitizedColor,
               ...(sortedAssociatedTags !== undefined
                 ? { associatedTags: sortedAssociatedTags }
                 : {}),
@@ -6042,7 +6624,7 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
         );
       }, 300);
     },
-    [enqueueDiskOperation, runDiskSaveRequest]
+    [enqueueDiskOperation, markDirtyChange, runDiskSaveRequest]
   );
 
   const deleteTheme = useCallback(
@@ -6051,7 +6633,12 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
       const target = currentThemes.find((t) => t.id === id);
       if (!target) return;
 
-      diskMutationVersionRef.current += 1;
+      if (themeSaveTimerRef.current !== null) {
+        window.clearTimeout(themeSaveTimerRef.current);
+        themeSaveTimerRef.current = null;
+      }
+
+      markDirtyChange(true);
       const opVersion = diskMutationVersionRef.current;
 
       const diskFileName =
@@ -6060,28 +6647,44 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
         `${sanitizeFilename(target.name)}.json`;
 
       let nextThemes: ContextTheme[];
-      if (target.isBuiltIn || currentThemes.length <= 1) {
-        // Built-in theme: reset customization back to source default & remove disk override file
+      if (currentThemes.length <= 1) {
+        // Always retain at least one active theme (revert to stock Basic default)
         const builtInDefault =
           builtInThemeByIdMap.get(id.toLowerCase()) ||
           builtInThemeByNameMap.get(target.name.trim().toLowerCase()) ||
           DEFAULT_CONTEXT_THEMES[0];
-        nextThemes = currentThemes.map((t) =>
-          t.id === id
-            ? {
-                ...builtInDefault,
-                associatedTags: [...(builtInDefault.associatedTags || [])],
-              }
-            : t
-        );
+        themeDiskFileNamesRef.current.delete(id);
+        nextThemes = [
+          {
+            ...builtInDefault,
+            associatedTags: [...(builtInDefault.associatedTags || [])],
+          },
+        ];
       } else {
         themeDiskFileNamesRef.current.delete(id);
+        const builtInMatch =
+          builtInThemeByIdMap.get(id.toLowerCase()) ||
+          builtInThemeByNameMap.get(target.name.trim().toLowerCase());
+        if (builtInMatch) {
+          if (
+            !deletedDefaultThemeIdsRef.current.some(
+              (d) => d.toLowerCase() === builtInMatch.id.toLowerCase()
+            )
+          ) {
+            deletedDefaultThemeIdsRef.current = [
+              ...deletedDefaultThemeIdsRef.current,
+              builtInMatch.id,
+            ];
+          }
+        }
         nextThemes = currentThemes.filter((t) => t.id !== id);
         if (settingsRef.current.activeThemeId === id) {
           const nextActiveId = nextThemes[0]?.id || 'theme-basic';
-          const nextSettings = {
+          const nextSettings: AppSettings = {
             ...settingsRef.current,
             activeThemeId: nextActiveId,
+            activeSaveFolder: UNIFIED_INTERNAL_ROOT,
+            availableSaveFolders: DEFAULT_SAVE_FOLDERS,
           };
           settingsRef.current = nextSettings;
           latestWorkspaceRef.current.settings = nextSettings;
@@ -6092,6 +6695,9 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
       themesRef.current = nextThemes;
       latestWorkspaceRef.current.themes = nextThemes;
       setThemesState(nextThemes);
+
+      // Purge any SmartEditor drafts scoped to the deleted theme
+      purgeSmartEditorDraftsByPrefix(`theme:${id}:`);
 
       setDiskFiles((prev) =>
         prev.filter(
@@ -6115,7 +6721,6 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
               savedFileName: target.savedFileName || undefined,
               name: target.name || undefined,
               id,
-              customSavePath: settingsRef.current.activeSaveFolder,
             }),
           });
         } catch {
@@ -6133,7 +6738,12 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
         );
       });
     },
-    [enqueueDiskOperation, runDiskSaveRequest]
+    [
+      enqueueDiskOperation,
+      markDirtyChange,
+      purgeSmartEditorDraftsByPrefix,
+      runDiskSaveRequest,
+    ]
   );
 
   const upsertCustomTag = useCallback(
@@ -6145,22 +6755,49 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
       isNsfw: boolean;
       aiContextDescription: string;
     }): { updatedExisting: boolean; tag: TagDefinition } => {
-      diskMutationVersionRef.current += 1;
+      markDirtyChange(true);
       const opVersion = diskMutationVersionRef.current;
 
       const cleanName = input.name.trim() || 'Custom Tag';
+      const cleanLower = cleanName.toLowerCase();
       const cleanDesc =
         input.aiContextDescription.trim() ||
         (input.isNsfw
           ? `Explicit 18+ directive for "${cleanName}": incorporate vivid sensory and thematic elements consistent with "${cleanName}".`
           : `Incorporate thematic, tonal, and character elements consistent with "${cleanName}".`);
 
-      const currentTags = tagsRef.current;
-      const existing =
-        (input.id ? currentTags.find((t) => t.id === input.id) : undefined) ||
-        currentTags.find(
-          (t) => t.name.trim().toLowerCase() === cleanName.toLowerCase()
+      // If re-adding a previously deleted built-in tag, remove it from deletedDefaultTagIds
+      const builtInMatchByName = builtInTagByNameMap.get(cleanLower);
+      if (builtInMatchByName) {
+        deletedDefaultTagIdsRef.current = deletedDefaultTagIdsRef.current.filter(
+          (delId) =>
+            delId.toLowerCase() !== builtInMatchByName.id.toLowerCase() &&
+            delId.toLowerCase() !== cleanLower
         );
+      }
+
+      const currentTags = tagsRef.current;
+      const existingById = input.id
+        ? currentTags.find((t) => t.id === input.id)
+        : undefined;
+      const existingByName = currentTags.find(
+        (t) => t.name.trim().toLowerCase() === cleanLower
+      );
+      const existing = existingById || existingByName;
+
+      // Prevent duplicate tag names when renaming an existing tag to match another existing tag's name
+      const finalName =
+        existingById &&
+        existingByName &&
+        existingById.id !== existingByName.id
+          ? ensureUniqueEntityName(
+              cleanName,
+              currentTags
+                .filter((t) => t.id !== existingById.id)
+                .map((t) => t.name),
+              cleanName
+            )
+          : cleanName;
 
       const usedTagFiles = new Set(
         currentTags
@@ -6177,7 +6814,7 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
 
       const resolvedCategory = migrateLegacyTagCategory(
         input.category || existing?.category || 'Custom',
-        cleanName,
+        finalName,
         cleanDesc
       );
       const resolvedIsNsfw =
@@ -6185,17 +6822,20 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
 
       let resultTag: TagDefinition;
       let nextTags: TagDefinition[];
+      const previousNameLower = existing
+        ? existing.name.trim().toLowerCase()
+        : '';
 
       if (existing) {
         const assignedFile =
           existing.savedFileName ||
           tagDiskFileNamesRef.current.get(existing.id) ||
-          ensureUniqueSavedFileName(cleanName, usedTagFiles, 'tag');
+          ensureUniqueSavedFileName(finalName, usedTagFiles, 'tag');
         resultTag = {
           ...existing,
-          name: cleanName,
+          name: finalName,
           savedFileName: assignedFile,
-          color: input.color || existing.color,
+          color: sanitizeCssHexColor(input.color, existing.color),
           category: resolvedCategory,
           isNsfw: resolvedIsNsfw,
           aiContextDescription: cleanDesc,
@@ -6209,17 +6849,18 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
       } else {
         const newId =
           input.id ||
+          builtInMatchByName?.id ||
           `tag-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
         const assignedFile = ensureUniqueSavedFileName(
-          cleanName,
+          finalName,
           usedTagFiles,
           'tag'
         );
         resultTag = {
           id: newId,
           savedFileName: assignedFile,
-          name: cleanName,
-          color: input.color || '#a855f7',
+          name: finalName,
+          color: sanitizeCssHexColor(input.color, '#a855f7'),
           category: resolvedCategory,
           isNsfw: resolvedIsNsfw,
           aiContextDescription: cleanDesc,
@@ -6234,24 +6875,65 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
       latestWorkspaceRef.current.tags = nextTags;
       setTagsState(nextTags);
 
-      // Keep attached project tags sorted if a tag's category changed
-      if (existing && existing.category !== resultTag.category) {
-        const reorderedChars = charactersRef.current.map((c) =>
-          normalizeCharacterTagsWithCatalog(c, nextTags)
+      const wasRenamed =
+        Boolean(existing) &&
+        previousNameLower !== '' &&
+        previousNameLower !== finalName.trim().toLowerCase();
+
+      const replaceTagListName = (list?: string[]): string[] => {
+        if (!Array.isArray(list)) return [];
+        if (!wasRenamed) return list;
+        const mapped = list.map((t) =>
+          t.trim().toLowerCase() === previousNameLower ? finalName : t
         );
+        return Array.from(new Set(mapped));
+      };
+
+      // Propagate tag rename or category reorder across all characters, lorebooks, entries, and themes
+      if (wasRenamed || (existing && existing.category !== resultTag.category)) {
+        const reorderedChars = charactersRef.current.map((c) => {
+          const updatedChar: CharacterCardData = wasRenamed
+            ? {
+                ...c,
+                tags: replaceTagListName(c.tags),
+                character_book: c.character_book
+                  ? {
+                      ...c.character_book,
+                      tags: replaceTagListName(c.character_book.tags),
+                      entries: (c.character_book.entries || []).map((e) => ({
+                        ...e,
+                        tags: replaceTagListName(e.tags),
+                      })),
+                    }
+                  : undefined,
+              }
+            : c;
+          return normalizeCharacterTagsWithCatalog(updatedChar, nextTags);
+        });
         charactersRef.current = reorderedChars;
         latestWorkspaceRef.current.characters = reorderedChars;
         setCharactersState(reorderedChars);
 
-        const reorderedBooks = lorebooksRef.current.map((l) =>
-          normalizeLorebookTagsWithCatalog(l, nextTags)
-        );
+        const reorderedBooks = lorebooksRef.current.map((l) => {
+          const updatedBook: Lorebook = wasRenamed
+            ? {
+                ...l,
+                tags: replaceTagListName(l.tags),
+                entries: (l.entries || []).map((e) => ({
+                  ...e,
+                  tags: replaceTagListName(e.tags),
+                })),
+              }
+            : l;
+          return normalizeLorebookTagsWithCatalog(updatedBook, nextTags);
+        });
         lorebooksRef.current = reorderedBooks;
         latestWorkspaceRef.current.lorebooks = reorderedBooks;
         setLorebooksState(reorderedBooks);
 
         const reorderedThemes = themesRef.current.map((th) => {
-          const sorted = sortTagsByContextOrder(th.associatedTags || [], nextTags);
+          const updatedAssoc = replaceTagListName(th.associatedTags);
+          const sorted = sortTagsByContextOrder(updatedAssoc, nextTags);
           return stringArraysEqual(th.associatedTags || [], sorted)
             ? th
             : { ...th, associatedTags: sorted };
@@ -6276,7 +6958,7 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
 
       return { updatedExisting: Boolean(existing), tag: resultTag };
     },
-    [enqueueDiskOperation, runDiskSaveRequest]
+    [enqueueDiskOperation, markDirtyChange, runDiskSaveRequest]
   );
 
   const toggleTagNsfw = useCallback(
@@ -6286,7 +6968,7 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
       if (!target) return;
       if ((target.category || '').toLowerCase() === 'genitals') return;
 
-      diskMutationVersionRef.current += 1;
+      markDirtyChange(true);
       const opVersion = diskMutationVersionRef.current;
 
       const nextIsNsfw = !isTagNsfwFlagged(target);
@@ -6318,40 +7000,148 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
         )
       );
     },
-    [enqueueDiskOperation, runDiskSaveRequest]
+    [enqueueDiskOperation, markDirtyChange, runDiskSaveRequest]
   );
 
+  /**
+   * Globally deletes a tag (custom or built-in) and strips ("yeets") it from EVERY character,
+   * lorebook, lorebook entry, and context theme in the workspace so it never resurrects.
+   * Deleted built-in tag IDs are persisted in `_tavernsmith_meta.json` and only return on Reset Defaults.
+   */
   const deleteTag = useCallback(
     (id: string) => {
       const currentTags = tagsRef.current;
       const target = currentTags.find((t) => t.id === id);
       if (!target) return;
 
-      diskMutationVersionRef.current += 1;
+      markDirtyChange(true);
       const opVersion = diskMutationVersionRef.current;
 
+      const targetNameLower = target.name.trim().toLowerCase();
       const diskFileName =
         tagDiskFileNamesRef.current.get(id) ||
         target.savedFileName ||
         `${sanitizeFilename(target.name)}.json`;
 
-      const builtInMatch = builtInTagByNameMap.get(
-        target.name.trim().toLowerCase()
-      );
-      let nextTags: TagDefinition[];
+      const builtInMatch =
+        builtInTagByIdMap.get(id.toLowerCase()) ||
+        builtInTagByNameMap.get(targetNameLower);
       if (builtInMatch) {
-        // Built-in tag override deleted from disk -> revert to clean source built-in default
-        tagDiskFileNamesRef.current.delete(id);
-        nextTags = currentTags.map((t) =>
-          t.id === id ? { ...builtInMatch } : t
-        );
-      } else {
-        tagDiskFileNamesRef.current.delete(id);
-        nextTags = currentTags.filter((t) => t.id !== id);
+        if (
+          !deletedDefaultTagIdsRef.current.some(
+            (d) => d.toLowerCase() === builtInMatch.id.toLowerCase()
+          )
+        ) {
+          deletedDefaultTagIdsRef.current = [
+            ...deletedDefaultTagIdsRef.current,
+            builtInMatch.id,
+          ];
+        }
       }
+
+      tagDiskFileNamesRef.current.delete(id);
+      const nextTags = currentTags.filter((t) => t.id !== id);
+
+      const stripDeletedTag = (list?: string[]): string[] => {
+        if (!Array.isArray(list)) return [];
+        return list.filter((t) => t.trim().toLowerCase() !== targetNameLower);
+      };
+
+      const nextLorebooks = lorebooksRef.current.map((lb) => {
+        const filteredBookTags = stripDeletedTag(lb.tags);
+        let entriesChanged = false;
+        const filteredEntries = (lb.entries || []).map((entry) => {
+          if (!Array.isArray(entry.tags) || entry.tags.length === 0) {
+            return entry;
+          }
+          const filtered = stripDeletedTag(entry.tags);
+          if (filtered.length !== entry.tags.length) {
+            entriesChanged = true;
+            return { ...entry, tags: filtered };
+          }
+          return entry;
+        });
+        if (
+          !entriesChanged &&
+          filteredBookTags.length === (lb.tags || []).length
+        ) {
+          return lb;
+        }
+        return {
+          ...lb,
+          tags: filteredBookTags,
+          entries: filteredEntries,
+          modification_date: Math.floor(Date.now() / 1000),
+        };
+      });
+
+      const nextCharacters = charactersRef.current.map((c) => {
+        const filteredCharTags = stripDeletedTag(c.tags);
+        let bookChanged = false;
+        let nextBook = c.character_book;
+        if (c.character_book) {
+          const filteredBookTags = stripDeletedTag(c.character_book.tags);
+          let entriesChanged = false;
+          const filteredEntries = (c.character_book.entries || []).map((entry) => {
+            if (!Array.isArray(entry.tags) || entry.tags.length === 0) {
+              return entry;
+            }
+            const filtered = stripDeletedTag(entry.tags);
+            if (filtered.length !== entry.tags.length) {
+              entriesChanged = true;
+              return { ...entry, tags: filtered };
+            }
+            return entry;
+          });
+          if (
+            entriesChanged ||
+            filteredBookTags.length !== (c.character_book.tags || []).length
+          ) {
+            bookChanged = true;
+            nextBook = {
+              ...c.character_book,
+              tags: filteredBookTags,
+              entries: filteredEntries,
+            };
+          }
+        }
+        if (
+          !bookChanged &&
+          filteredCharTags.length === (c.tags || []).length
+        ) {
+          return c;
+        }
+        return {
+          ...c,
+          tags: filteredCharTags,
+          character_book: nextBook,
+          modification_date: Math.floor(Date.now() / 1000),
+        };
+      });
+
+      const nextThemes = themesRef.current.map((th) => {
+        const filteredAssoc = stripDeletedTag(th.associatedTags);
+        if (filteredAssoc.length === (th.associatedTags || []).length) {
+          return th;
+        }
+        return {
+          ...th,
+          associatedTags: filteredAssoc,
+        };
+      });
 
       tagsRef.current = nextTags;
       latestWorkspaceRef.current.tags = nextTags;
+      lorebooksRef.current = nextLorebooks;
+      latestWorkspaceRef.current.lorebooks = nextLorebooks;
+      charactersRef.current = nextCharacters;
+      latestWorkspaceRef.current.characters = nextCharacters;
+      themesRef.current = nextThemes;
+      latestWorkspaceRef.current.themes = nextThemes;
+
+      setLorebooksState(nextLorebooks);
+      setCharactersState(nextCharacters);
+      setThemesState(nextThemes);
       setTagsState(nextTags);
 
       setDiskFiles((prev) =>
@@ -6376,7 +7166,6 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
               savedFileName: target.savedFileName || undefined,
               name: target.name || undefined,
               id,
-              customSavePath: settingsRef.current.activeSaveFolder,
             }),
           });
         } catch {
@@ -6394,7 +7183,7 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
         );
       });
     },
-    [enqueueDiskOperation, runDiskSaveRequest]
+    [enqueueDiskOperation, markDirtyChange, runDiskSaveRequest]
   );
 
   const saveNow = useCallback(
@@ -6414,12 +7203,23 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
   // Auto-Save Timer & Blur/Visibility Flush -> Uses Web Worker so switching windows never throttles or pauses Auto-Save
   useEffect(() => {
     if (!settings.autoSaveEnabled) return;
-    const intervalMs = Math.max(5, settings.autoSaveIntervalSec) * 1000;
+    const safeSec = Number.isFinite(settings.autoSaveIntervalSec)
+      ? Math.max(5, Math.min(3600, Math.round(settings.autoSaveIntervalSec)))
+      : 15;
+    const intervalMs = safeSec * 1000;
 
     const triggerAutoSaveIfDirty = () => {
-      if (latestWorkspaceRef.current.isDirty) {
-        void executeDiskSaveAndRescan('autosave');
+      if (
+        !latestWorkspaceRef.current.isDirty ||
+        autosaveInFlightRef.current ||
+        !diskHydrationSucceededRef.current
+      ) {
+        return;
       }
+      autosaveInFlightRef.current = true;
+      void executeDiskSaveAndRescan('autosave').finally(() => {
+        autosaveInFlightRef.current = false;
+      });
     };
 
     let worker: Worker | null = null;
@@ -6438,6 +7238,22 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
           triggerAutoSaveIfDirty();
         };
         worker.onerror = () => {
+          if (worker) {
+            try {
+              worker.terminate();
+            } catch {
+              // Ignore terminate error
+            }
+            worker = null;
+          }
+          if (workerBlobUrl) {
+            try {
+              URL.revokeObjectURL(workerBlobUrl);
+            } catch {
+              // Ignore revoke error
+            }
+            workerBlobUrl = null;
+          }
           if (fallbackTimerId === null) {
             fallbackTimerId = window.setInterval(
               triggerAutoSaveIfDirty,
@@ -6446,6 +7262,14 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
           }
         };
       } catch {
+        if (workerBlobUrl) {
+          try {
+            URL.revokeObjectURL(workerBlobUrl);
+          } catch {
+            // Ignore revoke error
+          }
+          workerBlobUrl = null;
+        }
         fallbackTimerId = window.setInterval(
           triggerAutoSaveIfDirty,
           intervalMs
@@ -6496,35 +7320,30 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
     executeDiskSaveAndRescan,
   ]);
 
+  // Single locked `./Saves/` root with subfolders (`Characters/`, `Lorebooks/`, `Themes/`, `Tags/`)
   const createSaveFolder = useCallback(
-    (rawPath: string) => {
-      const clean = rawPath.trim() || UNIFIED_INTERNAL_ROOT;
+    (_rawPath: string) => {
       setSettings((prev) => ({
         ...prev,
-        activeSaveFolder: clean,
-        availableSaveFolders: Array.from(
-          new Set([UNIFIED_INTERNAL_ROOT, clean])
-        ),
+        activeSaveFolder: UNIFIED_INTERNAL_ROOT,
+        availableSaveFolders: DEFAULT_SAVE_FOLDERS,
       }));
-      void fetch(
-        `/api/disk/state?customSavePath=${encodeURIComponent(clean)}`,
-        {
-          method: 'GET',
-          headers: { Accept: 'application/json' },
-          cache: 'no-store',
-        }
-      )
-        .then((r) => r.json())
-        .then((diskState: DiskStateResponse) => {
+      void fetch('/api/disk/state', {
+        method: 'GET',
+        headers: { Accept: 'application/json' },
+        cache: 'no-store',
+      })
+        .then((r) => (r.ok ? r.json() : null))
+        .then((diskState: DiskStateResponse | null) => {
           if (diskState && diskState.ok) {
             void applyDiskStateToWorkspace(diskState);
           }
         })
         .catch(() => {
-          // Ignore error
+          // Ignore transient rescan error
         });
     },
-    [applyDiskStateToWorkspace]
+    [applyDiskStateToWorkspace, setSettings]
   );
 
   const setActiveSaveFolder = useCallback(
@@ -6547,14 +7366,25 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
           const parsedMeta = JSON.parse(
             file.content
           ) as Partial<TavernSmithMetaPayload>;
+          let nextTags = tagsRef.current;
           if (Array.isArray(parsedMeta.tags) && parsedMeta.tags.length > 0) {
-            setTags(mergeWithDefaultTags(parsedMeta.tags));
+            nextTags = mergeWithDefaultTags(
+              [...extractCustomUserTags(tagsRef.current), ...parsedMeta.tags],
+              deletedDefaultTagIdsRef.current
+            );
+            setTags(nextTags);
           }
           if (
             Array.isArray(parsedMeta.contextThemes) &&
             parsedMeta.contextThemes.length > 0
           ) {
-            setThemes(parsedMeta.contextThemes);
+            setThemes(
+              mergeWithDefaultThemes(
+                [...themesRef.current, ...parsedMeta.contextThemes],
+                nextTags,
+                deletedDefaultThemeIdsRef.current
+              )
+            );
           }
           return {
             ok: true,
@@ -6562,10 +7392,14 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
           };
         }
 
-        if (file.kind === 'vault' || file.fileName === VAULT_FILENAME) {
+        if (
+          file.kind === 'vault' ||
+          file.fileName === VAULT_FILENAME ||
+          file.fileName === LEGACY_VAULT_FILENAME
+        ) {
           return {
             ok: true,
-            message: `AES-256-GCM key vault (${VAULT_FILENAME}) is active.`,
+            message: `AES-256-GCM API key vault is stored separately in ./.tavernsmith-app/${VAULT_FILENAME}.`,
           };
         }
 
@@ -6574,30 +7408,41 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
             string,
             unknown
           >;
-          const normalized = normalizeIncomingTheme({
-            ...parsedThemeRaw,
-            _diskFileName: file.fileName,
-          });
+          const normalized = normalizeIncomingTheme(
+            {
+              ...parsedThemeRaw,
+              _diskFileName: file.fileName,
+            },
+            tagsRef.current
+          );
           if (!normalized) {
             return {
               ok: false,
               message: `Could not read theme from ${file.fileName}.`,
             };
           }
-          const nextThemes = mergeWithDefaultThemes([
-            ...themesRef.current,
-            normalized,
-          ]);
+          // If reloading a previously deleted built-in theme, unmark it as deleted
+          const lowerThemeName = normalized.name.trim().toLowerCase();
+          deletedDefaultThemeIdsRef.current = deletedDefaultThemeIdsRef.current.filter(
+            (delId) =>
+              delId.toLowerCase() !== normalized.id.toLowerCase() &&
+              delId.toLowerCase() !== lowerThemeName
+          );
+          const nextThemes = mergeWithDefaultThemes(
+            [...themesRef.current, normalized],
+            tagsRef.current,
+            deletedDefaultThemeIdsRef.current
+          );
           const matched =
             nextThemes.find(
               (t) =>
                 t.id === normalized.id ||
-                t.name.trim().toLowerCase() ===
-                  normalized.name.trim().toLowerCase()
+                t.name.trim().toLowerCase() === lowerThemeName
             ) || normalized;
           if (matched.savedFileName) {
             themeDiskFileNamesRef.current.set(matched.id, matched.savedFileName);
           }
+          markDirtyChange(true);
           themesRef.current = nextThemes;
           latestWorkspaceRef.current.themes = nextThemes;
           setThemesState(nextThemes);
@@ -6614,21 +7459,36 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
             string,
             unknown
           >;
-          const nextTags = mergeWithDefaultTags([
-            ...extractCustomUserTags(tagsRef.current),
-            {
-              ...parsedTagRaw,
-              _diskFileName: file.fileName,
-            },
-          ]);
           const rawName =
             typeof parsedTagRaw.name === 'string' ? parsedTagRaw.name.trim() : '';
+          const rawId =
+            typeof parsedTagRaw.id === 'string' ? parsedTagRaw.id.trim() : '';
+          if (rawName || rawId) {
+            const lowerName = rawName.toLowerCase();
+            const lowerId = rawId.toLowerCase();
+            deletedDefaultTagIdsRef.current = deletedDefaultTagIdsRef.current.filter(
+              (delId) =>
+                delId.toLowerCase() !== lowerId &&
+                delId.toLowerCase() !== lowerName
+            );
+          }
+          const nextTags = mergeWithDefaultTags(
+            [
+              ...extractCustomUserTags(tagsRef.current),
+              {
+                ...parsedTagRaw,
+                _diskFileName: file.fileName,
+              },
+            ],
+            deletedDefaultTagIdsRef.current
+          );
           const matched = nextTags.find(
             (t) => t.name.trim().toLowerCase() === rawName.toLowerCase()
           );
           if (matched && matched.id) {
             tagDiskFileNamesRef.current.set(matched.id, file.fileName);
           }
+          markDirtyChange(true);
           tagsRef.current = nextTags;
           latestWorkspaceRef.current.tags = nextTags;
           setTagsState(nextTags);
@@ -6654,15 +7514,22 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
         );
         if (parsed.kind === 'character') {
           const currentChars = charactersRef.current;
-          parsed.character.isNsfw = isCharacterNsfw(parsed.character, tagsRef.current);
+          parsed.character.isNsfw = Boolean(
+            parsed.character.isNsfw || parsed.character.extensions?.isNsfw
+          );
           parsed.character.savedFileName = file.fileName;
+          if (parsed.character.character_book?.id) {
+            const liveBook = lorebooksRef.current.find(
+              (lb) => lb.id === parsed.character.character_book?.id
+            );
+            if (liveBook) {
+              parsed.character.character_book = liveBook;
+            }
+          }
           const match = currentChars.find(
             (c) =>
               (c.savedFileName && c.savedFileName === file.fileName) ||
-              (parsed.character.id && c.id === parsed.character.id) ||
-              (!c.savedFileName &&
-                c.name.trim().toLowerCase() ===
-                  parsed.character.name.trim().toLowerCase())
+              (parsed.character.id && c.id === parsed.character.id)
           );
           if (match && match.id) {
             setActiveCharacterId(match.id);
@@ -6686,15 +7553,12 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
           };
         } else if (parsed.kind === 'lorebook') {
           const currentBooks = lorebooksRef.current;
-          parsed.lorebook.isNsfw = isLorebookNsfw(parsed.lorebook, tagsRef.current);
+          parsed.lorebook.isNsfw = Boolean(parsed.lorebook.isNsfw);
           parsed.lorebook.savedFileName = file.fileName;
           const match = currentBooks.find(
             (l) =>
               (l.savedFileName && l.savedFileName === file.fileName) ||
-              (parsed.lorebook.id && l.id === parsed.lorebook.id) ||
-              (!l.savedFileName &&
-                l.name.trim().toLowerCase() ===
-                  parsed.lorebook.name.trim().toLowerCase())
+              (parsed.lorebook.id && l.id === parsed.lorebook.id)
           );
           if (match && match.id) {
             setActiveLorebookId(match.id);
@@ -6722,10 +7586,18 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
         return { ok: false, message: `Could not parse ${file.fileName}.` };
       }
     },
-    [setActiveCharacterId, setActiveLorebookId, setCharacters, setLorebooks, setTags, setThemes]
+    [
+      markDirtyChange,
+      setActiveCharacterId,
+      setActiveLorebookId,
+      setCharacters,
+      setLorebooks,
+      setTags,
+      setThemes,
+    ]
   );
 
-  // Unified Disk Delete from Options File List — routes directly through deleteCharacter / deleteLorebook / deleteTheme / deleteTag
+  // Unified Disk Delete from Options File List — matches strictly by filename or exact ID (never fuzzy name)
   const deleteSavedFile = useCallback(
     (fileId: string) => {
       const target =
@@ -6740,8 +7612,7 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
         ).find((f) => f.id === fileId);
       if (!target) return;
       const isCorruptedRoot =
-        Boolean(target.isCorrupted) &&
-        (target.kind === 'meta' || target.kind === 'vault');
+        Boolean(target.isCorrupted) && target.kind === 'meta';
       if (
         target.kind !== 'character' &&
         target.kind !== 'lorebook' &&
@@ -6754,7 +7625,6 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
 
       if (!target.isCorrupted) {
         let embeddedId: string | undefined;
-        let embeddedName: string | undefined;
         try {
           const parsedJson = JSON.parse(target.content) as Record<string, unknown>;
           const dataNode =
@@ -6771,10 +7641,6 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
           if (typeof rawId === 'string' && rawId.trim()) {
             embeddedId = rawId.trim();
           }
-          const rawName = parsedJson.name ?? dataNode?.name;
-          if (typeof rawName === 'string' && rawName.trim()) {
-            embeddedName = rawName.trim();
-          }
         } catch {
           // Ignore non-JSON preview
         }
@@ -6786,12 +7652,6 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
               (c.id ? charDiskFileNamesRef.current.get(c.id) : undefined);
             if (mappedFile && mappedFile === target.fileName) return true;
             if (embeddedId && c.id === embeddedId) return true;
-            if (
-              embeddedName &&
-              (c.name || '').trim().toLowerCase() === embeddedName.toLowerCase()
-            ) {
-              return true;
-            }
             return false;
           });
 
@@ -6806,12 +7666,6 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
               (l.id ? loreDiskFileNamesRef.current.get(l.id) : undefined);
             if (mappedFile && mappedFile === target.fileName) return true;
             if (embeddedId && l.id === embeddedId) return true;
-            if (
-              embeddedName &&
-              (l.name || '').trim().toLowerCase() === embeddedName.toLowerCase()
-            ) {
-              return true;
-            }
             return false;
           });
 
@@ -6825,12 +7679,6 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
               th.savedFileName || themeDiskFileNamesRef.current.get(th.id);
             if (mappedFile && mappedFile === target.fileName) return true;
             if (embeddedId && th.id === embeddedId) return true;
-            if (
-              embeddedName &&
-              th.name.trim().toLowerCase() === embeddedName.toLowerCase()
-            ) {
-              return true;
-            }
             return false;
           });
 
@@ -6844,12 +7692,6 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
               tg.savedFileName || tagDiskFileNamesRef.current.get(tg.id);
             if (mappedFile && mappedFile === target.fileName) return true;
             if (embeddedId && tg.id === embeddedId) return true;
-            if (
-              embeddedName &&
-              tg.name.trim().toLowerCase() === embeddedName.toLowerCase()
-            ) {
-              return true;
-            }
             return false;
           });
 
@@ -6861,7 +7703,7 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
       }
 
       // Unattached or corrupted on-disk file not currently loaded into React state
-      diskMutationVersionRef.current += 1;
+      markDirtyChange(true);
       const opVersion = diskMutationVersionRef.current;
       setDiskFiles((prev) => prev.filter((f) => f.id !== fileId));
 
@@ -6872,7 +7714,7 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
             ? 'Themes'
             : target.kind === 'tag'
               ? 'Tags'
-              : target.kind === 'meta' || target.kind === 'vault'
+              : target.kind === 'meta'
                 ? 'Root'
                 : 'Characters';
       void enqueueDiskOperation(async () => {
@@ -6885,7 +7727,6 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
               kind: target.kind,
               fileName: target.fileName,
               savedFileName: target.fileName,
-              customSavePath: latestWorkspaceRef.current.settings.activeSaveFolder,
             }),
           });
           if (delRes.ok) {
@@ -6895,7 +7736,11 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
               Array.isArray(delState.files) &&
               diskMutationVersionRef.current === opVersion
             ) {
-              setDiskFiles(delState.files);
+              setDiskFiles(
+                delState.files.filter(
+                  (f) => f.kind !== 'vault' && f.fileName !== LEGACY_VAULT_FILENAME
+                )
+              );
             }
           }
         } catch {
@@ -6922,6 +7767,7 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
       deleteTheme,
       deleteTag,
       enqueueDiskOperation,
+      markDirtyChange,
       runDiskSaveRequest,
     ]
   );
@@ -6953,8 +7799,7 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
 
   const requestDeleteSavedFile = useCallback((file: SavedFileEntry) => {
     const isCorruptedRoot =
-      Boolean(file.isCorrupted) &&
-      (file.kind === 'meta' || file.kind === 'vault');
+      Boolean(file.isCorrupted) && file.kind === 'meta';
     if (
       file.kind !== 'character' &&
       file.kind !== 'lorebook' &&
@@ -6976,7 +7821,7 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
             ? 'Themes'
             : file.kind === 'tag'
               ? 'Tags'
-              : file.kind === 'meta' || file.kind === 'vault'
+              : file.kind === 'meta'
                 ? 'Root'
                 : 'Characters',
       fileKind: file.kind,
@@ -7026,22 +7871,28 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
   ]);
 
   /**
-   * Singular Space-Efficient Backup Export:
-   * Always builds from live synchronous workspace refs (`charactersRef`, `lorebooksRef`,
-   * `themesRef`, `tagsRef`) so even newly created/edited items before Auto-Save are exported.
-   * Built-in default themes and tags are excluded unless customized.
+   * Backup Export — Strictly exports ONLY Characters, Lorebooks, Themes, and Tags (NOTHING ELSE:
+   * no settings, no activeThemeId, no AI config, and no API keys/vault).
+   * Characters embed their up-to-date linked Lorebook automatically.
    */
   const exportSaveFolderBundle = useCallback(() => {
     const currentChars = charactersRef.current;
     const currentBooks = lorebooksRef.current;
     const currentThemes = themesRef.current;
     const currentTags = tagsRef.current;
-    const currentSettings = settingsRef.current;
-    const spec = currentSettings.cardSpecVersion || 'v3';
+    const spec = settingsRef.current.cardSpecVersion || 'v3';
 
-    const serializedChars = currentChars.map((c) =>
-      serializeCharacterCard(c, spec, c.character_book)
-    );
+    const bookById = new Map<string, Lorebook>();
+    for (const lb of currentBooks) {
+      if (lb.id) bookById.set(lb.id, lb);
+    }
+
+    const serializedChars = currentChars.map((c) => {
+      const resolvedBook = c.character_book?.id
+        ? bookById.get(c.character_book.id) || c.character_book
+        : c.character_book;
+      return serializeCharacterCard(c, spec, resolvedBook);
+    });
     const serializedBooks = currentBooks.map((lb) => serializeLorebookCard(lb));
     const addedOrModifiedThemes = extractCustomOrModifiedThemes(currentThemes).map(
       (th) => compactThemeForStorage(th)
@@ -7049,7 +7900,8 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
     const addedOrModifiedTags = extractCustomUserTags(currentTags).map((tg) =>
       compactTagForStorage(
         tg,
-        builtInTagByNameMap.get(tg.name.trim().toLowerCase())
+        builtInTagByNameMap.get(tg.name.trim().toLowerCase()) ||
+          builtInTagByIdMap.get((tg.id || '').trim().toLowerCase())
       )
     );
 
@@ -7057,7 +7909,6 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
       schema: 'tavernsmith_backup_v3',
       bundleVersion: '3.0.0',
       exportedAt: new Date().toISOString(),
-      activeThemeId: currentSettings.activeThemeId,
       counts: {
         characters: serializedChars.length,
         lorebooks: serializedBooks.length,
@@ -7085,6 +7936,7 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
       let importedBooks = 0;
       let importedThemes = 0;
       let importedTags = 0;
+      let skippedFiles = 0;
       let lastCharId: string | null = null;
       let lastBookId: string | null = null;
 
@@ -7105,137 +7957,176 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
       );
 
       for (const file of list) {
-        if (file.name === META_FILENAME) {
-          try {
+        try {
+          if (file.name === META_FILENAME) {
             const text = await file.text();
             const parsedMeta = JSON.parse(
               text
             ) as Partial<TavernSmithMetaPayload>;
+            // Only import themes & tags from meta file — never settings/AI config
             if (Array.isArray(parsedMeta.tags) && parsedMeta.tags.length > 0) {
-              nextTags = mergeWithDefaultTags([
-                ...extractCustomUserTags(nextTags),
-                ...parsedMeta.tags,
-              ]);
+              for (const rawT of parsedMeta.tags) {
+                const n = typeof rawT?.name === 'string' ? rawT.name.trim().toLowerCase() : '';
+                const tid = typeof rawT?.id === 'string' ? rawT.id.trim().toLowerCase() : '';
+                deletedDefaultTagIdsRef.current = deletedDefaultTagIdsRef.current.filter(
+                  (d) => d.toLowerCase() !== tid && d.toLowerCase() !== n
+                );
+              }
+              nextTags = mergeWithDefaultTags(
+                [...extractCustomUserTags(nextTags), ...parsedMeta.tags],
+                deletedDefaultTagIdsRef.current
+              );
               importedTags += parsedMeta.tags.length;
             }
             if (
               Array.isArray(parsedMeta.contextThemes) &&
               parsedMeta.contextThemes.length > 0
             ) {
-              nextThemes = mergeWithDefaultThemes([
-                ...nextThemes,
-                ...parsedMeta.contextThemes,
-              ]);
+              for (const rawTh of parsedMeta.contextThemes) {
+                const n = typeof rawTh?.name === 'string' ? rawTh.name.trim().toLowerCase() : '';
+                const tid = typeof rawTh?.id === 'string' ? rawTh.id.trim().toLowerCase() : '';
+                deletedDefaultThemeIdsRef.current = deletedDefaultThemeIdsRef.current.filter(
+                  (d) => d.toLowerCase() !== tid && d.toLowerCase() !== n
+                );
+              }
+              nextThemes = mergeWithDefaultThemes(
+                [...nextThemes, ...parsedMeta.contextThemes],
+                nextTags,
+                deletedDefaultThemeIdsRef.current
+              );
               importedThemes += parsedMeta.contextThemes.length;
             }
-          } catch {
-            // Ignore malformed meta file
+            continue;
           }
-          continue;
-        }
 
-        if (file.name.toLowerCase().endsWith('.json')) {
-          try {
-            const text = await file.text();
-            const parsedObj = JSON.parse(text) as Record<string, unknown>;
-            if (parsedObj && typeof parsedObj === 'object') {
-              if (parsedObj._tavernsmithType === 'theme') {
-                const normalized = normalizeIncomingTheme(parsedObj);
-                if (normalized) {
-                  nextThemes = mergeWithDefaultThemes([
-                    ...nextThemes,
-                    normalized,
-                  ]);
-                  importedThemes += 1;
+          if (file.name.toLowerCase().endsWith('.json')) {
+            try {
+              const text = await file.text();
+              const parsedObj = JSON.parse(text) as Record<string, unknown>;
+              if (parsedObj && typeof parsedObj === 'object') {
+                if (parsedObj._tavernsmithType === 'theme') {
+                  const normalized = normalizeIncomingTheme(parsedObj, nextTags);
+                  if (normalized) {
+                    const lowerN = normalized.name.trim().toLowerCase();
+                    deletedDefaultThemeIdsRef.current = deletedDefaultThemeIdsRef.current.filter(
+                      (d) =>
+                        d.toLowerCase() !== normalized.id.toLowerCase() &&
+                        d.toLowerCase() !== lowerN
+                    );
+                    nextThemes = mergeWithDefaultThemes(
+                      [...nextThemes, normalized],
+                      nextTags,
+                      deletedDefaultThemeIdsRef.current
+                    );
+                    importedThemes += 1;
+                  }
+                  continue;
                 }
-                continue;
+                if (parsedObj._tavernsmithType === 'tag') {
+                  const rawN =
+                    typeof parsedObj.name === 'string'
+                      ? parsedObj.name.trim().toLowerCase()
+                      : '';
+                  const rawId =
+                    typeof parsedObj.id === 'string'
+                      ? parsedObj.id.trim().toLowerCase()
+                      : '';
+                  deletedDefaultTagIdsRef.current = deletedDefaultTagIdsRef.current.filter(
+                    (d) => d.toLowerCase() !== rawId && d.toLowerCase() !== rawN
+                  );
+                  nextTags = mergeWithDefaultTags(
+                    [...extractCustomUserTags(nextTags), parsedObj],
+                    deletedDefaultTagIdsRef.current
+                  );
+                  importedTags += 1;
+                  continue;
+                }
               }
-              if (parsedObj._tavernsmithType === 'tag') {
-                nextTags = mergeWithDefaultTags([
-                  ...extractCustomUserTags(nextTags),
-                  parsedObj,
-                ]);
-                importedTags += 1;
-                continue;
-              }
+            } catch {
+              // Fall through to standard card parser
             }
-          } catch {
-            // Fall through to standard card parser
           }
-        }
 
-        const result = await importCardFromFile(file);
-        if (result.kind === 'character') {
-          const importedChar = { ...result.character };
-          importedChar.isNsfw = isCharacterNsfw(importedChar, nextTags);
-          importedChar.name = ensureUniqueEntityName(
-            importedChar.name || 'Imported Character',
-            nextCharacters.map((c) => c.name || 'Untitled'),
-            'Imported Character'
-          );
-          if (
-            !importedChar.id ||
-            nextCharacters.some((c) => c.id === importedChar.id)
-          ) {
-            importedChar.id = `char-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
-          }
-          const uniqueCharFile = ensureUniqueSavedFileName(
-            importedChar.name,
-            usedCharFiles,
-            'character'
-          );
-          importedChar.savedFileName = uniqueCharFile;
-          charDiskFileNamesRef.current.set(importedChar.id, uniqueCharFile);
-          nextCharacters.unshift(importedChar);
-          lastCharId = importedChar.id;
-          importedChars++;
+          const result = await importCardFromFile(file);
+          if (result.kind === 'character') {
+            const importedChar = { ...result.character };
+            importedChar.isNsfw = Boolean(
+              importedChar.isNsfw || importedChar.extensions?.isNsfw
+            );
+            importedChar.name = ensureUniqueEntityName(
+              importedChar.name || 'Imported Character',
+              nextCharacters.map((c) => c.name || 'Untitled'),
+              'Imported Character'
+            );
+            if (
+              !importedChar.id ||
+              nextCharacters.some((c) => c.id === importedChar.id)
+            ) {
+              importedChar.id = `char-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+            }
+            const uniqueCharFile = ensureUniqueSavedFileName(
+              importedChar.name,
+              usedCharFiles,
+              'character'
+            );
+            importedChar.savedFileName = uniqueCharFile;
+            charDiskFileNamesRef.current.set(importedChar.id, uniqueCharFile);
 
-          if (result.embeddedLorebook) {
-            const book = { ...result.embeddedLorebook };
-            book.isNsfw = isLorebookNsfw(book, nextTags);
-            book.name = ensureUniqueEntityName(
-              book.name || `${importedChar.name} Lorebook`,
+            // If character card carries an embedded character_book, import it to Lorebooks AND keep it linked by ID
+            if (result.embeddedLorebook) {
+              const book = { ...result.embeddedLorebook };
+              book.isNsfw = Boolean(book.isNsfw);
+              book.name = ensureUniqueEntityName(
+                book.name || `${importedChar.name} Lorebook`,
+                nextLorebooks.map((l) => l.name || 'Untitled Lorebook'),
+                'Imported Lorebook'
+              );
+              if (!book.id || nextLorebooks.some((l) => l.id === book.id)) {
+                book.id = `lorebook-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+              }
+              const uniqueBookFile = ensureUniqueSavedFileName(
+                book.name,
+                usedLoreFiles,
+                'lorebook'
+              );
+              book.savedFileName = uniqueBookFile;
+              loreDiskFileNamesRef.current.set(book.id, uniqueBookFile);
+              nextLorebooks.unshift(book);
+              importedChar.character_book = book;
+              lastBookId = book.id;
+              importedBooks++;
+            }
+
+            nextCharacters.unshift(importedChar);
+            lastCharId = importedChar.id;
+            importedChars++;
+          } else if (result.kind === 'lorebook') {
+            const importedBook = { ...result.lorebook };
+            importedBook.isNsfw = Boolean(importedBook.isNsfw);
+            importedBook.name = ensureUniqueEntityName(
+              importedBook.name || 'Imported Lorebook',
               nextLorebooks.map((l) => l.name || 'Untitled Lorebook'),
               'Imported Lorebook'
             );
-            if (!book.id || nextLorebooks.some((l) => l.id === book.id)) {
-              book.id = `lorebook-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+            if (
+              !importedBook.id ||
+              nextLorebooks.some((l) => l.id === importedBook.id)
+            ) {
+              importedBook.id = `lorebook-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
             }
             const uniqueBookFile = ensureUniqueSavedFileName(
-              book.name,
+              importedBook.name,
               usedLoreFiles,
               'lorebook'
             );
-            book.savedFileName = uniqueBookFile;
-            loreDiskFileNamesRef.current.set(book.id, uniqueBookFile);
-            nextLorebooks.unshift(book);
-            lastBookId = book.id;
+            importedBook.savedFileName = uniqueBookFile;
+            loreDiskFileNamesRef.current.set(importedBook.id, uniqueBookFile);
+            nextLorebooks.unshift(importedBook);
+            lastBookId = importedBook.id;
             importedBooks++;
           }
-        } else if (result.kind === 'lorebook') {
-          const importedBook = { ...result.lorebook };
-          importedBook.isNsfw = isLorebookNsfw(importedBook, nextTags);
-          importedBook.name = ensureUniqueEntityName(
-            importedBook.name || 'Imported Lorebook',
-            nextLorebooks.map((l) => l.name || 'Untitled Lorebook'),
-            'Imported Lorebook'
-          );
-          if (
-            !importedBook.id ||
-            nextLorebooks.some((l) => l.id === importedBook.id)
-          ) {
-            importedBook.id = `lorebook-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
-          }
-          const uniqueBookFile = ensureUniqueSavedFileName(
-            importedBook.name,
-            usedLoreFiles,
-            'lorebook'
-          );
-          importedBook.savedFileName = uniqueBookFile;
-          loreDiskFileNamesRef.current.set(importedBook.id, uniqueBookFile);
-          nextLorebooks.unshift(importedBook);
-          lastBookId = importedBook.id;
-          importedBooks++;
+        } catch {
+          skippedFiles += 1;
         }
       }
 
@@ -7250,8 +8141,12 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
         setThemesState(nextThemes);
       }
 
-      setCharacters(nextCharacters);
-      setLorebooks(nextLorebooks);
+      if (importedChars > 0) {
+        setCharacters(nextCharacters);
+      }
+      if (importedBooks > 0) {
+        setLorebooks(nextLorebooks);
+      }
 
       if (lastCharId) {
         setActiveCharacterId(lastCharId);
@@ -7259,18 +8154,22 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
         setActiveLorebookId(lastBookId);
       }
 
+      let syncNote = '';
       if (
         importedChars > 0 ||
         importedBooks > 0 ||
         importedThemes > 0 ||
         importedTags > 0
       ) {
-        await executeDiskSaveAndRescan('manual', {
+        const saveRes = await executeDiskSaveAndRescan('manual', {
           characters: nextCharacters,
           lorebooks: nextLorebooks,
           themes: nextThemes,
           tags: nextTags,
         });
+        if (!saveRes.ok) {
+          syncNote = ` (Loaded in workspace, but disk save failed: ${saveRes.message})`;
+        }
       }
 
       const parts: string[] = [];
@@ -7294,18 +8193,33 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
           `${importedTags} tag${importedTags === 1 ? '' : 's'} (saved to ./Saves/Tags/)`
         );
       }
+      if (skippedFiles > 0) {
+        parts.push(
+          `${skippedFiles} invalid file${skippedFiles === 1 ? '' : 's'} skipped`
+        );
+      }
 
       return {
         count: importedChars + importedBooks + importedThemes + importedTags,
         summary:
           parts.length > 0
-            ? `Imported ${parts.join(', ')}.`
-            : 'Restored metadata or no new card files found.',
+            ? `Imported ${parts.join(', ')}.${syncNote}`
+            : 'No valid card, lorebook, theme, or tag files found.',
       };
     },
-    [executeDiskSaveAndRescan]
+    [
+      executeDiskSaveAndRescan,
+      setActiveCharacterId,
+      setActiveLorebookId,
+      setCharacters,
+      setLorebooks,
+    ]
   );
 
+  /**
+   * Backup Import — Strictly imports ONLY Characters, Lorebooks, Themes, and Tags (NOTHING ELSE).
+   * Explicitly ignores settings, activeThemeId, aiConfig, activeCharacterId/activeLorebookId, and vault envelopes.
+   */
   const importSaveFolderBundle = useCallback(
     async (
       files: FileList | File[]
@@ -7326,7 +8240,6 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
       }
       interface SingularBackupV3Shape {
         kind: 'singular_v3';
-        activeThemeId?: string;
         characters: unknown[];
         lorebooks: unknown[];
         themes: unknown[];
@@ -7335,27 +8248,30 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
 
       const parsedBundles: Array<LegacyBundleShape | SingularBackupV3Shape> = [];
       const standaloneFiles: File[] = [];
+      const parseErrors: string[] = [];
 
       for (const file of list) {
         if (file.name.toLowerCase().endsWith('.json')) {
           try {
             const text = await file.text();
             const parsed = JSON.parse(text) as Record<string, unknown>;
-            if (parsed && typeof parsed === 'object') {
-              if (
+            if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+              const looksLikeCardOrLorebook =
+                typeof parsed.spec === 'string' ||
+                parsed.data !== undefined ||
+                parsed.entries !== undefined ||
+                typeof parsed._tavernsmithType === 'string';
+              const isSingularV3Backup =
                 parsed.schema === 'tavernsmith_backup_v3' ||
                 parsed.bundleVersion === '3.0.0' ||
-                Array.isArray(parsed.characters) ||
-                Array.isArray(parsed.lorebooks) ||
-                Array.isArray(parsed.themes) ||
-                Array.isArray(parsed.tags)
-              ) {
+                (!looksLikeCardOrLorebook &&
+                  (Array.isArray(parsed.characters) ||
+                    Array.isArray(parsed.lorebooks) ||
+                    Array.isArray(parsed.themes)));
+
+              if (isSingularV3Backup) {
                 parsedBundles.push({
                   kind: 'singular_v3',
-                  activeThemeId:
-                    typeof parsed.activeThemeId === 'string'
-                      ? parsed.activeThemeId
-                      : undefined,
                   characters: Array.isArray(parsed.characters)
                     ? parsed.characters
                     : [],
@@ -7367,7 +8283,7 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
                 });
                 continue;
               }
-              if (Array.isArray(parsed.files)) {
+              if (Array.isArray(parsed.files) && !looksLikeCardOrLorebook) {
                 parsedBundles.push({
                   kind: 'legacy_v2',
                   files: parsed.files as LegacyBundleShape['files'],
@@ -7376,11 +8292,8 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
               }
             }
           } catch {
-            return {
-              ok: false,
-              count: 0,
-              summary: `Could not parse "${file.name}" as valid JSON.`,
-            };
+            parseErrors.push(file.name);
+            continue;
           }
         }
         standaloneFiles.push(file);
@@ -7390,22 +8303,19 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
       let restoredBooks = 0;
       let restoredThemesCount = 0;
       let restoredTagsCount = 0;
-      let restoredMeta = false;
-      let restoredVault = false;
+      let syncWarning = '';
 
       if (parsedBundles.length > 0) {
-        diskMutationVersionRef.current += 1;
+        markDirtyChange(true);
 
         let nextTags = [...tagsRef.current];
         let nextThemes = [...themesRef.current];
-        let nextSettings = { ...settingsRef.current };
-        let nextAiConfig = { ...aiConfigRef.current };
         const nextCharacters = [...charactersRef.current];
         const nextLorebooks = [...lorebooksRef.current];
-        let preferredActiveCharId: string | undefined;
-        let preferredActiveBookId: string | undefined;
 
-        const upsertTagList = (rawTags: Array<Record<string, unknown> | TagDefinition>) => {
+        const upsertTagList = (
+          rawTags: Array<Record<string, unknown> | TagDefinition>
+        ) => {
           if (!Array.isArray(rawTags) || rawTags.length === 0) return;
           const byName = new Map<string, Record<string, unknown> | TagDefinition>();
           for (const t of extractCustomUserTags(nextTags)) {
@@ -7417,116 +8327,48 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
               typeof (raw as { name?: unknown }).name === 'string'
                 ? String((raw as { name?: unknown }).name).trim()
                 : '';
+            const rawId =
+              typeof (raw as { id?: unknown }).id === 'string'
+                ? String((raw as { id?: unknown }).id).trim()
+                : '';
             if (rawName) {
-              byName.set(rawName.toLowerCase(), raw);
+              const lowerName = rawName.toLowerCase();
+              const lowerId = rawId.toLowerCase();
+              deletedDefaultTagIdsRef.current = deletedDefaultTagIdsRef.current.filter(
+                (d) => d.toLowerCase() !== lowerId && d.toLowerCase() !== lowerName
+              );
+              byName.set(lowerName, raw);
               restoredTagsCount += 1;
             }
           }
-          nextTags = mergeWithDefaultTags(Array.from(byName.values()));
+          nextTags = mergeWithDefaultTags(
+            Array.from(byName.values()),
+            deletedDefaultTagIdsRef.current
+          );
         };
 
         const upsertThemeList = (rawThemes: unknown[]) => {
           if (!Array.isArray(rawThemes) || rawThemes.length === 0) return;
           const validIncoming: ContextTheme[] = [];
           for (const raw of rawThemes) {
-            const normalized = normalizeIncomingTheme(raw);
+            const normalized = normalizeIncomingTheme(raw, nextTags);
             if (normalized) {
+              const lowerName = normalized.name.trim().toLowerCase();
+              deletedDefaultThemeIdsRef.current = deletedDefaultThemeIdsRef.current.filter(
+                (d) =>
+                  d.toLowerCase() !== normalized.id.toLowerCase() &&
+                  d.toLowerCase() !== lowerName
+              );
               validIncoming.push(normalized);
               restoredThemesCount += 1;
             }
           }
           if (validIncoming.length > 0) {
-            nextThemes = mergeWithDefaultThemes([
-              ...nextThemes,
-              ...validIncoming,
-            ]);
-          }
-        };
-
-        const upsertCharacterRaw = (
-          rawData: unknown,
-          fallbackFileName = 'Character.json'
-        ) => {
-          if (!rawData) return;
-          const usedCharFiles = new Set(
-            nextCharacters
-              .map((c) =>
-                (
-                  c.savedFileName ||
-                  charDiskFileNamesRef.current.get(c.id || '') ||
-                  ''
-                ).toLowerCase()
-              )
-              .filter(Boolean)
-          );
-          try {
-            const rawStr =
-              typeof rawData === 'string' ? rawData : JSON.stringify(rawData);
-            const parsedRes = parseImportedJsonString(
-              rawStr,
-              undefined,
-              fallbackFileName,
-              'character'
+            nextThemes = mergeWithDefaultThemes(
+              [...nextThemes, ...validIncoming],
+              nextTags,
+              deletedDefaultThemeIdsRef.current
             );
-            if (parsedRes.kind !== 'character') return;
-
-            const candidate = { ...parsedRes.character };
-            candidate.isNsfw = isCharacterNsfw(candidate, nextTags);
-
-            const existingIdx = candidate.id
-              ? nextCharacters.findIndex((c) => c.id === candidate.id)
-              : -1;
-
-            if (existingIdx >= 0) {
-              const existing = nextCharacters[existingIdx];
-              const otherNames = nextCharacters
-                .filter((_, idx) => idx !== existingIdx)
-                .map((c) => c.name || 'Character');
-              candidate.name = ensureUniqueEntityName(
-                candidate.name || existing.name || 'Character',
-                otherNames,
-                'Character'
-              );
-              const preservedFile =
-                existing.savedFileName ||
-                (existing.id
-                  ? charDiskFileNamesRef.current.get(existing.id)
-                  : undefined) ||
-                ensureUniqueSavedFileName(
-                  candidate.name,
-                  usedCharFiles,
-                  'character'
-                );
-              candidate.savedFileName = preservedFile;
-              if (candidate.id) {
-                charDiskFileNamesRef.current.set(candidate.id, preservedFile);
-              }
-              usedCharFiles.add(preservedFile.toLowerCase());
-              nextCharacters[existingIdx] = candidate;
-            } else {
-              candidate.name = ensureUniqueEntityName(
-                candidate.name || 'Restored Character',
-                nextCharacters.map((c) => c.name || 'Untitled'),
-                'Restored Character'
-              );
-              if (
-                !candidate.id ||
-                nextCharacters.some((c) => c.id === candidate.id)
-              ) {
-                candidate.id = `char-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
-              }
-              const uniqueFile = ensureUniqueSavedFileName(
-                candidate.name,
-                usedCharFiles,
-                'character'
-              );
-              candidate.savedFileName = uniqueFile;
-              charDiskFileNamesRef.current.set(candidate.id, uniqueFile);
-              nextCharacters.push(candidate);
-            }
-            restoredChars += 1;
-          } catch {
-            // Skip malformed character entry
           }
         };
 
@@ -7558,7 +8400,7 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
             if (parsedRes.kind !== 'lorebook') return;
 
             const candidate = { ...parsedRes.lorebook };
-            candidate.isNsfw = isLorebookNsfw(candidate, nextTags);
+            candidate.isNsfw = Boolean(candidate.isNsfw);
 
             const existingIdx = candidate.id
               ? nextLorebooks.findIndex((l) => l.id === candidate.id)
@@ -7617,9 +8459,106 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
           }
         };
 
+        const upsertCharacterRaw = (
+          rawData: unknown,
+          fallbackFileName = 'Character.json'
+        ) => {
+          if (!rawData) return;
+          const usedCharFiles = new Set(
+            nextCharacters
+              .map((c) =>
+                (
+                  c.savedFileName ||
+                  charDiskFileNamesRef.current.get(c.id || '') ||
+                  ''
+                ).toLowerCase()
+              )
+              .filter(Boolean)
+          );
+          try {
+            const rawStr =
+              typeof rawData === 'string' ? rawData : JSON.stringify(rawData);
+            const parsedRes = parseImportedJsonString(
+              rawStr,
+              undefined,
+              fallbackFileName,
+              'character'
+            );
+            if (parsedRes.kind !== 'character') return;
+
+            const candidate = { ...parsedRes.character };
+            candidate.isNsfw = Boolean(
+              candidate.isNsfw || candidate.extensions?.isNsfw
+            );
+            if (candidate.character_book?.id) {
+              const liveBook = nextLorebooks.find(
+                (lb) => lb.id === candidate.character_book?.id
+              );
+              if (liveBook) {
+                candidate.character_book = liveBook;
+              }
+            }
+
+            const existingIdx = candidate.id
+              ? nextCharacters.findIndex((c) => c.id === candidate.id)
+              : -1;
+
+            if (existingIdx >= 0) {
+              const existing = nextCharacters[existingIdx];
+              const otherNames = nextCharacters
+                .filter((_, idx) => idx !== existingIdx)
+                .map((c) => c.name || 'Character');
+              candidate.name = ensureUniqueEntityName(
+                candidate.name || existing.name || 'Character',
+                otherNames,
+                'Character'
+              );
+              const preservedFile =
+                existing.savedFileName ||
+                (existing.id
+                  ? charDiskFileNamesRef.current.get(existing.id)
+                  : undefined) ||
+                ensureUniqueSavedFileName(
+                  candidate.name,
+                  usedCharFiles,
+                  'character'
+                );
+              candidate.savedFileName = preservedFile;
+              if (candidate.id) {
+                charDiskFileNamesRef.current.set(candidate.id, preservedFile);
+              }
+              usedCharFiles.add(preservedFile.toLowerCase());
+              nextCharacters[existingIdx] = candidate;
+            } else {
+              candidate.name = ensureUniqueEntityName(
+                candidate.name || 'Restored Character',
+                nextCharacters.map((c) => c.name || 'Untitled'),
+                'Restored Character'
+              );
+              if (
+                !candidate.id ||
+                nextCharacters.some((c) => c.id === candidate.id)
+              ) {
+                candidate.id = `char-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+              }
+              const uniqueFile = ensureUniqueSavedFileName(
+                candidate.name,
+                usedCharFiles,
+                'character'
+              );
+              candidate.savedFileName = uniqueFile;
+              charDiskFileNamesRef.current.set(candidate.id, uniqueFile);
+              nextCharacters.push(candidate);
+            }
+            restoredChars += 1;
+          } catch {
+            // Skip malformed character entry
+          }
+        };
+
         for (const bundle of parsedBundles) {
           if (bundle.kind === 'singular_v3') {
-            // Restore Tags & Themes first so Character/Lorebook NSFW checks and activeThemeId work accurately
+            // Strictly import ONLY tags, themes, lorebooks, and characters — ignore anything else
             if (bundle.tags.length > 0) {
               upsertTagList(
                 bundle.tags as Array<Record<string, unknown> | TagDefinition>
@@ -7628,26 +8567,18 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
             if (bundle.themes.length > 0) {
               upsertThemeList(bundle.themes);
             }
-            if (
-              bundle.activeThemeId &&
-              nextThemes.some((t) => t.id === bundle.activeThemeId)
-            ) {
-              nextSettings = {
-                ...nextSettings,
-                activeThemeId: bundle.activeThemeId,
-              };
+            // Restore Lorebooks before Characters so linked character_book IDs sync automatically
+            for (const rawBook of bundle.lorebooks) {
+              upsertLorebookRaw(rawBook);
             }
             for (const rawChar of bundle.characters) {
               upsertCharacterRaw(rawChar);
             }
-            for (const rawBook of bundle.lorebooks) {
-              upsertLorebookRaw(rawBook);
-            }
             continue;
           }
 
-          // Legacy bundleVersion 2.0.0 (`files: [...]`)
-          // 1. Restore Meta (`_tavernsmith_meta.json`) & standalone Themes/Tags first
+          // Legacy bundleVersion 2.0.0 (`files: [...]`): import ONLY tags, themes, lorebooks, and characters
+          // Deliberately ignore settings, aiConfig, activeThemeId, and vault entries!
           for (const entry of bundle.files) {
             if (!entry || typeof entry !== 'object') continue;
             const isMeta =
@@ -7669,72 +8600,11 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
               ) {
                 upsertThemeList(rawMeta.contextThemes);
               }
-
-              if (rawMeta.settings) {
-                const candidateThemeId =
-                  rawMeta.activeThemeId ||
-                  rawMeta.settings.activeThemeId ||
-                  nextSettings.activeThemeId;
-                const resolvedThemeId = nextThemes.some(
-                  (t) => t.id === candidateThemeId
-                )
-                  ? candidateThemeId
-                  : nextThemes[0]?.id || nextSettings.activeThemeId;
-                nextSettings = {
-                  ...nextSettings,
-                  ...rawMeta.settings,
-                  activeThemeId: resolvedThemeId,
-                  activeSaveFolder: UNIFIED_INTERNAL_ROOT,
-                };
-              } else if (
-                rawMeta.activeThemeId &&
-                nextThemes.some((t) => t.id === rawMeta.activeThemeId)
-              ) {
-                nextSettings = {
-                  ...nextSettings,
-                  activeThemeId: rawMeta.activeThemeId,
-                };
-              }
-
-              if (rawMeta.aiConfig) {
-                const incomingAi = rawMeta.aiConfig;
-                const cleanPreset = incomingAi.preset || nextAiConfig.preset;
-                const mergedModelsMap = {
-                  ...(incomingAi.savedProviderModels || {}),
-                  ...(nextAiConfig.savedProviderModels || {}),
-                };
-                if (Object.keys(mergedModelsMap).length > 0) {
-                  saveProviderModelsMap(mergedModelsMap);
-                }
-                nextAiConfig = {
-                  ...nextAiConfig,
-                  ...incomingAi,
-                  preset: cleanPreset,
-                  availableModels: sanitizeAvailableModelsList(
-                    incomingAi.availableModels,
-                    AI_BACKEND_PRESETS.find((p) => p.id === cleanPreset)
-                      ?.suggestedModels,
-                    cleanPreset
-                  ),
-                  savedProviderModels: mergedModelsMap,
-                  apiKey: nextAiConfig.apiKey,
-                  savedProviderKeys: nextAiConfig.savedProviderKeys,
-                };
-              }
-
-              if (rawMeta.activeCharacterId) {
-                preferredActiveCharId = rawMeta.activeCharacterId;
-              }
-              if (rawMeta.activeLorebookId) {
-                preferredActiveBookId = rawMeta.activeLorebookId;
-              }
-              restoredMeta = true;
             } catch {
               // Skip malformed meta block
             }
           }
 
-          // Restore Themes/ and Tags/ entries from v2 bundle if present
           const legacyThemeEntries = bundle.files.filter(
             (e) => e && (e.kind === 'theme' || e.subfolder === 'Themes/') && e.data
           );
@@ -7750,68 +8620,21 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
             );
           }
 
-          // 2. Restore Encrypted Vault (`_tavernsmith_vault.enc`) if readable
-          for (const entry of bundle.files) {
-            if (!entry || typeof entry !== 'object') continue;
-            const isVault =
-              entry.kind === 'vault' || entry.fileName === VAULT_FILENAME;
-            if (!isVault || !entry.data || typeof entry.data !== 'object') {
-              continue;
-            }
-            try {
-              const decrypted = await decryptProviderKeysFromVault(
-                undefined,
-                entry.data as Record<string, unknown>
-              );
-              if (decrypted.ok) {
-                const mergedKeys: Record<string, string> = {
-                  ...decrypted.keys,
-                  ...(nextAiConfig.savedProviderKeys || {}),
-                };
-                const activeProviderId = getProviderKeyId(nextAiConfig.preset);
-                const restoredActiveKey =
-                  nextAiConfig.apiKey ||
-                  mergedKeys[activeProviderId] ||
-                  mergedKeys[nextAiConfig.preset] ||
-                  '';
-                if (restoredActiveKey) {
-                  mergedKeys[activeProviderId] = restoredActiveKey;
-                  mergedKeys[nextAiConfig.preset] = restoredActiveKey;
-                }
-                nextAiConfig = {
-                  ...nextAiConfig,
-                  apiKey: restoredActiveKey,
-                  savedProviderKeys: mergedKeys,
-                };
-                await encryptAndSaveProviderKeys(mergedKeys, undefined, true);
-                restoredVault = true;
-              } else if (
-                Object.keys(getInMemoryDecryptedKeys()).length === 0
-              ) {
-                setInMemoryVaultEnvelope(entry.data);
-                restoredVault = true;
-              }
-            } catch {
-              // Vault may use a custom passphrase
-            }
-          }
-
-          // 3. Upsert Characters from `Characters/`
-          for (const entry of bundle.files) {
-            if (!entry || typeof entry !== 'object') continue;
-            const isChar =
-              entry.kind === 'character' || entry.subfolder === 'Characters/';
-            if (!isChar || !entry.data) continue;
-            upsertCharacterRaw(entry.data, entry.fileName || 'Character.json');
-          }
-
-          // 4. Upsert Lorebooks from `Lorebooks/`
+          // Upsert Lorebooks before Characters so linked IDs resolve immediately
           for (const entry of bundle.files) {
             if (!entry || typeof entry !== 'object') continue;
             const isBook =
               entry.kind === 'lorebook' || entry.subfolder === 'Lorebooks/';
             if (!isBook || !entry.data) continue;
             upsertLorebookRaw(entry.data, entry.fileName || 'Lorebook.json');
+          }
+
+          for (const entry of bundle.files) {
+            if (!entry || typeof entry !== 'object') continue;
+            const isChar =
+              entry.kind === 'character' || entry.subfolder === 'Characters/';
+            if (!isChar || !entry.data) continue;
+            upsertCharacterRaw(entry.data, entry.fileName || 'Character.json');
           }
         }
 
@@ -7843,7 +8666,7 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
           return { ...tg, savedFileName: fileName };
         });
 
-        // Synchronously commit all restored workspace refs & React states
+        // Synchronously commit ONLY characters, lorebooks, themes, and tags (preserving settings, AI config & API keys)
         tagsRef.current = nextTags;
         latestWorkspaceRef.current.tags = nextTags;
         setTagsState(nextTags);
@@ -7851,14 +8674,6 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
         themesRef.current = nextThemes;
         latestWorkspaceRef.current.themes = nextThemes;
         setThemesState(nextThemes);
-
-        settingsRef.current = nextSettings;
-        latestWorkspaceRef.current.settings = nextSettings;
-        setSettingsState(nextSettings);
-
-        aiConfigRef.current = nextAiConfig;
-        latestWorkspaceRef.current.aiConfig = nextAiConfig;
-        setAiConfigState(nextAiConfig);
 
         charactersRef.current = nextCharacters;
         latestWorkspaceRef.current.characters = nextCharacters;
@@ -7870,11 +8685,7 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
 
         let nextActiveCharId = activeCharacterIdRef.current;
         if (!nextActiveCharId || !nextCharacters.some((c) => c.id === nextActiveCharId)) {
-          nextActiveCharId =
-            preferredActiveCharId &&
-            nextCharacters.some((c) => c.id === preferredActiveCharId)
-              ? preferredActiveCharId
-              : nextCharacters[0]?.id || '';
+          nextActiveCharId = nextCharacters[0]?.id || '';
         }
         activeCharacterIdRef.current = nextActiveCharId;
         latestWorkspaceRef.current.activeCharacterId = nextActiveCharId;
@@ -7882,22 +8693,21 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
 
         let nextActiveBookId = activeLorebookIdRef.current;
         if (!nextActiveBookId || !nextLorebooks.some((l) => l.id === nextActiveBookId)) {
-          nextActiveBookId =
-            preferredActiveBookId &&
-            nextLorebooks.some((l) => l.id === preferredActiveBookId)
-              ? preferredActiveBookId
-              : nextLorebooks[0]?.id || '';
+          nextActiveBookId = nextLorebooks[0]?.id || '';
         }
         activeLorebookIdRef.current = nextActiveBookId;
         latestWorkspaceRef.current.activeLorebookId = nextActiveBookId;
         setActiveLorebookIdState(nextActiveBookId);
 
-        await executeDiskSaveAndRescan('manual', {
+        const saveRes = await executeDiskSaveAndRescan('manual', {
           characters: nextCharacters,
           lorebooks: nextLorebooks,
           themes: nextThemes,
           tags: nextTags,
         });
+        if (!saveRes.ok) {
+          syncWarning = ` (Imported into workspace, but disk save failed: ${saveRes.message})`;
+        }
       }
 
       let standaloneSummary = '';
@@ -7935,100 +8745,172 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
           `${restoredTagsCount} tag${restoredTagsCount === 1 ? '' : 's'}`
         );
       }
-      if (restoredMeta && restoredThemesCount === 0 && restoredTagsCount === 0) {
-        parts.push('themes & tags');
-      }
-      if (restoredVault) {
-        parts.push('vault keys');
+      if (parseErrors.length > 0) {
+        parts.push(`skipped invalid JSON: ${parseErrors.join(', ')}`);
       }
 
       const summary =
         parts.length > 0
-          ? `Imported backup: ${parts.join(', ')} synced to ./Saves/.${standaloneSummary ? ` ${standaloneSummary}` : ''}`
+          ? `Imported backup (saves, themes & tags only): ${parts.join(', ')} synced to ./Saves/.${syncWarning}${standaloneSummary ? ` ${standaloneSummary}` : ''}`
           : standaloneSummary ||
-            'No valid TavernSmith backup entries or card files found.';
+            (parseErrors.length > 0
+              ? `Could not parse JSON in: ${parseErrors.join(', ')}.`
+              : 'No valid TavernSmith backup entries or card files found.');
 
       return {
-        ok: totalRestored > 0 || restoredMeta || restoredVault,
+        ok: totalRestored > 0,
         count: totalRestored,
         summary,
       };
     },
-    [executeDiskSaveAndRescan, importFromFiles]
+    [executeDiskSaveAndRescan, importFromFiles, markDirtyChange]
   );
 
   const bindLorebookToCharacter = useCallback(
     (characterId: string, lorebookToBind: Lorebook) => {
+      const liveBook =
+        (lorebookToBind.id
+          ? lorebooksRef.current.find((lb) => lb.id === lorebookToBind.id)
+          : undefined) || lorebookToBind;
       setCharacters((prev) =>
         prev.map((c) => {
           if (c.id !== characterId) return c;
           return {
             ...c,
-            character_book: lorebookToBind,
+            character_book: liveBook,
             modification_date: Math.floor(Date.now() / 1000),
           };
         })
       );
     },
-    []
+    [setCharacters]
   );
 
-  const updateSettings = useCallback((partial: Partial<AppSettings>) => {
-    setSettings((prev) => ({ ...prev, ...partial }));
-  }, []);
+  const updateSettings = useCallback(
+    (partial: Partial<AppSettings>) => {
+      setSettings((prev) => ({ ...prev, ...partial }));
+    },
+    [setSettings]
+  );
 
   const isMainSidebarOpen = settings.mainSidebarOpen !== false;
 
-  const setMainSidebarOpen = useCallback((open: boolean) => {
-    setSettings((prev) => ({ ...prev, mainSidebarOpen: open }));
-  }, []);
+  const setMainSidebarOpen = useCallback(
+    (open: boolean) => {
+      setSettings((prev) => ({ ...prev, mainSidebarOpen: open }));
+    },
+    [setSettings]
+  );
 
   const toggleMainSidebar = useCallback(() => {
     setSettings((prev) => ({
       ...prev,
       mainSidebarOpen: prev.mainSidebarOpen === false ? true : false,
     }));
-  }, []);
+  }, [setSettings]);
 
-  const setActiveThemeId = useCallback((id: string) => {
-    setSettings((prev) => ({ ...prev, activeThemeId: id }));
-  }, []);
+  const setActiveThemeId = useCallback(
+    (id: string) => {
+      setSettings((prev) => ({ ...prev, activeThemeId: id }));
+    },
+    [setSettings]
+  );
 
+  /**
+   * Restores ONLY deleted or modified built-in Default Tags and Default Context Themes back to stock defaults.
+   * Preserves ALL user custom tags, custom themes, characters, lorebooks, settings, AI config, and API keys.
+   */
   const resetWorkspaceToDefaults = useCallback(() => {
-    purgeBrowserRuntimeCaches();
-    const freshDrafts = createDefaultWorkspaceDraftCache();
-    setWorkspaceDraftCache(freshDrafts);
-    try {
-      if (typeof window !== 'undefined' && window.sessionStorage) {
-        window.sessionStorage.removeItem(TAB_DRAFT_SESSION_KEY);
-      }
-    } catch {
-      // Ignore storage errors
-    }
-    setThemes(DEFAULT_CONTEXT_THEMES);
-    setTags(mergeWithDefaultTags([]));
-    const inMemKeys = getInMemoryDecryptedKeys();
-    const inMemModels = loadProviderModelsMap();
-    setAiConfigState({
-      ...DEFAULT_AI_CONFIG,
-      savedProviderKeys: inMemKeys,
-      savedProviderModels: inMemModels,
+    markDirtyChange(true);
+    const opVersion = diskMutationVersionRef.current;
+
+    // Clear deleted built-in tracking so all deleted defaults return
+    deletedDefaultTagIdsRef.current = [];
+    deletedDefaultThemeIdsRef.current = [];
+
+    // Preserve purely custom (non-built-in) user tags; restore all built-in DEFAULT_TAGS to stock values
+    const purelyCustomTags = tagsRef.current.filter((tg) => {
+      const idKey = (tg.id || '').trim().toLowerCase();
+      const nameKey = (tg.name || '').trim().toLowerCase();
+      return !builtInTagByIdMap.has(idKey) && !builtInTagByNameMap.has(nameKey);
     });
-    setSettings(DEFAULT_SETTINGS);
-    const nowDisplay = formatSafeTimestamp(new Date().toISOString());
-    setLastSavedAt(nowDisplay);
-    latestWorkspaceRef.current.isDirty = false;
-    setIsDirty(false);
-  }, []);
+    // Drop stale disk file mappings for built-in tags since they are back to stock defaults
+    for (const defTag of DEFAULT_TAGS) {
+      tagDiskFileNamesRef.current.delete(defTag.id);
+    }
+    const restoredTags: TagDefinition[] = [
+      ...DEFAULT_TAGS.map((t) => ({ ...t })),
+      ...purelyCustomTags,
+    ];
+
+    // Preserve purely custom (non-built-in) user themes; restore all built-in DEFAULT_CONTEXT_THEMES to stock values
+    const purelyCustomThemes = themesRef.current.filter((th) => {
+      const idKey = (th.id || '').trim().toLowerCase();
+      const nameKey = (th.name || '').trim().toLowerCase();
+      return !builtInThemeByIdMap.has(idKey) && !builtInThemeByNameMap.has(nameKey);
+    });
+    for (const defTheme of DEFAULT_CONTEXT_THEMES) {
+      themeDiskFileNamesRef.current.delete(defTheme.id);
+    }
+    const restoredThemes: ContextTheme[] = [
+      ...DEFAULT_CONTEXT_THEMES.map((t) => ({
+        ...t,
+        associatedTags: sortTagsByContextOrder(
+          t.associatedTags || [],
+          restoredTags
+        ),
+      })),
+      ...purelyCustomThemes.map((t) => ({
+        ...t,
+        associatedTags: sortTagsByContextOrder(
+          t.associatedTags || [],
+          restoredTags
+        ),
+      })),
+    ];
+
+    tagsRef.current = restoredTags;
+    latestWorkspaceRef.current.tags = restoredTags;
+    setTagsState(restoredTags);
+
+    themesRef.current = restoredThemes;
+    latestWorkspaceRef.current.themes = restoredThemes;
+    setThemesState(restoredThemes);
+
+    // Ensure activeThemeId remains valid without touching other user settings
+    if (!restoredThemes.some((t) => t.id === settingsRef.current.activeThemeId)) {
+      const fallbackSettings: AppSettings = {
+        ...settingsRef.current,
+        activeThemeId: restoredThemes[0]?.id || 'theme-basic',
+      };
+      settingsRef.current = fallbackSettings;
+      latestWorkspaceRef.current.settings = fallbackSettings;
+      setSettingsState(fallbackSettings);
+    }
+
+    // Sync restored default Tags & Themes to `./Saves/` (server cleans up modified built-in override files)
+    void enqueueDiskOperation(() =>
+      runDiskSaveRequest(
+        'manual',
+        {
+          characters: charactersRef.current,
+          lorebooks: lorebooksRef.current,
+          themes: restoredThemes,
+          tags: restoredTags,
+        },
+        opVersion
+      )
+    );
+  }, [enqueueDiskOperation, markDirtyChange, runDiskSaveRequest]);
 
   const tokenBreakdown = useMemo(
     () =>
       calculateCardTokenBreakdown(
         character,
-        character.character_book,
+        getResolvedLorebookForCharacter(character),
         statBlock
       ),
-    [character, statBlock]
+    [character, getResolvedLorebookForCharacter, statBlock]
   );
 
   const value = useMemo<StoreContextValue>(
@@ -8044,6 +8926,7 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
       createNewCharacter,
       deleteCharacter,
       bindLorebookToCharacter,
+      getResolvedLorebookForCharacter,
       character,
       setCharacter,
       updateCharacterField,
@@ -8082,6 +8965,8 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
       connectAiBackend,
       disconnectAiBackend,
       clearAiConnectionFeedback,
+      vaultRevision,
+      unlockLegacyVault,
       settings,
       setSettings,
       updateSettings,
@@ -8111,6 +8996,7 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
       updateLorebookDraft,
       updateThemesTagsDraft,
       updateSmartEditorDraft,
+      purgeSmartEditorDraftsByPrefix,
       inspectorDraft,
       updateInspectorDraft,
     }),
@@ -8121,14 +9007,17 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
       toggleMainSidebar,
       characters,
       activeCharacterId,
+      setActiveCharacterId,
       createNewCharacter,
       deleteCharacter,
       bindLorebookToCharacter,
+      getResolvedLorebookForCharacter,
       character,
       setCharacter,
       updateCharacterField,
       lorebooks,
       activeLorebookId,
+      setActiveLorebookId,
       createNewLorebook,
       deleteLorebook,
       lorebook,
@@ -8136,12 +9025,14 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
       statBlock,
       setStatBlock,
       themes,
+      setThemes,
       createNewTheme,
       updateTheme,
       deleteTheme,
       activeTheme,
       setActiveThemeId,
       tags,
+      setTags,
       upsertCustomTag,
       toggleTagNsfw,
       deleteTag,
@@ -8159,7 +9050,10 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
       connectAiBackend,
       disconnectAiBackend,
       clearAiConnectionFeedback,
+      vaultRevision,
+      unlockLegacyVault,
       settings,
+      setSettings,
       updateSettings,
       tokenBreakdown,
       lastSavedAt,
@@ -8187,6 +9081,7 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
       updateLorebookDraft,
       updateThemesTagsDraft,
       updateSmartEditorDraft,
+      purgeSmartEditorDraftsByPrefix,
       inspectorDraft,
       updateInspectorDraft,
     ]

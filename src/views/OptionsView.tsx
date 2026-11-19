@@ -31,33 +31,32 @@ import {
   Eye,
   EyeOff,
   Lock,
-  Unlock,
   KeyRound,
   Palette,
   Tag,
 } from 'lucide-react';
 import {
   formatSafeTimestamp,
+  isCharacterNsfw,
+  isLorebookNsfw,
+  isTagNsfwFlagged,
+  isThemeNsfw,
   META_FILENAME,
-  VAULT_FILENAME,
   UNIFIED_INTERNAL_ROOT,
   useStore,
 } from '../context/StoreContext';
 import {
   AI_BACKEND_PRESETS,
-  buildMergedGeminiModelList,
   COMPATIBILITY_FORMAT_LABELS,
   detectModelCompatibilityFormat,
   doesBackendSupportVision,
   getProviderKeyId,
+  isLocalBackend,
 } from '../services/aiService';
 import {
-  decryptProviderKeysFromVault,
   encryptAndSaveProviderKeys,
   getDecryptedKeyForProvider,
   getVaultStatusInfo,
-  lockVaultSessionInMemory,
-  updateVaultPassphrase,
 } from '../utils/cryptoVault';
 import { AIPresetId, ModelCompatibilityFormat, SavedFileEntry } from '../types';
 import { Tooltip } from '../components/Tooltip';
@@ -67,6 +66,8 @@ import { APP_VERSION, CHANGELOG_RELEASES } from '../utils/changelogData';
 
 export const OptionsView: React.FC = () => {
   const {
+    characters,
+    lorebooks,
     themes,
     tags,
     settings,
@@ -80,10 +81,12 @@ export const OptionsView: React.FC = () => {
     connectAiBackend,
     disconnectAiBackend,
     clearAiConnectionFeedback,
+    vaultRevision,
+    unlockLegacyVault,
     resetWorkspaceToDefaults,
     lastSavedAt,
+    saveAndSyncNow,
     savedFiles,
-    diskResolvedPath,
     loadSavedFileIntoWorkspace,
     requestDeleteSavedFile,
     exportSaveFolderBundle,
@@ -96,6 +99,7 @@ export const OptionsView: React.FC = () => {
   const [folderStatusMessage, setFolderStatusMessage] = useState<string | null>(
     null
   );
+  const [isSyncingDisk, setIsSyncingDisk] = useState(false);
 
   // Collapsible Subfolder Tree States inside Unified Save Folder
   const [charactersFolderOpen, setCharactersFolderOpen] = useState(true);
@@ -104,13 +108,14 @@ export const OptionsView: React.FC = () => {
   const [tagsFolderOpen, setTagsFolderOpen] = useState(true);
   const [metaSectionOpen, setMetaSectionOpen] = useState(true);
 
-  // API Key Show/Hide & AES-256-GCM Vault States
+  // API Key Show/Hide & Separate App-Private AES-256-GCM Vault States
   const [showApiKey, setShowApiKey] = useState(false);
   const [keyActionMessage, setKeyActionMessage] = useState<string | null>(null);
-  const [vaultStatus, setVaultStatus] = useState(() => getVaultStatusInfo());
-  const [vaultPassphraseInput, setVaultPassphraseInput] = useState('');
+  const [vaultUiTick, setVaultUiTick] = useState(0);
+  const [legacyPinInput, setLegacyPinInput] = useState('');
+  const [isMigratingLegacyVault, setIsMigratingLegacyVault] = useState(false);
   const [vaultMessage, setVaultMessage] = useState<string | null>(null);
-  const [showVaultPassphraseBar, setShowVaultPassphraseBar] = useState(false);
+  const [vaultMessageIsError, setVaultMessageIsError] = useState(false);
   const [isImportingBackup, setIsImportingBackup] = useState(false);
 
   const backupImportInputRef = useRef<HTMLInputElement | null>(null);
@@ -131,6 +136,13 @@ export const OptionsView: React.FC = () => {
     };
   }, []);
 
+  const vaultStatus = useMemo(
+    () => getVaultStatusInfo(),
+    // Re-read vault status whenever StoreContext loads/migrates vault or local key action runs
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [vaultRevision, vaultUiTick, aiConfig.savedProviderKeys]
+  );
+
   const currentPresetMeta = useMemo(
     () =>
       AI_BACKEND_PRESETS.find((p) => p.id === aiConfig.preset) ||
@@ -138,29 +150,19 @@ export const OptionsView: React.FC = () => {
     [aiConfig.preset]
   );
 
+  const isLocalServer = useMemo(() => isLocalBackend(aiConfig), [aiConfig]);
+
   const autoDetectedFormat = useMemo(
     () => detectModelCompatibilityFormat(aiConfig.modelName, aiConfig.preset),
     [aiConfig.modelName, aiConfig.preset]
   );
 
+  // ONLY real models reported by the selected backend — zero hardcoded or speculative models
   const unfilteredSelectableModels = useMemo(() => {
-    const rawCombined = Array.from(
-      new Set([
-        ...(aiConfig.availableModels || []),
-        ...(currentPresetMeta.suggestedModels || []),
-        ...(aiConfig.modelName ? [aiConfig.modelName] : []),
-      ])
-    ).filter(Boolean);
-
-    return aiConfig.preset === 'gemini'
-      ? buildMergedGeminiModelList(rawCombined)
-      : rawCombined;
-  }, [
-    aiConfig.availableModels,
-    aiConfig.modelName,
-    aiConfig.preset,
-    currentPresetMeta.suggestedModels,
-  ]);
+    return Array.from(
+      new Set((aiConfig.availableModels || []).map((m) => m.trim()).filter(Boolean))
+    );
+  }, [aiConfig.availableModels]);
 
   const allSelectableModels = useMemo(() => {
     const q = modelSearchQuery.trim().toLowerCase();
@@ -168,49 +170,184 @@ export const OptionsView: React.FC = () => {
     return unfilteredSelectableModels.filter((m) => m.toLowerCase().includes(q));
   }, [unfilteredSelectableModels, modelSearchQuery]);
 
-  // Group Unified Save Folder files into `Characters/`, `Lorebooks/`, `Themes/`, `Tags/`, and root meta/vault files
+  const localLoadedModels = useMemo(() => {
+    if (!isLocalServer) return [];
+    const loadedSet = new Set(aiConfig.loadedModels || []);
+    return allSelectableModels.filter(
+      (m) => aiConfig.modelStatuses?.[m] === 'loaded' || loadedSet.has(m)
+    );
+  }, [isLocalServer, allSelectableModels, aiConfig.loadedModels, aiConfig.modelStatuses]);
+
+  const localNotLoadedModels = useMemo(() => {
+    if (!isLocalServer) return [];
+    const loadedSet = new Set(localLoadedModels);
+    return allSelectableModels.filter((m) => !loadedSet.has(m));
+  }, [isLocalServer, allSelectableModels, localLoadedModels]);
+
+  const totalLocalLoadedCount = useMemo(() => {
+    if (!isLocalServer) return 0;
+    const loadedSet = new Set(aiConfig.loadedModels || []);
+    return unfilteredSelectableModels.filter(
+      (m) => aiConfig.modelStatuses?.[m] === 'loaded' || loadedSet.has(m)
+    ).length;
+  }, [isLocalServer, unfilteredSelectableModels, aiConfig.loadedModels, aiConfig.modelStatuses]);
+
+  const activeModelLocalStatus = useMemo<'loaded' | 'not-loaded' | null>(() => {
+    if (!isLocalServer || !aiConfig.modelName) return null;
+    if (!unfilteredSelectableModels.includes(aiConfig.modelName)) return null;
+    if (
+      aiConfig.modelStatuses?.[aiConfig.modelName] === 'loaded' ||
+      (aiConfig.loadedModels || []).includes(aiConfig.modelName)
+    ) {
+      return 'loaded';
+    }
+    return 'not-loaded';
+  }, [
+    isLocalServer,
+    aiConfig.modelName,
+    aiConfig.modelStatuses,
+    aiConfig.loadedModels,
+    unfilteredSelectableModels,
+  ]);
+
+  // Strict NSFW filter for Saved Files tree when settings.hideNsfwTags is enabled
+  const nsfwSavedFileIds = useMemo(() => {
+    const ids = new Set<string>();
+    if (!settings.hideNsfwTags) return ids;
+
+    const charById = new Map(characters.map((c) => [c.id, c]));
+    const lbById = new Map(lorebooks.map((l) => [l.id, l]));
+    const themeById = new Map(themes.map((t) => [t.id, t]));
+    const tagById = new Map(tags.map((t) => [t.id, t]));
+
+    for (const file of savedFiles) {
+      if (file.kind === 'character') {
+        const matched = file.entityId ? charById.get(file.entityId) : undefined;
+        if (matched) {
+          if (isCharacterNsfw(matched, tags, lorebooks)) ids.add(file.id);
+        } else if (!file.isCorrupted && file.content) {
+          try {
+            const parsed = JSON.parse(file.content);
+            const data = parsed?.data && typeof parsed.data === 'object' ? parsed.data : parsed;
+            const rawTags = Array.isArray(data?.tags) ? data.tags : [];
+            const tsExt = data?.extensions?.tavernsmith;
+            const manual = Boolean(parsed?.isNsfw || data?.isNsfw || tsExt?.isNsfw);
+            if (manual || rawTags.some((t: unknown) => typeof t === 'string' && isTagNsfwFlagged(t, tags))) {
+              ids.add(file.id);
+            }
+          } catch {
+            // Leave unreadable/corrupted file visible for cleanup
+          }
+        }
+      } else if (file.kind === 'lorebook') {
+        const matched = file.entityId ? lbById.get(file.entityId) : undefined;
+        if (matched) {
+          if (isLorebookNsfw(matched, tags)) ids.add(file.id);
+        } else if (!file.isCorrupted && file.content) {
+          try {
+            const parsed = JSON.parse(file.content);
+            const rawTags = Array.isArray(parsed?.tags) ? parsed.tags : [];
+            const manual = Boolean(parsed?.isNsfw || parsed?.extensions?.tavernsmith?.isNsfw);
+            if (manual || rawTags.some((t: unknown) => typeof t === 'string' && isTagNsfwFlagged(t, tags))) {
+              ids.add(file.id);
+            }
+          } catch {
+            // Leave unreadable/corrupted file visible for cleanup
+          }
+        }
+      } else if (file.kind === 'theme') {
+        const matched = file.entityId ? themeById.get(file.entityId) : undefined;
+        if (matched) {
+          if (isThemeNsfw(matched, tags)) ids.add(file.id);
+        } else if (!file.isCorrupted && file.content) {
+          try {
+            const parsed = JSON.parse(file.content);
+            const rawTags = Array.isArray(parsed?.tags) ? parsed.tags : [];
+            if (rawTags.some((t: unknown) => typeof t === 'string' && isTagNsfwFlagged(t, tags))) {
+              ids.add(file.id);
+            }
+          } catch {
+            // Leave unreadable/corrupted file visible for cleanup
+          }
+        }
+      } else if (file.kind === 'tag') {
+        const matched = file.entityId ? tagById.get(file.entityId) : undefined;
+        if (matched) {
+          if (matched.isNsfw) ids.add(file.id);
+        } else if (!file.isCorrupted && file.content) {
+          try {
+            const parsed = JSON.parse(file.content);
+            if (parsed?.isNsfw) ids.add(file.id);
+          } catch {
+            // Leave unreadable/corrupted file visible for cleanup
+          }
+        }
+      }
+    }
+    return ids;
+  }, [settings.hideNsfwTags, savedFiles, characters, lorebooks, themes, tags]);
+
+  // Group Unified Save Folder files into `Characters/`, `Lorebooks/`, `Themes/`, `Tags/`, and root meta file
   const characterSavedFiles = useMemo(
-    () => savedFiles.filter((f) => f.kind === 'character'),
-    [savedFiles]
+    () =>
+      savedFiles.filter(
+        (f) => f.kind === 'character' && !nsfwSavedFileIds.has(f.id)
+      ),
+    [savedFiles, nsfwSavedFileIds]
   );
 
   const lorebookSavedFiles = useMemo(
-    () => savedFiles.filter((f) => f.kind === 'lorebook'),
-    [savedFiles]
+    () =>
+      savedFiles.filter(
+        (f) => f.kind === 'lorebook' && !nsfwSavedFileIds.has(f.id)
+      ),
+    [savedFiles, nsfwSavedFileIds]
   );
 
   const themeSavedFiles = useMemo(
-    () => savedFiles.filter((f) => f.kind === 'theme'),
-    [savedFiles]
+    () =>
+      savedFiles.filter(
+        (f) => f.kind === 'theme' && !nsfwSavedFileIds.has(f.id)
+      ),
+    [savedFiles, nsfwSavedFileIds]
   );
 
   const tagSavedFiles = useMemo(
-    () => savedFiles.filter((f) => f.kind === 'tag'),
-    [savedFiles]
+    () =>
+      savedFiles.filter(
+        (f) => f.kind === 'tag' && !nsfwSavedFileIds.has(f.id)
+      ),
+    [savedFiles, nsfwSavedFileIds]
   );
 
   const metaSavedFiles = useMemo(
     () =>
       savedFiles.filter(
-        (f) =>
-          f.kind === 'meta' ||
-          f.kind === 'vault' ||
-          f.fileName === META_FILENAME ||
-          f.fileName === VAULT_FILENAME
+        (f) => f.kind === 'meta' || f.fileName === META_FILENAME
       ),
     [savedFiles]
   );
 
+  const visibleSavedFilesCount =
+    characterSavedFiles.length +
+    lorebookSavedFiles.length +
+    themeSavedFiles.length +
+    tagSavedFiles.length +
+    metaSavedFiles.length;
+
   const corruptedSavedFiles = useMemo(
-    () => savedFiles.filter((f) => f.isCorrupted),
-    [savedFiles]
+    () =>
+      savedFiles.filter(
+        (f) => f.isCorrupted && f.kind !== 'vault' && !nsfwSavedFileIds.has(f.id)
+      ),
+    [savedFiles, nsfwSavedFileIds]
   );
 
   const handleSelectPreset = (presetId: AIPresetId) => {
     switchAIPreset(presetId);
     setModelSearchQuery('');
     setShowApiKey(false);
-    setVaultStatus(getVaultStatusInfo());
+    setVaultUiTick((t) => t + 1);
   };
 
   const handleToggleRevealApiKey = async () => {
@@ -234,7 +371,7 @@ export const OptionsView: React.FC = () => {
         }));
       }
     }
-    setVaultStatus(getVaultStatusInfo());
+    setVaultUiTick((t) => t + 1);
   };
 
   const handleSaveOrUpdateApiKey = async () => {
@@ -250,14 +387,16 @@ export const OptionsView: React.FC = () => {
       apiKey: trimmedKey,
       savedProviderKeys: updatedMap,
     }));
-    await encryptAndSaveProviderKeys(updatedMap);
-    setVaultStatus(getVaultStatusInfo());
+    const ok = await encryptAndSaveProviderKeys(updatedMap);
+    setVaultUiTick((t) => t + 1);
     setKeyActionMessage(
-      trimmedKey
-        ? `AES-256-GCM Encrypted & Saved Key for ${currentPresetMeta.label}`
-        : `Cleared Key for ${currentPresetMeta.label}`
+      !ok
+        ? `Could not write to ./.tavernsmith-app/ vault — check local server connection.`
+        : trimmedKey
+          ? `AES-256-GCM Encrypted & Saved Key for ${currentPresetMeta.label} in ./.tavernsmith-app/`
+          : `Cleared Key for ${currentPresetMeta.label}`
     );
-    scheduleTimer(() => setKeyActionMessage(null), 4000);
+    scheduleTimer(() => setKeyActionMessage(null), 4500);
   };
 
   const handleClearApiKey = async () => {
@@ -273,81 +412,48 @@ export const OptionsView: React.FC = () => {
       savedProviderKeys: updatedMap,
     }));
     await encryptAndSaveProviderKeys(updatedMap);
-    setVaultStatus(getVaultStatusInfo());
-    setKeyActionMessage(
-      `Cleared API key for ${currentPresetMeta.label}`
-    );
+    setVaultUiTick((t) => t + 1);
+    setKeyActionMessage(`Cleared API key for ${currentPresetMeta.label}`);
     scheduleTimer(() => setKeyActionMessage(null), 4000);
   };
 
-  const handleApplyVaultPassphrase = async () => {
-    const cleanPass = vaultPassphraseInput.trim();
-    if (!cleanPass) {
-      setVaultMessage('Enter a Passphrase or PIN first.');
+  const handleMigrateLegacyPinVault = async () => {
+    const cleanPin = legacyPinInput.trim();
+    if (!cleanPin) {
+      setVaultMessageIsError(true);
+      setVaultMessage('Enter your previous vault PIN / passphrase to migrate keys.');
       return;
     }
-    // First attempt unlock if vault is currently locked with a custom passphrase
-    const status = getVaultStatusInfo();
-    if (status.hasCustomPassphrase && status.isLocked) {
-      const unlocked = await decryptProviderKeysFromVault(cleanPass);
-      if (unlocked.ok) {
-        const providerKey = getProviderKeyId(aiConfig.preset);
-        const restoredKey =
-          unlocked.keys[providerKey] || unlocked.keys[aiConfig.preset] || '';
-        setAiConfig((prev) => ({
-          ...prev,
-          apiKey: restoredKey,
-          savedProviderKeys: unlocked.keys,
-        }));
-        setVaultStatus(getVaultStatusInfo());
-        setVaultPassphraseInput('');
+    setIsMigratingLegacyVault(true);
+    try {
+      const res = await unlockLegacyVault(cleanPin);
+      setVaultUiTick((t) => t + 1);
+      if (res.ok) {
+        setLegacyPinInput('');
+        setVaultMessageIsError(false);
         setVaultMessage(
-          'Vault unlocked in memory using your Passphrase / PIN.'
+          `Migrated ${res.migratedCount ?? 0} API key(s) into the PIN-free ./.tavernsmith-app/ encrypted vault.`
         );
-        scheduleTimer(() => setVaultMessage(null), 5000);
-        return;
+        scheduleTimer(() => setVaultMessage(null), 6000);
       } else {
-        setVaultMessage(
-          unlocked.error || 'Incorrect Vault Passphrase / PIN.'
-        );
+        setVaultMessageIsError(true);
+        setVaultMessage(res.error || 'Incorrect legacy vault PIN / passphrase.');
         scheduleTimer(() => setVaultMessage(null), 5000);
-        return;
       }
+    } finally {
+      setIsMigratingLegacyVault(false);
     }
-    if (Object.keys(aiConfig.savedProviderKeys || {}).length > 0) {
-      await encryptAndSaveProviderKeys(
-        aiConfig.savedProviderKeys || {},
-        cleanPass
-      );
-    }
-    const res = await updateVaultPassphrase(cleanPass);
-    setVaultStatus(getVaultStatusInfo());
-    setVaultPassphraseInput('');
-    setVaultMessage(res.message);
-    scheduleTimer(() => setVaultMessage(null), 5000);
   };
 
-  const handleRemoveVaultPassphrase = async () => {
-    const res = await updateVaultPassphrase(null);
-    setVaultStatus(getVaultStatusInfo());
-    setVaultPassphraseInput('');
-    setVaultMessage(res.message);
-    scheduleTimer(() => setVaultMessage(null), 5000);
-  };
-
-  const handleLockVaultInMemory = () => {
-    lockVaultSessionInMemory();
-    setShowApiKey(false);
-    setAiConfig((prev) => ({
-      ...prev,
-      apiKey: '',
-      savedProviderKeys: {},
-    }));
-    setVaultStatus(getVaultStatusInfo());
-    setVaultMessage(
-      'Vault locked in memory. Keys remain AES-256-GCM encrypted in _tavernsmith_vault_enc.'
-    );
-    scheduleTimer(() => setVaultMessage(null), 5000);
+  const handleSyncDiskNow = async () => {
+    setIsSyncingDisk(true);
+    try {
+      const res = await saveAndSyncNow();
+      setFolderStatusMessage(res.message);
+      scheduleTimer(() => setFolderStatusMessage(null), 4000);
+    } finally {
+      setIsSyncingDisk(false);
+    }
   };
 
   const handleScanModels = async () => {
@@ -433,23 +539,21 @@ export const OptionsView: React.FC = () => {
             <div className="space-y-1.5 min-w-0">
               <div className="flex flex-wrap items-center gap-2">
                 <h2 className="text-sm font-bold text-slate-900 dark:text-white">
-                  Saved Files Folder (`./Saves/`)
+                  Saved Files Folder (<code className="font-mono">{UNIFIED_INTERNAL_ROOT}</code>)
                 </h2>
-                <Tooltip content="Your characters, lorebooks, themes, tags, and encrypted API keys are saved in ./Saves/ on disk and loaded automatically." />
+                <Tooltip content="All characters, lorebooks, themes, and tags live inside a single ./Saves/ directory with subfolders. API keys are encrypted and stored separately outside ./Saves/." />
               </div>
 
               {/* Active Disk Path Badge */}
               <div className="flex flex-wrap items-center gap-2">
                 <span className="inline-flex items-center gap-1.5 rounded-md border border-emerald-500/40 bg-emerald-500/15 px-2.5 py-1 font-mono text-xs font-semibold text-emerald-700 dark:text-emerald-300">
                   <HardDrive className="h-3.5 w-3.5 shrink-0" />
-                  <span>
-                    Save Folder: {UNIFIED_INTERNAL_ROOT}
-                  </span>
+                  <span>Save Folder: {UNIFIED_INTERNAL_ROOT}</span>
                 </span>
               </div>
 
               <p className="text-[11px] text-slate-500 dark:text-slate-400">
-                Directly reading and writing real files inside{' '}
+                Single unified save directory with subfolders{' '}
                 <code className="font-mono font-semibold text-slate-800 dark:text-slate-200">
                   ./Saves/Characters/
                 </code>
@@ -465,30 +569,26 @@ export const OptionsView: React.FC = () => {
                 <code className="font-mono font-semibold text-slate-800 dark:text-slate-200">
                   ./Saves/Tags/
                 </code>
-                ,{' '}
+                , and{' '}
                 <code className="font-mono font-semibold text-slate-800 dark:text-slate-200">
                   ./Saves/{META_FILENAME}
                 </code>
-                , and{' '}
+                . Encrypted API keys are stored separately in{' '}
                 <code className="font-mono font-semibold text-slate-800 dark:text-slate-200">
-                  ./Saves/{VAULT_FILENAME}
-                </code>
-                {diskResolvedPath && diskResolvedPath !== UNIFIED_INTERNAL_ROOT ? (
-                  <>
-                    {' '}
-                    (Resolved on disk:{' '}
-                    <code className="font-mono text-slate-700 dark:text-slate-300">
-                      {diskResolvedPath}
-                    </code>
-                    )
-                  </>
-                ) : null}
-                .
+                  ./.tavernsmith-app/
+                </code>{' '}
+                and never included in backups.
+              </p>
+              <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                <strong className="text-slate-700 dark:text-slate-300">
+                  Backup Import / Export scope:
+                </strong>{' '}
+                Characters, Lorebooks, Themes, and Tags only — excludes settings, AI config, and API keys.
               </p>
             </div>
           </div>
 
-          {/* Action Toolbar: Export & Import Backup */}
+          {/* Action Toolbar: Sync, Import & Export Backup */}
           <div className="flex flex-wrap items-center gap-2 shrink-0">
             <input
               ref={backupImportInputRef}
@@ -503,9 +603,22 @@ export const OptionsView: React.FC = () => {
             />
             <button
               type="button"
+              disabled={isSyncingDisk}
+              onClick={handleSyncDiskNow}
+              title="Sync current characters, lorebooks, themes, and tags to ./Saves/ now"
+              className="theme-hover-outline flex items-center gap-1.5 rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-950 px-3 py-1.5 text-xs font-medium text-slate-700 dark:text-slate-200 disabled:opacity-50 cursor-pointer"
+            >
+              <RefreshCw
+                className={`h-3.5 w-3.5 ${isSyncingDisk ? 'animate-spin' : ''}`}
+                style={{ color: 'var(--theme-accent)' }}
+              />
+              <span>{isSyncingDisk ? 'Syncing...' : 'Sync Disk'}</span>
+            </button>
+            <button
+              type="button"
               disabled={isImportingBackup}
               onClick={() => backupImportInputRef.current?.click()}
-              title="Import a singular TavernSmith backup (.json) or character, lorebook, theme, and tag files"
+              title="Import Characters, Lorebooks, Themes, and Tags only from a TavernSmith backup (.json) or individual card/lorebook files"
               className="theme-hover-outline flex items-center gap-1.5 rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-950 px-3 py-1.5 text-xs font-medium text-slate-700 dark:text-slate-200 disabled:opacity-50 cursor-pointer"
             >
               <Upload
@@ -517,7 +630,7 @@ export const OptionsView: React.FC = () => {
             <button
               type="button"
               onClick={() => exportSaveFolderBundle()}
-              title="Export all Characters, Lorebooks, and custom/modified Themes & Tags into a single .json file"
+              title="Export Characters, Lorebooks, Themes, and Tags only into a single .json backup (excludes settings and API keys)"
               className="theme-hover-outline flex items-center gap-1.5 rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-950 px-3 py-1.5 text-xs font-medium text-slate-700 dark:text-slate-200 cursor-pointer"
             >
               <Archive
@@ -545,9 +658,9 @@ export const OptionsView: React.FC = () => {
           </div>
         )}
 
-        {/* Real Disk Files Tree (`./Saves/Characters/`, `./Saves/Lorebooks/`, `_tavernsmith_meta.json`, `_tavernsmith_vault.enc`) */}
+        {/* Real Disk Files Tree (`./Saves/Characters/`, `./Saves/Lorebooks/`, `./Saves/Themes/`, `./Saves/Tags/`, `_tavernsmith_meta.json`) */}
         <div className="rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-950/50 p-3.5 space-y-3 min-w-0">
-          <div className="flex items-center justify-between border-b border-slate-200 dark:border-slate-800 pb-2.5">
+          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 dark:border-slate-800 pb-2.5">
             <div className="flex items-center gap-2 text-xs font-semibold text-slate-900 dark:text-white">
               <FileJson
                 className="h-3.5 w-3.5 shrink-0"
@@ -558,7 +671,13 @@ export const OptionsView: React.FC = () => {
                 <code className="font-mono">{UNIFIED_INTERNAL_ROOT}</code>
               </span>
             </div>
-            <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2">
+              {settings.hideNsfwTags && nsfwSavedFileIds.size > 0 && (
+                <span className="inline-flex items-center gap-1 rounded bg-amber-500/15 border border-amber-500/40 px-1.5 py-0.5 font-mono text-[10px] font-semibold text-amber-700 dark:text-amber-300">
+                  <ShieldCheck className="h-3 w-3" />
+                  {nsfwSavedFileIds.size} NSFW hidden
+                </span>
+              )}
               {corruptedSavedFiles.length > 0 && (
                 <span className="inline-flex items-center gap-1 rounded bg-rose-500/15 border border-rose-500/40 px-1.5 py-0.5 font-mono text-[10px] font-semibold text-rose-600 dark:text-rose-400">
                   <AlertTriangle className="h-3 w-3" />
@@ -566,7 +685,8 @@ export const OptionsView: React.FC = () => {
                 </span>
               )}
               <span className="font-mono text-[11px] font-semibold text-slate-600 dark:text-slate-300">
-                {savedFiles.length} file{savedFiles.length === 1 ? '' : 's'}
+                {visibleSavedFilesCount} file
+                {visibleSavedFilesCount === 1 ? '' : 's'}
               </span>
             </div>
           </div>
@@ -994,7 +1114,7 @@ export const OptionsView: React.FC = () => {
               )}
             </div>
 
-            {/* ROOT METADATA & VAULT FILES: _tavernsmith_meta.json & _tavernsmith_vault.enc */}
+            {/* ROOT METADATA FILE: _tavernsmith_meta.json */}
             <div className="rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 overflow-hidden">
               <button
                 type="button"
@@ -1011,12 +1131,17 @@ export const OptionsView: React.FC = () => {
                     className="h-3.5 w-3.5"
                     style={{ color: 'var(--theme-accent)' }}
                   />
-                  <span className="font-mono">
-                    ./Saves/{META_FILENAME} &amp; ./Saves/{VAULT_FILENAME}
-                  </span>
+                  <span className="font-mono">./Saves/{META_FILENAME}</span>
                 </div>
                 <span className="font-mono text-[10px] text-slate-500">
-                  {tags.length} Tags · {themes.length} Context Themes · AES-256 Vault
+                  {settings.hideNsfwTags
+                    ? tags.filter((t) => !t.isNsfw).length
+                    : tags.length}{' '}
+                  Tags ·{' '}
+                  {settings.hideNsfwTags
+                    ? themes.filter((th) => !isThemeNsfw(th, tags)).length
+                    : themes.length}{' '}
+                  Context Themes
                 </span>
               </button>
 
@@ -1037,7 +1162,7 @@ export const OptionsView: React.FC = () => {
                             ./Saves/{file.fileName}
                           </span>
                           <span className="rounded bg-slate-100 dark:bg-slate-800 px-1.5 py-0.5 font-mono text-[10px] uppercase text-slate-600 dark:text-slate-300">
-                            {file.kind === 'vault' ? 'encrypted vault' : 'root meta'}
+                            root meta
                           </span>
                           {file.isCorrupted && (
                             <span
@@ -1059,22 +1184,20 @@ export const OptionsView: React.FC = () => {
                       </div>
 
                       <div className="flex items-center gap-1.5 shrink-0">
-                        {file.kind === 'meta' && (
-                          <button
-                            type="button"
-                            disabled={Boolean(file.isCorrupted)}
-                            onClick={() => handleLoadFile(file)}
-                            title={
-                              file.isCorrupted
-                                ? 'Cannot load corrupted metadata file'
-                                : 'Reload Tags & Context Themes from metadata file'
-                            }
-                            className="theme-hover-outline flex items-center gap-1 rounded-md border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800 px-2 py-1 text-[11px] font-semibold text-slate-700 dark:text-slate-200 disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer"
-                          >
-                            <ExternalLink className="h-3 w-3" />
-                            <span>Load</span>
-                          </button>
-                        )}
+                        <button
+                          type="button"
+                          disabled={Boolean(file.isCorrupted)}
+                          onClick={() => handleLoadFile(file)}
+                          title={
+                            file.isCorrupted
+                              ? 'Cannot load corrupted metadata file'
+                              : 'Reload Tags & Context Themes from metadata file'
+                          }
+                          className="theme-hover-outline flex items-center gap-1 rounded-md border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800 px-2 py-1 text-[11px] font-semibold text-slate-700 dark:text-slate-200 disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer"
+                        >
+                          <ExternalLink className="h-3 w-3" />
+                          <span>Load</span>
+                        </button>
                         <button
                           type="button"
                           onClick={() => handleDownloadSavedFile(file)}
@@ -1383,37 +1506,45 @@ export const OptionsView: React.FC = () => {
               </div>
             </div>
 
-            <div className="pt-2 flex flex-wrap items-center justify-end gap-2 border-t border-slate-200 dark:border-slate-800">
-              {!confirmReset ? (
-                <button
-                  type="button"
-                  onClick={() => setConfirmReset(true)}
-                  className="flex items-center gap-1.5 rounded-lg border border-rose-200 dark:border-rose-900/50 px-3 py-1.5 text-xs font-medium text-rose-600 dark:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/40 cursor-pointer"
-                >
-                  <RotateCcw className="h-3.5 w-3.5" />
-                  <span>Reset Defaults</span>
-                </button>
-              ) : (
-                <div className="flex items-center gap-1.5">
+            <div className="pt-2 space-y-2 border-t border-slate-200 dark:border-slate-800">
+              <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                <strong className="text-slate-700 dark:text-slate-300">
+                  Reset Defaults
+                </strong>{' '}
+                restores deleted or modified built-in Default Tags and Default Context Themes only — keeping your custom tags, custom themes, characters, lorebooks, settings, and API keys.
+              </p>
+              <div className="flex flex-wrap items-center justify-end gap-2">
+                {!confirmReset ? (
                   <button
                     type="button"
-                    onClick={() => {
-                      resetWorkspaceToDefaults();
-                      setConfirmReset(false);
-                    }}
-                    className="rounded-md bg-rose-600 px-2.5 py-1 text-xs font-semibold text-white cursor-pointer"
+                    onClick={() => setConfirmReset(true)}
+                    className="flex items-center gap-1.5 rounded-lg border border-rose-200 dark:border-rose-900/50 px-3 py-1.5 text-xs font-medium text-rose-600 dark:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/40 cursor-pointer"
                   >
-                    Confirm Reset
+                    <RotateCcw className="h-3.5 w-3.5" />
+                    <span>Reset Defaults</span>
                   </button>
-                  <button
-                    type="button"
-                    onClick={() => setConfirmReset(false)}
-                    className="rounded-md border border-slate-300 dark:border-slate-700 px-2 py-1 text-xs text-slate-600 dark:text-slate-300 cursor-pointer"
-                  >
-                    Cancel
-                  </button>
-                </div>
-              )}
+                ) : (
+                  <div className="flex items-center gap-1.5">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        resetWorkspaceToDefaults();
+                        setConfirmReset(false);
+                      }}
+                      className="rounded-md bg-rose-600 px-2.5 py-1 text-xs font-semibold text-white cursor-pointer"
+                    >
+                      Restore Default Tags &amp; Themes
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setConfirmReset(false)}
+                      className="rounded-md border border-slate-300 dark:border-slate-700 px-2 py-1 text-xs text-slate-600 dark:text-slate-300 cursor-pointer"
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                )}
+              </div>
             </div>
           </div>
         </div>
@@ -1435,14 +1566,16 @@ export const OptionsView: React.FC = () => {
               </h2>
               <Tooltip
                 title="AI Providers"
-                content="Connect to local apps like LM Studio / Ollama / KoboldCPP or cloud APIs like Gemini and OpenRouter. Thinking blocks (<think>) are automatically cleaned up."
+                content="Connect to local apps like LM Studio / Ollama / KoboldCPP or cloud APIs like Gemini, Anthropic, OpenAI, and OpenRouter. Thinking blocks (<think>) are automatically cleaned up."
               />
             </div>
 
             {isAiConnected && (
               <span className="inline-flex items-center gap-1 rounded-md border border-emerald-500/40 bg-emerald-500/10 px-2 py-0.5 font-mono text-[10px] font-semibold text-emerald-700 dark:text-emerald-300">
                 <CheckCircle2 className="h-3 w-3 shrink-0" />
-                <span>Connected · {aiConfig.modelName}</span>
+                <span>
+                  Connected{aiConfig.modelName ? ` · ${aiConfig.modelName}` : ''}
+                </span>
               </span>
             )}
           </div>
@@ -1522,13 +1655,13 @@ export const OptionsView: React.FC = () => {
                       ? `${currentPresetMeta.label} API Key`
                       : 'API Key (Optional)'}
                 </span>
-                <Tooltip content="Encrypted locally in your browser/vault. Never saved inside exported characters or lorebooks." />
+                <Tooltip content="Encrypted with AES-256-GCM in ./.tavernsmith-app/ (outside ./Saves/) and auto-filled when selecting this backend. Never saved inside exported characters, lorebooks, or backups." />
               </label>
 
               {aiConfig.preset === 'gemini' && (
                 <span className="font-mono text-[10px] text-slate-500 dark:text-slate-400">
                   {aiConfig.apiKey.trim()
-                    ? 'Key entered (direct Gemini API)'
+                    ? 'Key entered (sent via x-goog-api-key header)'
                     : 'Paste a Google AI Studio key (AIza...)'}
                 </span>
               )}
@@ -1620,88 +1753,74 @@ export const OptionsView: React.FC = () => {
             )}
           </div>
 
-          {/* Compact AES-256 Key Vault Bar */}
-          <div className="rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-950/60 px-3 py-2 space-y-2">
+          {/* App-Private Encrypted Key Vault Bar (No PIN Required) */}
+          <div className="rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-950/60 px-3 py-2.5 space-y-2">
             <div className="flex flex-wrap items-center justify-between gap-2">
-              <div className="flex items-center gap-2 text-[11px]">
-                {!vaultStatus.isLocked ? (
-                  <Unlock className="h-3.5 w-3.5 text-emerald-500 shrink-0" />
-                ) : (
+              <div className="flex flex-wrap items-center gap-2 text-[11px]">
+                {vaultStatus.needsLegacyUnlock ? (
                   <Lock className="h-3.5 w-3.5 text-amber-500 shrink-0" />
+                ) : (
+                  <ShieldCheck className="h-3.5 w-3.5 text-emerald-500 shrink-0" />
                 )}
                 <span className="font-semibold text-slate-800 dark:text-slate-200">
-                  AES-256 Key Vault
+                  App-Private AES-256 Vault
                 </span>
                 <span className="font-mono text-[10px] text-slate-500 dark:text-slate-400">
-                  {vaultStatus.hasCustomPassphrase
-                    ? 'PIN Protected'
-                    : 'Auto Device Key'}
+                  {vaultStatus.needsLegacyUnlock
+                    ? 'Legacy PIN Vault Detected'
+                    : `Auto-Unlocked · ${vaultStatus.keyCount} Key${vaultStatus.keyCount === 1 ? '' : 's'} Saved`}
                 </span>
               </div>
 
-              <div className="flex items-center gap-1.5">
-                <button
-                  type="button"
-                  onClick={() => setShowVaultPassphraseBar((prev) => !prev)}
-                  className="rounded-md border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-2.5 py-1 text-[10px] font-semibold text-slate-700 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white cursor-pointer"
-                >
-                  {showVaultPassphraseBar
-                    ? 'Hide PIN'
-                    : vaultStatus.hasCustomPassphrase
-                      ? 'Unlock / PIN'
-                      : 'Set PIN'}
-                </button>
-                {vaultStatus.hasCustomPassphrase && !vaultStatus.isLocked && (
-                  <button
-                    type="button"
-                    onClick={handleLockVaultInMemory}
-                    className="rounded-md border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-2 py-1 text-[10px] font-mono text-slate-600 dark:text-slate-400 hover:text-amber-600 dark:hover:text-amber-300 cursor-pointer"
-                  >
-                    Lock
-                  </button>
-                )}
-              </div>
+              <span className="font-mono text-[10px] text-slate-500 dark:text-slate-400">
+                {vaultStatus.storagePath}
+              </span>
             </div>
 
-            {(showVaultPassphraseBar ||
-              (vaultStatus.hasCustomPassphrase && vaultStatus.isLocked)) && (
-              <div className="flex flex-wrap items-center gap-2 pt-1.5 border-t border-slate-200/70 dark:border-slate-800/70">
-                <input
-                  type="password"
-                  value={vaultPassphraseInput}
-                  onChange={(e) => setVaultPassphraseInput(e.target.value)}
-                  placeholder={
-                    vaultStatus.hasCustomPassphrase && vaultStatus.isLocked
-                      ? 'Enter PIN to unlock...'
-                      : 'New vault PIN / passphrase...'
-                  }
-                  autoComplete="off"
-                  className="theme-focus-ring font-mono flex-1 min-w-[180px] rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-2.5 py-1.5 text-xs text-slate-900 dark:text-white"
-                />
-                <button
-                  type="button"
-                  onClick={handleApplyVaultPassphrase}
-                  style={{ borderColor: 'var(--theme-accent)' }}
-                  className="theme-hover-outline rounded-lg border bg-slate-900 dark:bg-white px-3 py-1.5 text-[11px] font-semibold text-white dark:text-slate-900 cursor-pointer"
-                >
-                  {vaultStatus.hasCustomPassphrase && vaultStatus.isLocked
-                    ? 'Unlock'
-                    : 'Save PIN'}
-                </button>
-                {vaultStatus.hasCustomPassphrase && (
+            <p className="text-[11px] text-slate-500 dark:text-slate-400">
+              API keys are encrypted with AES-256-GCM outside{' '}
+              <code className="font-mono">./Saves/</code> and auto-filled whenever you select a matching backend. No PIN required.
+            </p>
+
+            {/* One-time migration prompt ONLY if an older PIN-protected legacy vault was found */}
+            {vaultStatus.needsLegacyUnlock && (
+              <div className="rounded-md border border-amber-500/40 bg-amber-500/10 p-2.5 space-y-2">
+                <div className="text-[11px] font-semibold text-amber-800 dark:text-amber-200">
+                  Migrate Legacy PIN Vault
+                </div>
+                <p className="text-[11px] text-amber-700 dark:text-amber-300">
+                  An older PIN-protected vault file was found. Enter your previous PIN once to decrypt and migrate your keys into the new PIN-free app vault.
+                </p>
+                <div className="flex flex-wrap items-center gap-2">
+                  <input
+                    type="password"
+                    value={legacyPinInput}
+                    onChange={(e) => setLegacyPinInput(e.target.value)}
+                    placeholder="Enter previous vault PIN / passphrase..."
+                    autoComplete="off"
+                    className="theme-focus-ring font-mono flex-1 min-w-[180px] rounded-lg border border-amber-500/40 bg-white dark:bg-slate-900 px-2.5 py-1.5 text-xs text-slate-900 dark:text-white"
+                  />
                   <button
                     type="button"
-                    onClick={handleRemoveVaultPassphrase}
-                    className="rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-2.5 py-1.5 text-[11px] font-medium text-slate-600 dark:text-slate-300 hover:text-rose-500 cursor-pointer"
+                    disabled={isMigratingLegacyVault}
+                    onClick={handleMigrateLegacyPinVault}
+                    style={{ borderColor: 'var(--theme-accent)' }}
+                    className="theme-hover-outline rounded-lg border bg-slate-900 dark:bg-white px-3 py-1.5 text-[11px] font-semibold text-white dark:text-slate-900 disabled:opacity-50 cursor-pointer"
                   >
-                    Remove PIN
+                    {isMigratingLegacyVault ? 'Migrating...' : 'Unlock & Migrate'}
                   </button>
-                )}
+                </div>
               </div>
             )}
 
             {vaultMessage && (
-              <div className="text-[11px] font-mono text-emerald-600 dark:text-emerald-400">
+              <div
+                className={`text-[11px] font-mono ${
+                  vaultMessageIsError
+                    ? 'text-rose-600 dark:text-rose-400'
+                    : 'text-emerald-600 dark:text-emerald-400'
+                }`}
+              >
                 {vaultMessage}
               </div>
             )}
@@ -1733,23 +1852,38 @@ export const OptionsView: React.FC = () => {
             </div>
           )}
 
-          {/* Model Selection, Live Scanner & Parser — Persists across tab switches */}
-          {(isAiConnected ||
-            aiConnectionResult?.ok ||
-            (aiConfig.availableModels && aiConfig.availableModels.length > 0)) && (
-            <div
-              style={{
-                borderColor:
-                  'color-mix(in srgb, var(--theme-accent) 28%, transparent)',
-              }}
-              className="rounded-lg border bg-slate-50/70 dark:bg-slate-950/60 p-3.5 space-y-3"
-            >
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <div className="flex flex-wrap items-center gap-2">
-                  <label className="text-xs font-semibold text-slate-800 dark:text-slate-200">
-                    Model Selection ({allSelectableModels.length})
-                  </label>
-                  {doesBackendSupportVision(aiConfig) ? (
+          {/* Model Selection, Live Scanner & Parser — Real Models Reported by Backend Only */}
+          <div
+            style={{
+              borderColor:
+                'color-mix(in srgb, var(--theme-accent) 28%, transparent)',
+            }}
+            className="rounded-lg border bg-slate-50/70 dark:bg-slate-950/60 p-3.5 space-y-3"
+          >
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="flex flex-wrap items-center gap-2">
+                <label className="text-xs font-semibold text-slate-800 dark:text-slate-200">
+                  Model Selection ({unfilteredSelectableModels.length})
+                </label>
+                {isLocalServer && unfilteredSelectableModels.length > 0 && (
+                  <span className="inline-flex items-center gap-1 rounded-md border border-slate-200 dark:border-slate-800 bg-white/80 dark:bg-slate-900/80 px-2 py-0.5 font-mono text-[10px] text-slate-700 dark:text-slate-300">
+                    🟢 {totalLocalLoadedCount} Loaded · ⚪{' '}
+                    {Math.max(0, unfilteredSelectableModels.length - totalLocalLoadedCount)}{' '}
+                    Not Loaded
+                  </span>
+                )}
+                {activeModelLocalStatus === 'loaded' && (
+                  <span className="inline-flex items-center gap-1 rounded-md border border-emerald-500/40 bg-emerald-500/15 px-2 py-0.5 font-mono text-[10px] font-semibold text-emerald-700 dark:text-emerald-300">
+                    🟢 Loaded
+                  </span>
+                )}
+                {activeModelLocalStatus === 'not-loaded' && (
+                  <span className="inline-flex items-center gap-1 rounded-md border border-amber-500/40 bg-amber-500/10 px-2 py-0.5 font-mono text-[10px] font-semibold text-amber-700 dark:text-amber-300">
+                    ⚪ Installed (Not Loaded)
+                  </span>
+                )}
+                {aiConfig.modelName &&
+                  (doesBackendSupportVision(aiConfig) ? (
                     <span
                       style={{
                         borderColor:
@@ -1763,141 +1897,187 @@ export const OptionsView: React.FC = () => {
                     <span className="inline-flex items-center gap-1 rounded-md border border-slate-200 dark:border-slate-800 bg-white/70 dark:bg-slate-900/70 px-2 py-0.5 font-mono text-[10px] text-slate-500 dark:text-slate-400">
                       Text-Only
                     </span>
-                  )}
-                </div>
-
-                <div className="flex items-center gap-2">
-                  <div className="relative w-44">
-                    <Search className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 h-3 w-3 text-slate-400" />
-                    <input
-                      type="text"
-                      value={modelSearchQuery}
-                      onChange={(e) => setModelSearchQuery(e.target.value)}
-                      placeholder="Filter models..."
-                      className="theme-focus-ring w-full rounded-md border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 pl-7 pr-6 py-1 text-xs text-slate-900 dark:text-white"
-                    />
-                    {modelSearchQuery && (
-                      <button
-                        type="button"
-                        onClick={() => setModelSearchQuery('')}
-                        title="Clear filter"
-                        className="absolute right-1.5 top-1/2 -translate-y-1/2 rounded p-0.5 text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 cursor-pointer"
-                      >
-                        <X className="h-3 w-3" />
-                      </button>
-                    )}
-                  </div>
-                  <button
-                    type="button"
-                    onClick={handleScanModels}
-                    disabled={isTestingAiConnection}
-                    title="Rescan available models"
-                    className="rounded-md border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-1.5 text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white cursor-pointer"
-                  >
-                    <RefreshCw
-                      className={`h-3.5 w-3.5 ${
-                        isTestingAiConnection ? 'animate-spin' : ''
-                      }`}
-                    />
-                  </button>
-                </div>
+                  ))}
               </div>
 
-              <div className="space-y-1">
-                <span className="text-[11px] text-slate-500 dark:text-slate-400">
-                  Available Models
-                  {modelSearchQuery.trim()
-                    ? ` (Showing ${allSelectableModels.length} of ${unfilteredSelectableModels.length})`
-                    : ''}
-                </span>
-                <select
-                  value={
-                    allSelectableModels.includes(aiConfig.modelName)
-                      ? aiConfig.modelName
-                      : allSelectableModels[0] || ''
-                  }
-                  onChange={(e) => {
-                    if (e.target.value) {
-                      setAiConfig((prev) => ({
-                        ...prev,
-                        modelName: e.target.value,
-                      }));
-                    }
-                  }}
-                  className="theme-focus-ring font-mono w-full rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-3 py-2 text-xs text-slate-900 dark:text-white cursor-pointer"
-                >
-                  {allSelectableModels.length === 0 ? (
-                    <option value="">No models match filter</option>
-                  ) : (
-                    allSelectableModels.map((m) => (
-                      <option key={m} value={m}>
-                        {m}
-                      </option>
-                    ))
-                  )}
-                </select>
-              </div>
-
-              {/* Parser Format & Vision Toggle in a single compact row */}
-              <div className="flex flex-wrap items-center justify-between gap-3 pt-2 border-t border-slate-200/80 dark:border-slate-800/80">
-                <div className="flex items-center gap-2">
-                  <Cpu
-                    className="h-3.5 w-3.5 shrink-0"
-                    style={{ color: 'var(--theme-accent)' }}
-                  />
-                  <label className="text-[11px] text-slate-500 dark:text-slate-400 whitespace-nowrap">
-                    Parser:
-                  </label>
-                  <select
-                    value={aiConfig.compatibilityFormat || 'auto'}
-                    onChange={(e) =>
-                      setAiConfig((prev) => ({
-                        ...prev,
-                        compatibilityFormat: e.target
-                          .value as ModelCompatibilityFormat,
-                      }))
-                    }
-                    className="theme-focus-ring font-mono rounded-md border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-2 py-1 text-xs text-slate-900 dark:text-white cursor-pointer"
-                  >
-                    <option value="auto">
-                      Auto ({COMPATIBILITY_FORMAT_LABELS[autoDetectedFormat]})
-                    </option>
-                    {(
-                      Object.keys(COMPATIBILITY_FORMAT_LABELS) as Array<
-                        Exclude<ModelCompatibilityFormat, 'auto'>
-                      >
-                    ).map((fmtKey) => (
-                      <option key={fmtKey} value={fmtKey}>
-                        {COMPATIBILITY_FORMAT_LABELS[fmtKey]}
-                      </option>
-                    ))}
-                  </select>
-                  <Tooltip content="Automatically strips <think> blocks so only clean text goes into your card." />
-                </div>
-
-                <label
-                  htmlFor="force-enable-vision-checkbox"
-                  className="flex items-center gap-1.5 text-xs font-medium text-slate-700 dark:text-slate-300 cursor-pointer select-none"
-                >
+              <div className="flex items-center gap-2">
+                <div className="relative w-44">
+                  <Search className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 h-3 w-3 text-slate-400" />
                   <input
-                    id="force-enable-vision-checkbox"
-                    type="checkbox"
-                    checked={Boolean(aiConfig.forceEnableVision)}
-                    onChange={(e) =>
-                      setAiConfig((prev) => ({
-                        ...prev,
-                        forceEnableVision: e.target.checked,
-                      }))
-                    }
-                    className="h-3.5 w-3.5 rounded cursor-pointer"
-                    style={{ accentColor: 'var(--theme-accent)' }}
+                    type="text"
+                    value={modelSearchQuery}
+                    onChange={(e) => setModelSearchQuery(e.target.value)}
+                    disabled={unfilteredSelectableModels.length === 0}
+                    placeholder="Filter models..."
+                    className="theme-focus-ring w-full rounded-md border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 pl-7 pr-6 py-1 text-xs text-slate-900 dark:text-white disabled:opacity-50"
                   />
-                  <span>Force Vision</span>
-                  <Tooltip content="Turn this on if your local GGUF model supports vision/images." />
-                </label>
+                  {modelSearchQuery && (
+                    <button
+                      type="button"
+                      onClick={() => setModelSearchQuery('')}
+                      title="Clear filter"
+                      className="absolute right-1.5 top-1/2 -translate-y-1/2 rounded p-0.5 text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 cursor-pointer"
+                    >
+                      <X className="h-3 w-3" />
+                    </button>
+                  )}
+                </div>
+                <button
+                  type="button"
+                  onClick={handleScanModels}
+                  disabled={isTestingAiConnection}
+                  title="Rescan available models from backend"
+                  className="rounded-md border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-1.5 text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white cursor-pointer"
+                >
+                  <RefreshCw
+                    className={`h-3.5 w-3.5 ${
+                      isTestingAiConnection ? 'animate-spin' : ''
+                    }`}
+                  />
+                </button>
               </div>
             </div>
-          )}
+
+            <div className="space-y-1">
+              <span className="text-[11px] text-slate-500 dark:text-slate-400">
+                Available Models (Live from Backend)
+                {modelSearchQuery.trim() && unfilteredSelectableModels.length > 0
+                  ? ` — Showing ${allSelectableModels.length} of ${unfilteredSelectableModels.length}`
+                  : ''}
+              </span>
+              <select
+                value={
+                  allSelectableModels.includes(aiConfig.modelName)
+                    ? aiConfig.modelName
+                    : ''
+                }
+                disabled={unfilteredSelectableModels.length === 0}
+                onChange={(e) => {
+                  if (e.target.value) {
+                    setAiConfig((prev) => ({
+                      ...prev,
+                      modelName: e.target.value,
+                    }));
+                  }
+                }}
+                className="theme-focus-ring font-mono w-full rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-3 py-2 text-xs text-slate-900 dark:text-white disabled:opacity-60 cursor-pointer"
+              >
+                {unfilteredSelectableModels.length === 0 ? (
+                  <option value="">
+                    Click Connect to load available models from {currentPresetMeta.label}...
+                  </option>
+                ) : allSelectableModels.length === 0 ? (
+                  <option value="">No models match &ldquo;{modelSearchQuery}&rdquo;</option>
+                ) : (
+                  <>
+                    {!allSelectableModels.includes(aiConfig.modelName) && (
+                      <option value="" disabled>
+                        {aiConfig.modelName
+                          ? `Active: ${aiConfig.modelName} (hidden by filter — select below)`
+                          : 'Select an available model...'}
+                      </option>
+                    )}
+                    {isLocalServer ? (
+                      <>
+                        {localLoadedModels.length > 0 && (
+                          <optgroup
+                            label={`🟢 Currently Loaded (${localLoadedModels.length})`}
+                          >
+                            {localLoadedModels.map((m) => (
+                              <option key={m} value={m}>
+                                🟢 {m} [Loaded]
+                              </option>
+                            ))}
+                          </optgroup>
+                        )}
+                        {localNotLoadedModels.length > 0 && (
+                          <optgroup
+                            label={`⚪ Installed — Not Loaded (${localNotLoadedModels.length})`}
+                          >
+                            {localNotLoadedModels.map((m) => (
+                              <option key={m} value={m}>
+                                ⚪ {m} [Not Loaded]
+                              </option>
+                            ))}
+                          </optgroup>
+                        )}
+                      </>
+                    ) : (
+                      allSelectableModels.map((m) => (
+                        <option key={m} value={m}>
+                          {m}
+                        </option>
+                      ))
+                    )}
+                  </>
+                )}
+              </select>
+              {isLocalServer && unfilteredSelectableModels.length > 0 && (
+                <p className="text-[10px] text-slate-500 dark:text-slate-400">
+                  Models marked 🟢 are currently loaded in memory on your local server; models marked ⚪ are installed locally and not yet loaded.
+                </p>
+              )}
+            </div>
+
+            {/* Parser Format & Vision Toggle in a single compact row */}
+            <div className="flex flex-wrap items-center justify-between gap-3 pt-2 border-t border-slate-200/80 dark:border-slate-800/80">
+              <div className="flex items-center gap-2">
+                <Cpu
+                  className="h-3.5 w-3.5 shrink-0"
+                  style={{ color: 'var(--theme-accent)' }}
+                />
+                <label className="text-[11px] text-slate-500 dark:text-slate-400 whitespace-nowrap">
+                  Parser:
+                </label>
+                <select
+                  value={aiConfig.compatibilityFormat || 'auto'}
+                  onChange={(e) =>
+                    setAiConfig((prev) => ({
+                      ...prev,
+                      compatibilityFormat: e.target
+                        .value as ModelCompatibilityFormat,
+                    }))
+                  }
+                  className="theme-focus-ring font-mono rounded-md border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-2 py-1 text-xs text-slate-900 dark:text-white cursor-pointer"
+                >
+                  <option value="auto">
+                    Auto ({COMPATIBILITY_FORMAT_LABELS[autoDetectedFormat]})
+                  </option>
+                  {(
+                    Object.keys(COMPATIBILITY_FORMAT_LABELS) as Array<
+                      Exclude<ModelCompatibilityFormat, 'auto'>
+                    >
+                  ).map((fmtKey) => (
+                    <option key={fmtKey} value={fmtKey}>
+                      {COMPATIBILITY_FORMAT_LABELS[fmtKey]}
+                    </option>
+                  ))}
+                </select>
+                <Tooltip content="Automatically strips <think> blocks so only clean text goes into your card." />
+              </div>
+
+              <label
+                htmlFor="force-enable-vision-checkbox"
+                className="flex items-center gap-1.5 text-xs font-medium text-slate-700 dark:text-slate-300 cursor-pointer select-none"
+              >
+                <input
+                  id="force-enable-vision-checkbox"
+                  type="checkbox"
+                  checked={Boolean(aiConfig.forceEnableVision)}
+                  onChange={(e) =>
+                    setAiConfig((prev) => ({
+                      ...prev,
+                      forceEnableVision: e.target.checked,
+                    }))
+                  }
+                  className="h-3.5 w-3.5 rounded cursor-pointer"
+                  style={{ accentColor: 'var(--theme-accent)' }}
+                />
+                <span>Force Vision</span>
+                <Tooltip content="Turn this on if your local GGUF model supports vision/images." />
+              </label>
+            </div>
+          </div>
 
           {/* Sampling Temperature & Inline Ghost Text Controls */}
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-2 border-t border-slate-200 dark:border-slate-800">
@@ -2061,6 +2241,19 @@ export const OptionsView: React.FC = () => {
                     </span>
                   </div>
 
+                  {rel.security && rel.security.length > 0 && (
+                    <div className="space-y-1">
+                      <div className="font-semibold text-slate-900 dark:text-white">
+                        🔐 Security &amp; Privacy Hardening
+                      </div>
+                      <ul className="list-disc pl-4 space-y-1">
+                        {rel.security.map((item, i) => (
+                          <li key={i}>{item}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+
                   {rel.highlights.length > 0 && (
                     <div className="space-y-1">
                       <div className="font-semibold text-slate-900 dark:text-white">
@@ -2105,12 +2298,12 @@ export const OptionsView: React.FC = () => {
               <div className="rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 p-3 space-y-1">
                 <div className="flex items-center gap-1.5 font-semibold text-slate-900 dark:text-white">
                   <ShieldCheck className="h-3.5 w-3.5 text-emerald-500" />
-                  <span>Zero-Crash Sandbox &amp; Per-Provider Credential Vault</span>
+                  <span>Local-First Sandbox &amp; App-Private AES-256 Vault</span>
                 </div>
                 <p className="text-[11px] text-slate-500 dark:text-slate-400">
                   Pure browser binary APIs (<code className="font-mono">ArrayBuffer</code>,{' '}
                   <code className="font-mono">DataView</code>,{' '}
-                  <code className="font-mono">Uint8Array</code>). Provider API keys are persisted per provider in local browser storage and never included in exported <code className="font-mono">.png</code> or <code className="font-mono">.json</code> files.
+                  <code className="font-mono">Uint8Array</code>). Provider API keys are encrypted with AES-256-GCM in <code className="font-mono">./.tavernsmith-app/</code> (outside <code className="font-mono">./Saves/</code>) and never included in exported <code className="font-mono">.png</code>, <code className="font-mono">.json</code>, or backup files.
                 </p>
               </div>
             </div>

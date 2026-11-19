@@ -17,9 +17,10 @@ import {
   Settings,
 } from 'lucide-react';
 import {
+  DEFAULT_CONTEXT_THEMES,
   DEFAULT_TAGS,
   isTagNsfwFlagged,
-  mergeWithDefaultTags,
+  isThemeNsfw,
   useStore,
 } from '../context/StoreContext';
 import { ContextTheme, TagCategory, TagDefinition } from '../types';
@@ -73,10 +74,10 @@ export const ThemesAndTagsView: React.FC = () => {
     activeTheme,
     setActiveThemeId,
     tags,
-    setTags,
     upsertCustomTag,
     toggleTagNsfw,
     deleteTag,
+    resetWorkspaceToDefaults,
     aiConfig,
     settings,
     setActiveTab,
@@ -90,18 +91,27 @@ export const ThemesAndTagsView: React.FC = () => {
   const themeNameInputRef = useRef<HTMLInputElement | null>(null);
   const focusTimerRef = useRef<number | null>(null);
   const timersRef = useRef<Set<number>>(new Set());
+  const isMountedRef = useRef(true);
+  const themeGenAbortRef = useRef<AbortController | null>(null);
+  const quickTagAbortRef = useRef<AbortController | null>(null);
+  const editTagAbortRef = useRef<AbortController | null>(null);
 
   const scheduleTimer = (cb: () => void, ms: number) => {
     const id = window.setTimeout(() => {
       timersRef.current.delete(id);
-      cb();
+      if (isMountedRef.current) cb();
     }, ms);
     timersRef.current.add(id);
     return id;
   };
 
   useEffect(() => {
+    isMountedRef.current = true;
     return () => {
+      isMountedRef.current = false;
+      themeGenAbortRef.current?.abort();
+      quickTagAbortRef.current?.abort();
+      editTagAbortRef.current?.abort();
       if (focusTimerRef.current !== null) {
         window.clearTimeout(focusTimerRef.current);
       }
@@ -178,6 +188,13 @@ export const ThemesAndTagsView: React.FC = () => {
 
   const hideNsfw = Boolean(settings.hideNsfwTags);
 
+  const visibleThemes = useMemo(
+    () => (hideNsfw ? themes.filter((t) => !isThemeNsfw(t, tags)) : themes),
+    [themes, tags, hideNsfw]
+  );
+  const hiddenNsfwThemeCount = themes.length - visibleThemes.length;
+  const isActiveThemeShielded = hideNsfw && isThemeNsfw(activeTheme, tags);
+
   const visibleSelectCategories = useMemo(
     () =>
       hideNsfw
@@ -215,14 +232,25 @@ export const ThemesAndTagsView: React.FC = () => {
   };
 
   const handleGenerateThemeWithAI = async () => {
+    if (isActiveThemeShielded) return;
     const targetId = activeTheme.id;
     const targetName = activeTheme.name.trim();
-    const targetTags = activeTheme.associatedTags || [];
+    const targetTags = (activeTheme.associatedTags || []).filter((tagName) => {
+      if (!hideNsfw) return true;
+      const found = tags.find(
+        (t) => t.name.toLowerCase() === tagName.toLowerCase()
+      );
+      return found ? !isTagNsfw(found) : true;
+    });
 
     if (!targetName) {
       setThemeAiError('Enter a Theme Name first so the AI knows what genre or atmosphere to synthesize.');
       return;
     }
+
+    themeGenAbortRef.current?.abort();
+    const controller = new AbortController();
+    themeGenAbortRef.current = controller;
 
     setGeneratingThemePrompt(true);
     setThemeAiError(null);
@@ -244,8 +272,13 @@ export const ThemesAndTagsView: React.FC = () => {
     const systemPrompt = [
       'You are an expert SillyTavern prompt engineer and narrative director.',
       'Write a rich, authoritative Context Theme AI Instruction Block (2 to 4 sentences) that instructs an AI writer on the exact tone, vocabulary, sensory atmosphere, and pacing to use when generating character cards and lorebooks under this theme.',
+      hideNsfw
+        ? 'Keep all output strictly Safe For Work (SFW).'
+        : '',
       'Return ONLY the instruction paragraph itself with no markdown headers or introductory chatter.',
-    ].join('\n');
+    ]
+      .filter(Boolean)
+      .join('\n');
 
     const userPrompt = [
       `Context Theme Name: "${targetName}"`,
@@ -259,13 +292,23 @@ export const ThemesAndTagsView: React.FC = () => {
       const res = await generateCompletionDetailed(
         userPrompt,
         systemPrompt,
-        aiConfig
+        aiConfig,
+        controller.signal,
+        { hideNsfw }
       );
+      if (!isMountedRef.current || controller.signal.aborted) return;
       const cleaned = res.content.trim();
       if (cleaned) {
         updateTheme(targetId, { aiContextPrompt: cleaned });
       }
     } catch (err) {
+      if (
+        !isMountedRef.current ||
+        controller.signal.aborted ||
+        (err instanceof Error && err.name === 'AbortError')
+      ) {
+        return;
+      }
       setThemeAiError(
         err instanceof AIServiceError
           ? `${err.message} (${err.corsHint})`
@@ -274,7 +317,12 @@ export const ThemesAndTagsView: React.FC = () => {
             : 'Failed to generate theme instructions.'
       );
     } finally {
-      setGeneratingThemePrompt(false);
+      if (themeGenAbortRef.current === controller) {
+        themeGenAbortRef.current = null;
+      }
+      if (isMountedRef.current) {
+        setGeneratingThemePrompt(false);
+      }
     }
   };
 
@@ -284,31 +332,47 @@ export const ThemesAndTagsView: React.FC = () => {
   const synthesizeTagDescription = async (
     tagName: string,
     category: TagCategory,
-    isNsfwFlag: boolean
-  ): Promise<string> => {
+    isNsfwFlag: boolean,
+    signal: AbortSignal
+  ): Promise<string | null> => {
     const clean = tagName.trim();
     if (!clean) return '';
+    const safeNsfw = hideNsfw ? false : isNsfwFlag;
 
     const sys = [
       'You are a SillyTavern character & lorebook prompt engineer.',
       'Write a concise 1-to-2 sentence AI Context Directive explaining how the AI should adjust characterization, tone, or imagery when this tag is attached.',
+      hideNsfw ? 'Keep the directive strictly Safe For Work (SFW).' : '',
       'Return ONLY the directive sentence(s) with no quotes or preamble.',
-    ].join('\n');
+    ]
+      .filter(Boolean)
+      .join('\n');
 
     const usr = `Tag Name: "${clean}"\nCategory: ${category}\nRating: ${
-      isNsfwFlag ? 'NSFW (18+ Adult)' : 'SFW / General'
+      safeNsfw ? 'NSFW (18+ Adult)' : 'SFW / General'
     }\nWrite the AI Context Description:`;
 
     try {
-      const res = await generateCompletionDetailed(usr, sys, aiConfig);
+      const res = await generateCompletionDetailed(
+        usr,
+        sys,
+        aiConfig,
+        signal,
+        { hideNsfw }
+      );
+      if (signal.aborted) return null;
       if (res.content && res.content.trim()) {
         return res.content.trim();
       }
-    } catch {
+    } catch (err) {
+      if (signal.aborted || (err instanceof Error && err.name === 'AbortError')) {
+        return null;
+      }
       // Fallback to instant smart template if offline / local server not running
     }
 
-    if (isNsfwFlag) {
+    if (signal.aborted) return null;
+    if (safeNsfw) {
       return `Explicit 18+ directive for "${clean}" (${category}): emphasize vivid, uncensored sensory detail, physical chemistry, and authentic adult characterization matching "${clean}".`;
     }
     return `Incorporate authentic "${clean}" (${category}) themes, dialogue nuances, and atmospheric storytelling details throughout character responses and world lore.`;
@@ -321,32 +385,56 @@ export const ThemesAndTagsView: React.FC = () => {
       scheduleTimer(() => setQuickTagFeedback(null), 3500);
       return;
     }
+    quickTagAbortRef.current?.abort();
+    const controller = new AbortController();
+    quickTagAbortRef.current = controller;
+
     setGeneratingQuickTagDesc(true);
     try {
       const generated = await synthesizeTagDescription(
         clean,
-        quickTagCategory,
-        quickTagIsNsfw
+        effectiveQuickCategory,
+        hideNsfw ? false : quickTagIsNsfw,
+        controller.signal
       );
-      setQuickTagAiDesc(generated);
+      if (isMountedRef.current && generated !== null && !controller.signal.aborted) {
+        setQuickTagAiDesc(generated);
+      }
     } finally {
-      setGeneratingQuickTagDesc(false);
+      if (quickTagAbortRef.current === controller) {
+        quickTagAbortRef.current = null;
+      }
+      if (isMountedRef.current) {
+        setGeneratingQuickTagDesc(false);
+      }
     }
   };
 
   const handleAutoWriteEditTagDesc = async () => {
     const clean = editTagName.trim();
     if (!clean) return;
+    editTagAbortRef.current?.abort();
+    const controller = new AbortController();
+    editTagAbortRef.current = controller;
+
     setGeneratingEditTagDesc(true);
     try {
       const generated = await synthesizeTagDescription(
         clean,
         editTagCategory,
-        editTagIsNsfw
+        hideNsfw ? false : editTagIsNsfw,
+        controller.signal
       );
-      setEditTagAiDesc(generated);
+      if (isMountedRef.current && generated !== null && !controller.signal.aborted) {
+        setEditTagAiDesc(generated);
+      }
     } finally {
-      setGeneratingEditTagDesc(false);
+      if (editTagAbortRef.current === controller) {
+        editTagAbortRef.current = null;
+      }
+      if (isMountedRef.current) {
+        setGeneratingEditTagDesc(false);
+      }
     }
   };
 
@@ -354,8 +442,11 @@ export const ThemesAndTagsView: React.FC = () => {
     const clean = quickTagName.trim();
     if (!clean) return;
 
-    const effectiveNsfw =
-      effectiveQuickCategory === 'Genitals' ? true : quickTagIsNsfw;
+    const effectiveNsfw = hideNsfw
+      ? false
+      : effectiveQuickCategory === 'Genitals'
+        ? true
+        : quickTagIsNsfw;
 
     const { updatedExisting } = upsertCustomTag({
       name: clean,
@@ -386,18 +477,25 @@ export const ThemesAndTagsView: React.FC = () => {
     tagId: string
   ) => {
     e.stopPropagation();
+    if (hideNsfw) return;
     toggleTagNsfw(tagId);
   };
 
   const handleOpenEditModal = (tag: TagDefinition) => {
+    if (hideNsfw && isTagNsfw(tag)) return;
     const desc =
       tag.aiContextDescription || tag.aiDescription || tag.description || '';
+    const migratedCat = migrateLegacyTagCategory(tag.category, tag.name, desc);
+    const safeCat =
+      hideNsfw && NSFW_ONLY_CATEGORIES.has(String(migratedCat))
+        ? 'Custom'
+        : migratedCat;
     updateThemesTagsDraft({
       editingTagId: tag.id,
       editTagName: tag.name,
-      editTagCategory: migrateLegacyTagCategory(tag.category, tag.name, desc),
+      editTagCategory: safeCat,
       editTagColor: tag.color || '#a855f7',
-      editTagIsNsfw: isTagNsfwFlagged(tag),
+      editTagIsNsfw: hideNsfw ? false : isTagNsfwFlagged(tag),
       editTagAiDesc: desc,
     });
   };
@@ -407,13 +505,20 @@ export const ThemesAndTagsView: React.FC = () => {
     const cleanName = editTagName.trim();
     if (!cleanName) return;
 
-    const effectiveEditNsfw =
-      editTagCategory === 'Genitals' ? true : editTagIsNsfw;
+    const safeCat =
+      hideNsfw && NSFW_ONLY_CATEGORIES.has(String(editTagCategory))
+        ? 'Custom'
+        : editTagCategory;
+    const effectiveEditNsfw = hideNsfw
+      ? false
+      : safeCat === 'Genitals'
+        ? true
+        : editTagIsNsfw;
 
     upsertCustomTag({
       id: editingTag.id,
       name: cleanName,
-      category: editTagCategory,
+      category: safeCat,
       color: editTagColor,
       isNsfw: effectiveEditNsfw,
       aiContextDescription: editTagAiDesc,
@@ -428,8 +533,8 @@ export const ThemesAndTagsView: React.FC = () => {
     }
   };
 
-  const handleResetBuiltInTags = () => {
-    setTags((prev) => mergeWithDefaultTags(prev));
+  const handleRestoreDefaults = () => {
+    resetWorkspaceToDefaults();
     setResetConfirm(false);
   };
 
@@ -459,6 +564,36 @@ export const ThemesAndTagsView: React.FC = () => {
     }
     return ['All', ...Array.from(set)];
   }, [tags, hideNsfw]);
+
+  // Enforce strict SFW state whenever Hide NSFW Content is turned on
+  useEffect(() => {
+    if (!hideNsfw) return;
+    if (isThemeNsfw(activeTheme, tags) && visibleThemes.length > 0) {
+      setActiveThemeId(visibleThemes[0].id);
+    }
+    const patch: Partial<typeof ttDraft> = {};
+    if (safetyFilter === 'nsfw') patch.safetyFilter = 'all';
+    if (categoryFilter !== 'All' && !availableCategories.includes(categoryFilter)) {
+      patch.categoryFilter = 'All';
+    }
+    if (quickTagIsNsfw) patch.quickTagIsNsfw = false;
+    if (editingTag && isTagNsfw(editingTag)) patch.editingTagId = null;
+    if (Object.keys(patch).length > 0) {
+      updateThemesTagsDraft(patch);
+    }
+  }, [
+    hideNsfw,
+    activeTheme,
+    tags,
+    visibleThemes,
+    setActiveThemeId,
+    safetyFilter,
+    categoryFilter,
+    availableCategories,
+    quickTagIsNsfw,
+    editingTag,
+    updateThemesTagsDraft,
+  ]);
 
   const filteredTags = useMemo(() => {
     const q = tagSearch.trim().toLowerCase();
@@ -517,7 +652,9 @@ export const ThemesAndTagsView: React.FC = () => {
             Themes &amp; Tags
           </h1>
           <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
-            Manage writing themes and character/lorebook tags ({tags.length} total: {totalSfwCount} SFW · {totalNsfwCount} NSFW 18+). Tags marked NSFW automatically mark any card or lorebook using them.
+            {hideNsfw
+              ? `Manage SFW writing themes and tags (${totalSfwCount} SFW tags visible; ${totalNsfwCount} NSFW hidden). Deleting a tag removes it from every character, lorebook, and theme.`
+              : `Manage writing themes and character/lorebook tags (${tags.length} total: ${totalSfwCount} SFW · ${totalNsfwCount} NSFW 18+). Deleting a tag removes it from every character, lorebook, and theme.`}
           </p>
         </div>
 
@@ -537,11 +674,11 @@ export const ThemesAndTagsView: React.FC = () => {
           {resetConfirm ? (
             <div className="flex items-center gap-1.5 rounded-lg border border-amber-500/40 bg-amber-500/10 px-2.5 py-1">
               <span className="text-[11px] font-medium text-amber-600 dark:text-amber-300">
-                Restore {DEFAULT_TAGS.length} built-in tags?
+                Restore default Themes ({DEFAULT_CONTEXT_THEMES.length}) &amp; Tags ({DEFAULT_TAGS.length})? Custom items stay untouched.
               </span>
               <button
                 type="button"
-                onClick={handleResetBuiltInTags}
+                onClick={handleRestoreDefaults}
                 className="rounded bg-amber-500 px-2 py-0.5 text-[11px] font-semibold text-white cursor-pointer"
               >
                 Confirm
@@ -558,10 +695,11 @@ export const ThemesAndTagsView: React.FC = () => {
             <button
               type="button"
               onClick={() => setResetConfirm(true)}
+              title="Restores deleted or edited built-in default Themes and Tags without affecting your custom items, characters, lorebooks, settings, or API keys."
               className="theme-hover-outline flex items-center gap-1.5 rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-3 py-1.5 text-xs font-medium text-slate-700 dark:text-slate-300 cursor-pointer"
             >
               <RotateCcw className="h-3.5 w-3.5" />
-              <span>Restore Built-In Tags ({DEFAULT_TAGS.length})</span>
+              <span>Restore Default Themes &amp; Tags</span>
             </button>
           )}
         </div>
@@ -585,8 +723,13 @@ export const ThemesAndTagsView: React.FC = () => {
               style={{ color: 'var(--theme-accent)' }}
             />
             <h2 className="text-sm font-bold text-slate-900 dark:text-white whitespace-nowrap">
-              Themes ({themes.length})
+              Themes ({visibleThemes.length})
             </h2>
+            {hideNsfw && hiddenNsfwThemeCount > 0 && (
+              <span className="rounded border border-amber-500/40 bg-amber-500/10 px-1.5 py-0.5 font-mono text-[10px] font-semibold text-amber-700 dark:text-amber-300">
+                {hiddenNsfwThemeCount} NSFW hidden
+              </span>
+            )}
             <Tooltip content="Select a theme from the dropdown to activate and edit it below, or click Create New Theme." />
           </div>
 
@@ -598,41 +741,89 @@ export const ThemesAndTagsView: React.FC = () => {
               />
               <select
                 aria-label="Select Active Theme"
-                value={activeTheme.id}
+                value={
+                  visibleThemes.some((t) => t.id === activeTheme.id)
+                    ? activeTheme.id
+                    : (visibleThemes[0]?.id ?? '')
+                }
+                disabled={visibleThemes.length === 0}
                 onChange={(e) => {
                   setThemeAiError(null);
-                  setActiveThemeId(e.target.value);
+                  if (e.target.value) setActiveThemeId(e.target.value);
                 }}
-                className="w-full bg-transparent text-xs font-semibold text-slate-900 dark:text-white focus:outline-none cursor-pointer"
+                className="w-full bg-transparent text-xs font-semibold text-slate-900 dark:text-white focus:outline-none cursor-pointer disabled:opacity-50"
               >
-                {themes.map((theme) => (
-                  <option
-                    key={theme.id}
-                    value={theme.id}
-                    className="bg-white dark:bg-slate-900 text-slate-900 dark:text-white"
-                  >
-                    {theme.name}
-                  </option>
-                ))}
+                {visibleThemes.length === 0 ? (
+                  <option value="">No SFW Themes Available</option>
+                ) : (
+                  visibleThemes.map((theme) => (
+                    <option
+                      key={theme.id}
+                      value={theme.id}
+                      className="bg-white dark:bg-slate-900 text-slate-900 dark:text-white"
+                    >
+                      {theme.name}
+                    </option>
+                  ))
+                )}
               </select>
             </div>
 
-            {!activeTheme.isBuiltIn && themes.length > 1 && (
-              <button
-                type="button"
-                onClick={() => handleDeleteTheme(activeTheme.id)}
-                title={`Delete theme "${activeTheme.name}"`}
-                aria-label={`Delete theme ${activeTheme.name}`}
-                className="flex items-center gap-1 rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 px-2.5 py-1.5 text-xs font-medium text-slate-500 hover:border-rose-500/40 hover:text-rose-500 transition-colors cursor-pointer shrink-0"
-              >
-                <Trash2 className="h-3.5 w-3.5" />
-                <span className="hidden sm:inline">Delete</span>
-              </button>
-            )}
+            {!isActiveThemeShielded &&
+              !activeTheme.isBuiltIn &&
+              themes.length > 1 && (
+                <button
+                  type="button"
+                  onClick={() => handleDeleteTheme(activeTheme.id)}
+                  title={`Delete theme "${activeTheme.name}"`}
+                  aria-label={`Delete theme ${activeTheme.name}`}
+                  className="flex items-center gap-1 rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 px-2.5 py-1.5 text-xs font-medium text-slate-500 hover:border-rose-500/40 hover:text-rose-500 transition-colors cursor-pointer shrink-0"
+                >
+                  <Trash2 className="h-3.5 w-3.5" />
+                  <span className="hidden sm:inline">Delete</span>
+                </button>
+              )}
           </div>
         </div>
 
-        {/* Merged Theme Editor & Creator Tool */}
+        {/* Merged Theme Editor & Creator Tool (or SFW Shield if all themes are NSFW-tagged) */}
+        {isActiveThemeShielded ? (
+          <div
+            style={{
+              borderColor:
+                'color-mix(in srgb, var(--theme-accent) 40%, transparent)',
+            }}
+            className="rounded-2xl border bg-white dark:bg-slate-900 p-8 text-center space-y-3"
+          >
+            <div className="mx-auto flex h-10 w-10 items-center justify-center rounded-xl border border-amber-500/40 bg-amber-500/10 text-amber-600 dark:text-amber-300">
+              <ShieldCheck className="h-5 w-5" />
+            </div>
+            <h3 className="text-sm font-bold text-slate-900 dark:text-white">
+              NSFW Theme Hidden (SFW Mode Active)
+            </h3>
+            <p className="text-xs text-slate-500 dark:text-slate-400 max-w-md mx-auto">
+              This theme contains NSFW tags and is shielded while <strong>Hide NSFW Content</strong> is enabled. Create a new SFW theme or open Options.
+            </p>
+            <div className="flex flex-wrap items-center justify-center gap-2 pt-1">
+              <button
+                type="button"
+                onClick={handleCreateNewTheme}
+                style={{ borderColor: 'var(--theme-accent)' }}
+                className="theme-hover-outline flex items-center gap-1.5 rounded-lg border bg-slate-900 dark:bg-white px-3.5 py-2 text-xs font-semibold text-white dark:text-slate-900 cursor-pointer"
+              >
+                <Plus className="h-3.5 w-3.5" />
+                <span>Create New SFW Theme</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setActiveTab('options')}
+                className="theme-hover-outline rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 px-3.5 py-2 text-xs font-semibold text-slate-700 dark:text-slate-200 cursor-pointer"
+              >
+                Open Options
+              </button>
+            </div>
+          </div>
+        ) : (
         <div
           style={{
             borderColor:
@@ -775,6 +966,7 @@ export const ThemesAndTagsView: React.FC = () => {
             </button>
           </div>
         </div>
+        )}
       </section>
 
       {/* ===================================================================== */}
@@ -795,7 +987,13 @@ export const ThemesAndTagsView: React.FC = () => {
               <h2 className="text-sm font-bold text-slate-900 dark:text-white">
                 Create or Update a Tag
               </h2>
-              <Tooltip content="Type a tag name, pick a category and color, mark it NSFW if it's 18+, and let AI write the description if you want." />
+              <Tooltip
+                content={
+                  hideNsfw
+                    ? 'Type a tag name, pick a category and color, and let AI write the description if you want (SFW Mode active).'
+                    : "Type a tag name, pick a category and color, mark it NSFW if it's 18+, and let AI write the description if you want."
+                }
+              />
             </div>
             {quickTagFeedback && (
               <span className="rounded-md border border-emerald-500/40 bg-emerald-500/10 px-2.5 py-1 text-xs font-semibold text-emerald-600 dark:text-emerald-300">
@@ -821,7 +1019,11 @@ export const ThemesAndTagsView: React.FC = () => {
                     handleCreateQuickTag();
                   }
                 }}
-                placeholder="e.g., Cyberpunk Noir, Enemies to Lovers, Breeding..."
+                placeholder={
+                  hideNsfw
+                    ? 'e.g., Cyberpunk Noir, Enemies to Lovers, Cozy Mystery...'
+                    : 'e.g., Cyberpunk Noir, Enemies to Lovers, Breeding...'
+                }
                 className="w-full rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 px-3 py-2 text-xs font-medium text-slate-900 dark:text-white focus:outline-none"
               />
             </div>
@@ -837,7 +1039,7 @@ export const ThemesAndTagsView: React.FC = () => {
                 onChange={(e) => {
                   const nextCat = e.target.value as TagCategory;
                   setQuickTagCategory(nextCat);
-                  if (NSFW_ONLY_CATEGORIES.has(String(nextCat))) {
+                  if (!hideNsfw && NSFW_ONLY_CATEGORIES.has(String(nextCat))) {
                     setQuickTagIsNsfw(true);
                   }
                 }}
@@ -858,13 +1060,16 @@ export const ThemesAndTagsView: React.FC = () => {
               </label>
               <button
                 type="button"
-                disabled={effectiveQuickCategory === 'Genitals'}
+                disabled={hideNsfw || effectiveQuickCategory === 'Genitals'}
                 title={
-                  effectiveQuickCategory === 'Genitals'
-                    ? 'Genitals is an NSFW-only category.'
-                    : 'Toggle SFW / NSFW rating for this tag'
+                  hideNsfw
+                    ? 'NSFW tag creation is locked while Hide NSFW Content is enabled in Options.'
+                    : effectiveQuickCategory === 'Genitals'
+                      ? 'Genitals is an NSFW-only category.'
+                      : 'Toggle SFW / NSFW rating for this tag'
                 }
                 onClick={() => {
+                  if (hideNsfw) return;
                   if (effectiveQuickCategory === 'Genitals') {
                     setQuickTagIsNsfw(true);
                     return;
@@ -872,16 +1077,18 @@ export const ThemesAndTagsView: React.FC = () => {
                   setQuickTagIsNsfw((prev) => !prev);
                 }}
                 className={`flex w-full items-center justify-center gap-1.5 rounded-lg border px-3 py-2 text-xs font-bold transition-all ${
-                  effectiveQuickCategory === 'Genitals'
+                  hideNsfw || effectiveQuickCategory === 'Genitals'
                     ? 'cursor-not-allowed opacity-90'
                     : 'cursor-pointer'
                 } ${
-                  quickTagIsNsfw || effectiveQuickCategory === 'Genitals'
+                  !hideNsfw &&
+                  (quickTagIsNsfw || effectiveQuickCategory === 'Genitals')
                     ? 'border-rose-500 bg-rose-500/15 text-rose-600 dark:text-rose-300 shadow-2xs'
                     : 'border-emerald-500/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300'
                 }`}
               >
-                {quickTagIsNsfw || effectiveQuickCategory === 'Genitals' ? (
+                {!hideNsfw &&
+                (quickTagIsNsfw || effectiveQuickCategory === 'Genitals') ? (
                   <>
                     <ShieldAlert className="h-3.5 w-3.5 shrink-0" />
                     <span>🔞 NSFW (18+)</span>
@@ -1133,25 +1340,27 @@ export const ThemesAndTagsView: React.FC = () => {
                               </div>
 
                               <div className="flex items-center gap-1 shrink-0">
-                                {/* 1-Click Direct NSFW Toggle Pill */}
-                                <button
-                                  type="button"
-                                  onClick={(e) =>
-                                    handleToggleTagNsfwDirect(e, tag.id)
-                                  }
-                                  title={
-                                    nsfw
-                                      ? 'Flagged NSFW (18+). Click to switch to SFW.'
-                                      : 'Currently SFW. Click to flag as NSFW (18+).'
-                                  }
-                                  className={`rounded px-1.5 py-0.5 font-mono text-[9px] font-bold uppercase transition-colors cursor-pointer ${
-                                    nsfw
-                                      ? 'border border-rose-500/40 bg-rose-500/15 text-rose-600 dark:text-rose-300 hover:bg-rose-500/25'
-                                      : 'border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 text-slate-400 hover:text-slate-700 dark:hover:text-slate-200'
-                                  }`}
-                                >
-                                  {nsfw ? '🔞 NSFW' : 'SFW'}
-                                </button>
+                                {/* 1-Click Direct NSFW Toggle Pill (hidden in SFW mode) */}
+                                {!hideNsfw && (
+                                  <button
+                                    type="button"
+                                    onClick={(e) =>
+                                      handleToggleTagNsfwDirect(e, tag.id)
+                                    }
+                                    title={
+                                      nsfw
+                                        ? 'Flagged NSFW (18+). Click to switch to SFW.'
+                                        : 'Currently SFW. Click to flag as NSFW (18+).'
+                                    }
+                                    className={`rounded px-1.5 py-0.5 font-mono text-[9px] font-bold uppercase transition-colors cursor-pointer ${
+                                      nsfw
+                                        ? 'border border-rose-500/40 bg-rose-500/15 text-rose-600 dark:text-rose-300 hover:bg-rose-500/25'
+                                        : 'border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 text-slate-400 hover:text-slate-700 dark:hover:text-slate-200'
+                                    }`}
+                                  >
+                                    {nsfw ? '🔞 NSFW' : 'SFW'}
+                                  </button>
+                                )}
 
                                 <span className="rounded p-1 text-slate-400 opacity-0 group-hover:opacity-100 transition-opacity">
                                   <Edit3 className="h-3 w-3" />
@@ -1221,17 +1430,23 @@ export const ThemesAndTagsView: React.FC = () => {
                 </label>
                 <select
                   aria-label="Edit Tag Category"
-                  value={editTagCategory}
+                  value={
+                    visibleSelectCategories.some(
+                      (c) => c.value === editTagCategory
+                    )
+                      ? editTagCategory
+                      : 'Custom'
+                  }
                   onChange={(e) => {
                     const nextCat = e.target.value as TagCategory;
                     setEditTagCategory(nextCat);
-                    if (NSFW_ONLY_CATEGORIES.has(String(nextCat))) {
+                    if (!hideNsfw && NSFW_ONLY_CATEGORIES.has(String(nextCat))) {
                       setEditTagIsNsfw(true);
                     }
                   }}
                   className="w-full rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 px-2.5 py-2 text-xs font-medium text-slate-900 dark:text-white focus:outline-none cursor-pointer"
                 >
-                  {TAG_CATEGORIES.map((c) => (
+                  {visibleSelectCategories.map((c) => (
                     <option key={c.value} value={c.value}>
                       {c.label}
                     </option>
@@ -1247,13 +1462,16 @@ export const ThemesAndTagsView: React.FC = () => {
                 </label>
                 <button
                   type="button"
-                  disabled={editTagCategory === 'Genitals'}
+                  disabled={hideNsfw || editTagCategory === 'Genitals'}
                   title={
-                    editTagCategory === 'Genitals'
-                      ? 'Genitals is an NSFW-only category.'
-                      : 'Toggle SFW / NSFW rating for this tag'
+                    hideNsfw
+                      ? 'NSFW rating is locked while Hide NSFW Content is enabled in Options.'
+                      : editTagCategory === 'Genitals'
+                        ? 'Genitals is an NSFW-only category.'
+                        : 'Toggle SFW / NSFW rating for this tag'
                   }
                   onClick={() => {
+                    if (hideNsfw) return;
                     if (editTagCategory === 'Genitals') {
                       setEditTagIsNsfw(true);
                       return;
@@ -1261,16 +1479,18 @@ export const ThemesAndTagsView: React.FC = () => {
                     setEditTagIsNsfw((prev) => !prev);
                   }}
                   className={`flex w-full items-center justify-center gap-1.5 rounded-lg border px-3 py-2 text-xs font-bold transition-all ${
-                    editTagCategory === 'Genitals'
+                    hideNsfw || editTagCategory === 'Genitals'
                       ? 'cursor-not-allowed opacity-90'
                       : 'cursor-pointer'
                   } ${
-                    editTagIsNsfw || editTagCategory === 'Genitals'
+                    !hideNsfw &&
+                    (editTagIsNsfw || editTagCategory === 'Genitals')
                       ? 'border-rose-500 bg-rose-500/15 text-rose-600 dark:text-rose-300'
                       : 'border-emerald-500/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300'
                   }`}
                 >
-                  {editTagIsNsfw || editTagCategory === 'Genitals' ? (
+                  {!hideNsfw &&
+                  (editTagIsNsfw || editTagCategory === 'Genitals') ? (
                     <>
                       <ShieldAlert className="h-3.5 w-3.5" />
                       <span>🔞 Flagged NSFW (18+)</span>
@@ -1343,10 +1563,11 @@ export const ThemesAndTagsView: React.FC = () => {
               <button
                 type="button"
                 onClick={() => handleDeleteTag(editingTag.id)}
+                title="Permanently deletes this tag and strips it from every character, lorebook, entry, and theme."
                 className="flex items-center gap-1.5 rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-xs font-semibold text-rose-600 dark:text-rose-400 hover:bg-rose-500/20 cursor-pointer"
               >
                 <Trash2 className="h-3.5 w-3.5" />
-                <span>Delete Tag</span>
+                <span>Delete Tag Everywhere</span>
               </button>
 
               <div className="flex items-center gap-2">

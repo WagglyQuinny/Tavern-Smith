@@ -40,7 +40,7 @@ export function computeCrc32(bytes: Uint8Array): number {
 }
 
 /**
- * UTF-8 safe Base64 encoding & decoding using pure browser TextEncoder / TextDecoder.
+ * UTF-8 safe Base64 encoding & decoding using pure TextEncoder / TextDecoder.
  */
 export function encodeUtf8Base64(str: string): string {
   const bytes = new TextEncoder().encode(str);
@@ -50,17 +50,69 @@ export function encodeUtf8Base64(str: string): string {
     const slice = bytes.subarray(i, i + chunkSize);
     binary += String.fromCharCode(...slice);
   }
-  return window.btoa(binary);
+  return btoa(binary);
 }
 
 export function decodeUtf8Base64(b64: string): string {
   const cleanB64 = b64.trim().replace(/\s+/g, '');
-  const binary = window.atob(cleanB64);
+  const binary = atob(cleanB64);
   const bytes = new Uint8Array(binary.length);
   for (let i = 0; i < binary.length; i++) {
     bytes[i] = binary.charCodeAt(i);
   }
   return new TextDecoder('utf-8').decode(bytes);
+}
+
+/**
+ * Validates avatar / reaction media URIs so untrusted cards cannot smuggle
+ * `javascript:`, `data:image/svg+xml`, or local `/api/...` URLs into the DOM.
+ * Also treats SillyTavern's sentinel `"none"` / `"ccdefault:"` as unset (`undefined`).
+ */
+export function sanitizeMediaUri(uri: unknown): string | undefined {
+  if (typeof uri !== 'string') return undefined;
+  const trimmed = uri.trim();
+  if (!trimmed) return undefined;
+  const lower = trimmed.toLowerCase();
+  if (lower === 'none' || lower === 'ccdefault:') return undefined;
+
+  if (lower.startsWith('data:')) {
+    if (
+      /^data:image\/(png|jpeg|jpg|webp|gif);base64,[a-z0-9+/=\s]+$/i.test(
+        trimmed
+      )
+    ) {
+      return trimmed;
+    }
+    return undefined;
+  }
+
+  try {
+    const parsed = new URL(trimmed);
+    if (parsed.protocol === 'https:' || parsed.protocol === 'http:') {
+      return parsed.toString();
+    }
+  } catch {
+    // Reject relative paths & malformed schemes
+  }
+  return undefined;
+}
+
+export function isAllowedRasterImageFile(file: File): boolean {
+  const typeLower = (file.type || '').toLowerCase();
+  const nameLower = (file.name || '').toLowerCase();
+  if (typeLower.includes('svg') || nameLower.endsWith('.svg')) {
+    return false;
+  }
+  if (
+    typeLower === 'image/png' ||
+    typeLower === 'image/jpeg' ||
+    typeLower === 'image/jpg' ||
+    typeLower === 'image/webp' ||
+    typeLower === 'image/gif'
+  ) {
+    return true;
+  }
+  return /\.(png|jpe?g|webp|gif)$/i.test(nameLower);
 }
 
 function readAsciiString(bytes: Uint8Array, start: number, length: number): string {
@@ -81,18 +133,23 @@ function writeAsciiBytes(str: string): Uint8Array {
 }
 
 /**
- * Reads any image File or DataURL and returns its natural dimensions (`width`, `height`),
+ * Reads any raster image File or DataURL and returns its natural dimensions (`width`, `height`),
  * whether it matches SillyTavern's `2:3` vertical portrait aspect ratio (`Math.abs(w/h - 2/3) <= 0.02`),
- * and a clean PNG DataURL.
+ * and a clean capped PNG DataURL (rejecting SVG images and scaling huge uploads down safely).
  */
 export async function readImageDimensions(
-  fileOrDataUrl: File | string
+  fileOrDataUrl: File | string,
+  maxDim = 1536
 ): Promise<{
   dataUrl: string;
   width: number;
   height: number;
   isTwoThreeAspect: boolean;
 }> {
+  if (typeof fileOrDataUrl !== 'string' && !isAllowedRasterImageFile(fileOrDataUrl)) {
+    throw new Error('Only raster PNG, JPEG, WebP, and GIF images are supported (SVG is blocked).');
+  }
+
   const rawUrl =
     typeof fileOrDataUrl === 'string'
       ? fileOrDataUrl
@@ -104,6 +161,10 @@ export async function readImageDimensions(
           reader.readAsDataURL(fileOrDataUrl);
         });
 
+  if (!sanitizeMediaUri(rawUrl)) {
+    throw new Error('Unsupported or unsafe image format (SVG/non-raster URIs are blocked).');
+  }
+
   return new Promise((resolve, reject) => {
     const img = new Image();
     const cleanupImage = () => {
@@ -112,19 +173,24 @@ export async function readImageDimensions(
       img.src = '';
     };
     img.onload = () => {
-      const width = img.naturalWidth || img.width || 512;
-      const height = img.naturalHeight || img.height || 768;
-      const isTwoThreeAspect = Math.abs(width / height - 2 / 3) <= 0.02;
+      const origWidth = img.naturalWidth || img.width || 512;
+      const origHeight = img.naturalHeight || img.height || 768;
+      const isTwoThreeAspect = Math.abs(origWidth / origHeight - 2 / 3) <= 0.02;
+
+      const longestEdge = Math.max(origWidth, origHeight);
+      const scale = maxDim > 0 && longestEdge > maxDim ? maxDim / longestEdge : 1;
+      const targetWidth = Math.max(1, Math.round(origWidth * scale));
+      const targetHeight = Math.max(1, Math.round(origHeight * scale));
 
       // Normalize to PNG DataURL so PNG chunk steganography always has a valid PNG source
       const canvas = document.createElement('canvas');
-      canvas.width = width;
-      canvas.height = height;
+      canvas.width = targetWidth;
+      canvas.height = targetHeight;
       const ctx = canvas.getContext('2d');
       let pngDataUrl = rawUrl;
       try {
         if (ctx) {
-          ctx.drawImage(img, 0, 0);
+          ctx.drawImage(img, 0, 0, targetWidth, targetHeight);
           pngDataUrl = canvas.toDataURL('image/png');
         }
       } finally {
@@ -135,8 +201,8 @@ export async function readImageDimensions(
 
       resolve({
         dataUrl: pngDataUrl,
-        width,
-        height,
+        width: targetWidth,
+        height: targetHeight,
         isTwoThreeAspect,
       });
     };
@@ -251,6 +317,86 @@ function createPngTextChunk(keyword: string, base64Content: string): Uint8Array 
 }
 
 /**
+ * Strips any existing `chara` or `ccv3` `tEXt` chunks from a PNG ArrayBuffer while preserving
+ * all image data chunks. Used on PNG import so character avatars never retain stale metadata
+ * chunks that would exponentially inflate file size across re-exports.
+ */
+export function stripPngCharacterChunks(pngBuffer: ArrayBuffer): Uint8Array {
+  const bytes = new Uint8Array(pngBuffer);
+  const view = new DataView(pngBuffer);
+
+  if (bytes.length < 8) {
+    return bytes;
+  }
+  for (let i = 0; i < 8; i++) {
+    if (bytes[i] !== PNG_SIGNATURE[i]) {
+      return bytes;
+    }
+  }
+
+  const keptChunks: Uint8Array[] = [bytes.subarray(0, 8)];
+  let iendChunk: Uint8Array | null = null;
+  let offset = 8;
+
+  while (offset >= 8 && offset + 8 <= bytes.length) {
+    const length = view.getUint32(offset, false);
+    if (length > bytes.length || length > 0x7fffffff) {
+      break;
+    }
+
+    const type = readAsciiString(bytes, offset + 4, 4);
+    const totalChunkLen = 4 + 4 + length + 4;
+    if (totalChunkLen < 12 || offset + totalChunkLen > bytes.length) {
+      break;
+    }
+
+    const fullChunk = bytes.subarray(offset, offset + totalChunkLen);
+    if (type === 'tEXt') {
+      const dataStart = offset + 8;
+      const dataEnd = dataStart + length;
+      let nullIdx = -1;
+      for (let i = dataStart; i < dataEnd; i++) {
+        if (bytes[i] === 0) {
+          nullIdx = i;
+          break;
+        }
+      }
+      const keyword =
+        nullIdx !== -1
+          ? readAsciiString(bytes, dataStart, nullIdx - dataStart).toLowerCase()
+          : '';
+      if (keyword !== 'chara' && keyword !== 'ccv3') {
+        keptChunks.push(fullChunk);
+      }
+    } else if (type === 'IEND') {
+      iendChunk = fullChunk;
+      break;
+    } else {
+      keptChunks.push(fullChunk);
+    }
+
+    offset += totalChunkLen;
+  }
+
+  if (iendChunk) {
+    keptChunks.push(iendChunk);
+  } else {
+    keptChunks.push(
+      new Uint8Array([0, 0, 0, 0, 73, 69, 78, 68, 174, 66, 96, 130])
+    );
+  }
+
+  const totalSize = keptChunks.reduce((acc, c) => acc + c.length, 0);
+  const output = new Uint8Array(totalSize);
+  let writePos = 0;
+  for (const chunk of keptChunks) {
+    output.set(chunk, writePos);
+    writePos += chunk.length;
+  }
+  return output;
+}
+
+/**
  * Strips any existing `chara` or `ccv3` `tEXt` chunks from a PNG ArrayBuffer and injects
  * fresh `chara` (V2) and `ccv3` (V3) `tEXt` chunks right before the final `IEND` chunk.
  */
@@ -345,25 +491,100 @@ export function injectPngCharacterChunks(
   return output;
 }
 
+async function rasterizeImageUrlToPngBuffer(
+  imageUrl: string,
+  maxDim = 1536
+): Promise<ArrayBuffer> {
+  return new Promise<ArrayBuffer>((resolve, reject) => {
+    const img = new Image();
+    if (/^https?:\/\//i.test(imageUrl)) {
+      img.crossOrigin = 'anonymous';
+    }
+    const cleanupImage = () => {
+      img.onload = null;
+      img.onerror = null;
+      img.src = '';
+    };
+
+    img.onload = () => {
+      const canvas = document.createElement('canvas');
+      try {
+        const origW = img.naturalWidth || img.width || 512;
+        const origH = img.naturalHeight || img.height || 768;
+        const longest = Math.max(origW, origH);
+        const scale = maxDim > 0 && longest > maxDim ? maxDim / longest : 1;
+        const w = Math.max(1, Math.round(origW * scale));
+        const h = Math.max(1, Math.round(origH * scale));
+        canvas.width = w;
+        canvas.height = h;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) {
+          cleanupImage();
+          canvas.width = 0;
+          canvas.height = 0;
+          reject(new Error('Canvas 2D context unavailable'));
+          return;
+        }
+        ctx.drawImage(img, 0, 0, w, h);
+        canvas.toBlob((blob) => {
+          canvas.width = 0;
+          canvas.height = 0;
+          cleanupImage();
+          if (!blob) {
+            reject(new Error('Failed to encode avatar PNG blob'));
+            return;
+          }
+          blob.arrayBuffer().then(resolve).catch(reject);
+        }, 'image/png');
+      } catch (err) {
+        canvas.width = 0;
+        canvas.height = 0;
+        cleanupImage();
+        reject(err);
+      }
+    };
+
+    img.onerror = () => {
+      cleanupImage();
+      reject(new Error('Failed to decode avatar image for PNG conversion'));
+    };
+
+    img.src = imageUrl;
+  });
+}
+
 /**
- * Generates a high-craft procedural PNG portrait buffer using `<canvas>` when exporting
- * a character card that does not yet have a custom uploaded PNG avatar.
+ * Resolves a clean PNG buffer from the character's avatar (converting JPEG/WebP/GIF via `<canvas>`),
+ * or generates a procedural PNG portrait when no custom avatar is present.
  */
 export async function generateDefaultAvatarPngBuffer(
   character: CharacterCardData,
   accentColor = '#d97706'
 ): Promise<ArrayBuffer> {
-  if (
-    character.avatar &&
-    character.avatar.startsWith('data:image/png;base64,')
-  ) {
-    const b64 = character.avatar.replace(/^data:image\/png;base64,/, '');
-    const bin = window.atob(b64);
-    const bytes = new Uint8Array(bin.length);
-    for (let i = 0; i < bin.length; i++) {
-      bytes[i] = bin.charCodeAt(i);
+  const safeAvatar = sanitizeMediaUri(character.avatar);
+  if (safeAvatar) {
+    if (/^data:image\/png;base64,/i.test(safeAvatar)) {
+      try {
+        const b64 = safeAvatar.replace(/^data:image\/png;base64,/i, '');
+        const bin = atob(b64.replace(/\s+/g, ''));
+        const bytes = new Uint8Array(bin.length);
+        for (let i = 0; i < bin.length; i++) {
+          bytes[i] = bin.charCodeAt(i);
+        }
+        const stripped = stripPngCharacterChunks(bytes.buffer);
+        const outBuf = new ArrayBuffer(stripped.byteLength);
+        new Uint8Array(outBuf).set(stripped);
+        return outBuf;
+      } catch {
+        // Fall through to canvas conversion / procedural fallback
+      }
+    } else if (typeof document !== 'undefined') {
+      try {
+        return await rasterizeImageUrlToPngBuffer(safeAvatar);
+      } catch {
+        // Fall through to procedural fallback if external URL fails CORS
+      }
     }
-    return bytes.buffer;
   }
 
   const canvas = document.createElement('canvas');
@@ -434,44 +655,71 @@ export async function generateDefaultAvatarPngBuffer(
 
 /**
  * Sanitizes and serializes a CharacterCardData into a clean V2 or V3 Wrapper with
- * `_tavernsmithType: 'character'` and lossless `data.extensions.tavernsmith`,
- * guaranteeing NO API keys or sensitive credentials ever enter the exported JSON.
+ * `_tavernsmithType: 'character'`, preserving third-party `extensions`, storing only
+ * compact metadata in `data.extensions.tavernsmith` (zero duplicate base64 bloat),
+ * and guaranteeing NO API keys or sensitive credentials ever enter the exported JSON.
  */
 export function serializeCharacterCard(
   character: CharacterCardData,
   spec: 'v2' | 'v3',
-  fallbackLorebook?: Lorebook
+  fallbackLorebook?: Lorebook,
+  options?: { omitAvatarDataUrl?: boolean }
 ): (SillyTavernV2Wrapper | SillyTavernV3Wrapper) & {
   _tavernsmithType: 'character';
 } {
-  const cleanBook = character.character_book || fallbackLorebook;
+  const cleanBook = fallbackLorebook || character.character_book;
   const resolvedStatBlock =
     character.extensions?.statBlock || DEFAULT_STAT_BLOCK;
   const resolvedIsNsfw = Boolean(
     character.isNsfw || character.extensions?.isNsfw
   );
-  const reactionImages: ReactionImageItem[] = Array.isArray(
-    character.reactionImages
+  const cleanAvatar = options?.omitAvatarDataUrl
+    ? undefined
+    : sanitizeMediaUri(character.avatar);
+  const reactionImages: ReactionImageItem[] = (
+    Array.isArray(character.reactionImages) ? character.reactionImages : []
   )
-    ? character.reactionImages
-    : [];
+    .map((item) => {
+      const safeUri = sanitizeMediaUri(item?.uri);
+      if (!safeUri) return null;
+      return {
+        id: item.id,
+        name: (item.name || 'neutral').trim() || 'neutral',
+        uri: safeUri,
+        ext: (item.ext || 'webp').trim() || 'webp',
+        triggerRule: String(item.triggerRule || ''),
+      };
+    })
+    .filter((item): item is ReactionImageItem => item !== null);
 
   const v3Assets: CharacterAssetEntry[] = [
     { type: 'icon', uri: 'ccdefault:', name: 'main', ext: 'png' },
-    ...reactionImages
-      .filter(
-        (item) =>
-          item && typeof item.uri === 'string' && item.uri.trim().length > 0
-      )
-      .map((item) => ({
-        type: 'emotion',
-        uri: item.uri,
-        name: (item.name || 'neutral').trim() || 'neutral',
-        ext: (item.ext || 'webp').trim() || 'webp',
-      })),
+    ...reactionImages.map((item) => ({
+      type: 'emotion',
+      uri: item.uri,
+      name: item.name,
+      ext: item.ext,
+    })),
   ];
 
-  const losslessSnapshot: CharacterCardData = {
+  // Preserve any third-party SillyTavern extension keys (e.g., depth_prompt, regex_scripts, chub)
+  const rawExtensions = (character.extensions || {}) as Record<string, unknown>;
+  const { tavernsmith: _ignoredLegacyTs, ...preservedExtensions } = rawExtensions;
+
+  const compactTsMeta = {
+    id: character.id,
+    ...(character.savedFileName ? { savedFileName: character.savedFileName } : {}),
+    isNsfw: resolvedIsNsfw,
+    statBlock: resolvedStatBlock,
+    reactionRules: reactionImages.map((r) => ({
+      id: r.id,
+      name: r.name,
+      ext: r.ext,
+      triggerRule: r.triggerRule,
+    })),
+  };
+
+  const cleanData: CharacterCardData = {
     id: character.id,
     ...(character.savedFileName
       ? { savedFileName: character.savedFileName }
@@ -492,28 +740,22 @@ export function serializeCharacterCard(
     tags: Array.isArray(character.tags) ? character.tags : [],
     creator: character.creator || 'TavernSmith Creator',
     character_version: character.character_version || '1.0.0',
-    character_book: cleanBook,
-    avatar: character.avatar,
-    reactionImages,
+    ...(cleanBook ? { character_book: cleanBook } : {}),
+    ...(cleanAvatar ? { avatar: cleanAvatar } : {}),
+    ...(reactionImages.length > 0 ? { reactionImages } : {}),
+    ...(spec === 'v3' ? { assets: v3Assets } : {}),
     creation_date: character.creation_date || Math.floor(Date.now() / 1000),
     modification_date:
       character.modification_date || Math.floor(Date.now() / 1000),
     isNsfw: resolvedIsNsfw,
     extensions: {
-      talkativeness: character.extensions?.talkativeness || '0.5',
-      fav: Boolean(character.extensions?.fav),
-      world: cleanBook?.name || character.extensions?.world || '',
+      ...preservedExtensions,
+      talkativeness: String(preservedExtensions.talkativeness || '0.5'),
+      fav: Boolean(preservedExtensions.fav),
+      world: cleanBook?.name || String(preservedExtensions.world || ''),
       statBlock: resolvedStatBlock,
       isNsfw: resolvedIsNsfw,
-    },
-  };
-
-  const cleanData: CharacterCardData = {
-    ...losslessSnapshot,
-    ...(spec === 'v3' ? { assets: v3Assets } : {}),
-    extensions: {
-      ...losslessSnapshot.extensions,
-      tavernsmith: losslessSnapshot,
+      tavernsmith: compactTsMeta,
     },
   };
 
@@ -535,11 +777,11 @@ export function serializeCharacterCard(
 }
 
 /**
- * Serializes a Lorebook into a lossless SillyTavern World Info + TavernSmith JSON object
- * with `_tavernsmithType: 'lorebook'` and `extensions.tavernsmith`.
+ * Serializes a Lorebook into a clean SillyTavern World Info + TavernSmith JSON object
+ * with `_tavernsmithType: 'lorebook'` and compact `extensions.tavernsmith` metadata.
  */
 export function serializeLorebookCard(lorebook: Lorebook): Record<string, unknown> {
-  const losslessBook: Lorebook = {
+  const cleanBook: Lorebook = {
     id: lorebook.id,
     ...(lorebook.savedFileName ? { savedFileName: lorebook.savedFileName } : {}),
     name: lorebook.name || 'Untitled Lorebook',
@@ -556,18 +798,24 @@ export function serializeLorebookCard(lorebook: Lorebook): Record<string, unknow
 
   return {
     _tavernsmithType: 'lorebook',
-    id: losslessBook.id,
-    name: losslessBook.name,
-    description: losslessBook.description,
-    scan_depth: losslessBook.scan_depth,
-    token_budget: losslessBook.token_budget,
-    recursive_scanning: losslessBook.recursive_scanning,
-    modification_date: losslessBook.modification_date,
-    isNsfw: losslessBook.isNsfw,
-    tags: losslessBook.tags,
-    entries: losslessBook.entries,
+    id: cleanBook.id,
+    ...(cleanBook.savedFileName ? { savedFileName: cleanBook.savedFileName } : {}),
+    name: cleanBook.name,
+    description: cleanBook.description,
+    scan_depth: cleanBook.scan_depth,
+    token_budget: cleanBook.token_budget,
+    recursive_scanning: cleanBook.recursive_scanning,
+    modification_date: cleanBook.modification_date,
+    isNsfw: cleanBook.isNsfw,
+    tags: cleanBook.tags,
+    entries: cleanBook.entries,
     extensions: {
-      tavernsmith: losslessBook,
+      tavernsmith: {
+        id: cleanBook.id,
+        ...(cleanBook.savedFileName ? { savedFileName: cleanBook.savedFileName } : {}),
+        isNsfw: cleanBook.isNsfw,
+        tags: cleanBook.tags,
+      },
     },
   };
 }
@@ -586,6 +834,37 @@ export type ImportedAssetResult =
       kind: 'lorebook';
       lorebook: Lorebook;
     };
+
+function normalizeLorebookPosition(rawPos: unknown): LorebookEntry['position'] {
+  if (typeof rawPos === 'string') {
+    const clean = rawPos.trim().toLowerCase();
+    if (
+      clean === 'before_char' ||
+      clean === 'after_char' ||
+      clean === 'an_top' ||
+      clean === 'an_bottom' ||
+      clean === 'at_depth'
+    ) {
+      return clean;
+    }
+  }
+  if (typeof rawPos === 'number' && Number.isFinite(rawPos)) {
+    switch (rawPos) {
+      case 1:
+        return 'after_char';
+      case 2:
+        return 'an_top';
+      case 3:
+        return 'an_bottom';
+      case 4:
+        return 'at_depth';
+      case 0:
+      default:
+        return 'before_char';
+    }
+  }
+  return 'before_char';
+}
 
 export function normalizeLorebookObject(
   rawBook: Record<string, unknown>,
@@ -637,8 +916,9 @@ export function normalizeLorebookObject(
       ? (extObj.tavernsmith as Record<string, unknown>)
       : null;
 
-  const source = tsSnapshot ? { ...unwrappedBook, ...tsSnapshot } : unwrappedBook;
-  const rawEntries = source.entries ?? unwrappedBook.entries;
+  // Prefer primary top-level fields over legacy tavernsmith snapshots so external edits aren't overwritten
+  const source = tsSnapshot ? { ...tsSnapshot, ...unwrappedBook } : unwrappedBook;
+  const rawEntries = unwrappedBook.entries ?? tsSnapshot?.entries;
   const entriesList: LorebookEntry[] = [];
 
   if (Array.isArray(rawEntries)) {
@@ -664,10 +944,7 @@ export function normalizeLorebookObject(
           case_sensitive: Boolean(e.case_sensitive ?? e.caseSensitive),
           constant: Boolean(e.constant),
           selective: Boolean(e.selective),
-          position:
-            typeof e.position === 'string'
-              ? (e.position as LorebookEntry['position'])
-              : 'before_char',
+          position: normalizeLorebookPosition(e.position),
           priority: Number(e.priority ?? 10),
           depth: Number(e.depth ?? 4),
           probability: Number(e.probability ?? 100),
@@ -682,8 +959,8 @@ export function normalizeLorebookObject(
         if (item && typeof item === 'object') {
           const e = item as Record<string, unknown>;
           entriesList.push({
-            id: (e.uid as number | string) ?? `entry-${Date.now()}-${idx}`,
-            comment: String(e.comment || `Entry #${idx + 1}`),
+            id: (e.uid as number | string) ?? (e.id as number | string) ?? `entry-${Date.now()}-${idx}`,
+            comment: String(e.comment || e.name || `Entry #${idx + 1}`),
             keys: Array.isArray(e.key)
               ? e.key.map(String)
               : Array.isArray(e.keys)
@@ -701,8 +978,8 @@ export function normalizeLorebookObject(
             case_sensitive: Boolean(e.caseSensitive ?? e.case_sensitive),
             constant: Boolean(e.constant),
             selective: Boolean(e.selective),
-            position: 'before_char',
-            priority: 10,
+            position: normalizeLorebookPosition(e.position),
+            priority: Number(e.priority ?? e.order ?? 10),
             depth: Number(e.depth ?? 4),
             probability: Number(e.probability ?? 100),
             tags: Array.isArray(e.tags) ? e.tags.map(String) : [],
@@ -837,8 +1114,9 @@ export function parseImportedJsonString(
       ? (innerExtensions.tavernsmith as Record<string, unknown>)
       : null;
 
+  // Prefer live rawInner fields over any legacy tavernsmith snapshot so external edits are preserved
   const inner: Record<string, unknown> = charTsSnapshot
-    ? { ...rawInner, ...charTsSnapshot }
+    ? { ...charTsSnapshot, ...rawInner }
     : rawInner;
 
   let embeddedLorebook: Lorebook | undefined;
@@ -852,15 +1130,19 @@ export function parseImportedJsonString(
   const importedIsNsfw = Boolean(
     inner.isNsfw ||
       parsed.isNsfw ||
+      charTsSnapshot?.isNsfw ||
       (inner.extensions &&
         typeof inner.extensions === 'object' &&
         (inner.extensions as Record<string, unknown>).isNsfw)
   );
 
-  const mergedExtensions =
-    inner.extensions && typeof inner.extensions === 'object'
-      ? (inner.extensions as Record<string, unknown>)
-      : innerExtensions || {};
+  const rawMergedExtensions: Record<string, unknown> =
+    innerExtensions && typeof innerExtensions === 'object'
+      ? { ...innerExtensions }
+      : inner.extensions && typeof inner.extensions === 'object'
+        ? { ...(inner.extensions as Record<string, unknown>) }
+        : {};
+  delete rawMergedExtensions.tavernsmith;
 
   const inferExtFromAssetUri = (uri: string): string => {
     const dataMatch = uri.match(/^data:image\/([a-zA-Z0-9+.-]+);/i);
@@ -876,46 +1158,76 @@ export function parseImportedJsonString(
     return 'webp';
   };
 
-  const rawAssets = Array.isArray(inner.assets)
-    ? (inner.assets as CharacterAssetEntry[])
-    : Array.isArray(rawInner.assets)
-      ? (rawInner.assets as CharacterAssetEntry[])
+  const rawAssets = Array.isArray(rawInner.assets)
+    ? (rawInner.assets as CharacterAssetEntry[])
+    : Array.isArray(inner.assets)
+      ? (inner.assets as CharacterAssetEntry[])
       : undefined;
 
+  const reactionRuleMap = new Map<
+    string,
+    { id?: string; triggerRule?: string }
+  >();
+  if (charTsSnapshot && Array.isArray(charTsSnapshot.reactionRules)) {
+    for (const rule of charTsSnapshot.reactionRules as Array<
+      Record<string, unknown>
+    >) {
+      if (rule && typeof rule.name === 'string') {
+        reactionRuleMap.set(rule.name.trim().toLowerCase(), {
+          id: typeof rule.id === 'string' ? rule.id : undefined,
+          triggerRule:
+            typeof rule.triggerRule === 'string' ? rule.triggerRule : '',
+        });
+      }
+    }
+  }
+
   let restoredReactionImages: ReactionImageItem[] = [];
-  if (charTsSnapshot && Array.isArray(charTsSnapshot.reactionImages)) {
-    restoredReactionImages = (
-      charTsSnapshot.reactionImages as Array<Partial<ReactionImageItem>>
-    )
-      .filter((r) => r && typeof r.uri === 'string' && r.uri.trim().length > 0)
-      .map((r, idx) => ({
-        id:
-          typeof r.id === 'string' && r.id
-            ? r.id
-            : `react-${Date.now()}-${idx}`,
-        name: String(r.name || 'neutral'),
-        uri: String(r.uri || ''),
-        ext: String(r.ext || inferExtFromAssetUri(String(r.uri || ''))),
-        triggerRule: String(r.triggerRule || ''),
-      }));
+  const directReactionSource = Array.isArray(rawInner.reactionImages)
+    ? (rawInner.reactionImages as Array<Partial<ReactionImageItem>>)
+    : charTsSnapshot && Array.isArray(charTsSnapshot.reactionImages)
+      ? (charTsSnapshot.reactionImages as Array<Partial<ReactionImageItem>>)
+      : null;
+
+  if (directReactionSource) {
+    restoredReactionImages = directReactionSource
+      .map((r, idx) => {
+        const safeUri = sanitizeMediaUri(r?.uri);
+        if (!safeUri) return null;
+        return {
+          id:
+            typeof r.id === 'string' && r.id
+              ? r.id
+              : `react-${Date.now()}-${idx}`,
+          name: String(r.name || 'neutral'),
+          uri: safeUri,
+          ext: String(r.ext || inferExtFromAssetUri(safeUri)),
+          triggerRule: String(r.triggerRule || ''),
+        };
+      })
+      .filter((r): r is ReactionImageItem => r !== null);
   } else if (Array.isArray(rawAssets)) {
     restoredReactionImages = rawAssets
       .filter((asset) => {
         if (!asset || typeof asset !== 'object') return false;
-        const uri = typeof asset.uri === 'string' ? asset.uri.trim() : '';
-        if (!uri || uri === 'ccdefault:') return false;
-        return (
-          asset.type === 'emotion' ||
-          (asset.name !== 'main' && uri !== 'ccdefault:')
-        );
+        const safeUri = sanitizeMediaUri(asset.uri);
+        if (!safeUri) return false;
+        return asset.type === 'emotion' || asset.name !== 'main';
       })
-      .map((asset, idx) => ({
-        id: `react-${Date.now()}-${idx}-${Math.random().toString(36).slice(2, 6)}`,
-        name: String(asset.name || 'neutral'),
-        uri: String(asset.uri || ''),
-        ext: String(asset.ext || inferExtFromAssetUri(String(asset.uri || ''))),
-        triggerRule: '',
-      }));
+      .map((asset, idx) => {
+        const safeUri = sanitizeMediaUri(asset.uri) as string;
+        const name = String(asset.name || 'neutral');
+        const matchedRule = reactionRuleMap.get(name.trim().toLowerCase());
+        return {
+          id:
+            matchedRule?.id ||
+            `react-${Date.now()}-${idx}-${Math.random().toString(36).slice(2, 6)}`,
+          name,
+          uri: safeUri,
+          ext: String(asset.ext || inferExtFromAssetUri(safeUri)),
+          triggerRule: matchedRule?.triggerRule || '',
+        };
+      });
   }
 
   const resolvedSavedFileName =
@@ -926,6 +1238,15 @@ export function parseImportedJsonString(
         : typeof parsed._diskFileName === 'string' && parsed._diskFileName
           ? parsed._diskFileName
           : undefined;
+
+  const resolvedAvatar =
+    sanitizeMediaUri(avatarDataUrl) || sanitizeMediaUri(inner.avatar);
+
+  const resolvedStatBlock =
+    (rawMergedExtensions as { statBlock?: typeof DEFAULT_STAT_BLOCK })
+      .statBlock ||
+    (charTsSnapshot?.statBlock as typeof DEFAULT_STAT_BLOCK | undefined) ||
+    DEFAULT_STAT_BLOCK;
 
   const character = createBlankCharacter({
     id: typeof inner.id === 'string' && inner.id ? inner.id : undefined,
@@ -956,21 +1277,17 @@ export function parseImportedJsonString(
     modification_date: Number(
       inner.modification_date ?? Math.floor(Date.now() / 1000)
     ),
-    avatar:
-      avatarDataUrl ||
-      (typeof inner.avatar === 'string' ? inner.avatar : undefined),
+    avatar: resolvedAvatar,
     assets: rawAssets,
     reactionImages: restoredReactionImages,
     character_book: embeddedLorebook,
     isNsfw: importedIsNsfw,
     extensions: {
-      ...mergedExtensions,
-      talkativeness: String(mergedExtensions.talkativeness || '0.5'),
-      fav: Boolean(mergedExtensions.fav),
+      ...rawMergedExtensions,
+      talkativeness: String(rawMergedExtensions.talkativeness || '0.5'),
+      fav: Boolean(rawMergedExtensions.fav),
       isNsfw: importedIsNsfw,
-      statBlock:
-        (mergedExtensions as { statBlock?: typeof DEFAULT_STAT_BLOCK })
-          .statBlock || DEFAULT_STAT_BLOCK,
+      statBlock: resolvedStatBlock,
     },
   });
 
@@ -1003,14 +1320,16 @@ export async function importCardFromFile(
       );
     }
 
-    // Convert PNG bytes to data URL for character avatar preview and re-export
-    const bytes = new Uint8Array(buffer);
+    // Strip embedded chara/ccv3 chunks BEFORE storing avatarDataUrl to prevent exponential PNG bloat
+    const strippedBytes = stripPngCharacterChunks(buffer);
     let binary = '';
     const chunkSize = 0x8000;
-    for (let i = 0; i < bytes.length; i += chunkSize) {
-      binary += String.fromCharCode(...bytes.subarray(i, i + chunkSize));
+    for (let i = 0; i < strippedBytes.length; i += chunkSize) {
+      binary += String.fromCharCode(
+        ...strippedBytes.subarray(i, i + chunkSize)
+      );
     }
-    const avatarDataUrl = `data:image/png;base64,${window.btoa(binary)}`;
+    const avatarDataUrl = `data:image/png;base64,${btoa(binary)}`;
 
     let lastChunkErr: unknown = null;
     for (const rawBase64 of candidateChunks) {
@@ -1072,14 +1391,19 @@ export function sanitizeFilename(name: string): string {
 
 /**
  * Exports a Character Card as a SillyTavern `.png` card with embedded `chara` (V2) and `ccv3` (V3) `tEXt` chunks.
+ * Omits redundant base64 `avatar` data inside the PNG text chunks because the PNG image itself is the portrait.
  */
 export async function exportCharacterAsPng(
   character: CharacterCardData,
   fallbackLorebook?: Lorebook,
   accentColor = '#d97706'
 ): Promise<void> {
-  const v2Payload = serializeCharacterCard(character, 'v2', fallbackLorebook);
-  const v3Payload = serializeCharacterCard(character, 'v3', fallbackLorebook);
+  const v2Payload = serializeCharacterCard(character, 'v2', fallbackLorebook, {
+    omitAvatarDataUrl: true,
+  });
+  const v3Payload = serializeCharacterCard(character, 'v3', fallbackLorebook, {
+    omitAvatarDataUrl: true,
+  });
 
   const basePngBuffer = await generateDefaultAvatarPngBuffer(
     character,

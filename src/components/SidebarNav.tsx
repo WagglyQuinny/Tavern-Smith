@@ -9,7 +9,12 @@ import {
   PanelLeftClose,
   PanelLeftOpen,
 } from 'lucide-react';
-import { useStore } from '../context/StoreContext';
+import {
+  isCharacterNsfw,
+  isLorebookEntryNsfw,
+  isLorebookNsfw,
+  useStore,
+} from '../context/StoreContext';
 import { WorkspaceTab } from '../types';
 
 interface NavItem {
@@ -46,6 +51,13 @@ const navItems: NavItem[] = [
   },
 ];
 
+function isNavItemActive(activeTab: WorkspaceTab, itemId: WorkspaceTab): boolean {
+  if (activeTab === itemId) return true;
+  if (itemId === 'themes' && activeTab === 'themes_tags') return true;
+  if (itemId === 'inspector' && activeTab === 'json_inspector') return true;
+  return false;
+}
+
 export const SidebarNav: React.FC = () => {
   const {
     activeTab,
@@ -54,12 +66,23 @@ export const SidebarNav: React.FC = () => {
     toggleMainSidebar,
     character,
     lorebook,
+    lorebooks,
+    tags,
     activeTheme,
     settings,
     updateSettings,
   } = useStore();
 
-  const activeEntriesCount = lorebook.entries.filter((e) => e.enabled).length;
+  const isCharShielded =
+    settings.hideNsfwTags && isCharacterNsfw(character, tags, lorebooks);
+  const isBookShielded =
+    settings.hideNsfwTags && isLorebookNsfw(lorebook, tags);
+  const visibleBookEntries = isBookShielded
+    ? []
+    : settings.hideNsfwTags
+      ? lorebook.entries.filter((e) => !isLorebookEntryNsfw(e, tags))
+      : lorebook.entries;
+  const activeEntriesCount = visibleBookEntries.filter((e) => e.enabled).length;
   const isWizard = settings.editorMode === 'wizard';
 
   // COLLAPSED BLENDER-STYLE VERTICAL ICON RAIL (`w-14` / 56px)
@@ -85,7 +108,7 @@ export const SidebarNav: React.FC = () => {
           {/* Blender-Style Workspace View Icons */}
           {navItems.map((item) => {
             const Icon = item.icon;
-            const isActive = activeTab === item.id;
+            const isActive = isNavItemActive(activeTab, item.id);
             return (
               <button
                 key={item.id}
@@ -178,7 +201,7 @@ export const SidebarNav: React.FC = () => {
         <nav className="flex md:flex-col gap-1 overflow-x-auto md:overflow-x-visible pb-1 md:pb-0">
           {navItems.map((item) => {
             const Icon = item.icon;
-            const isActive = activeTab === item.id;
+            const isActive = isNavItemActive(activeTab, item.id);
             return (
               <button
                 key={item.id}
@@ -281,24 +304,33 @@ export const SidebarNav: React.FC = () => {
             />
           </div>
           <div className="text-xs font-semibold text-slate-900 dark:text-white truncate">
-            {character.name || 'Untitled Character'}
+            {isCharShielded
+              ? 'Hidden (SFW Mode)'
+              : character.name || 'Untitled Character'}
           </div>
           <div className="flex items-center justify-between text-[11px] text-slate-500 dark:text-slate-400 font-mono">
             <span>Lore Entries</span>
             <span>
-              {activeEntriesCount}/{lorebook.entries.length}
+              {isBookShielded
+                ? 'Hidden'
+                : `${activeEntriesCount}/${visibleBookEntries.length}`}
             </span>
           </div>
           <div className="flex items-center justify-between text-[11px] text-slate-500 dark:text-slate-400 font-mono">
             <span>Stat Tracker</span>
             <span
               className={
+                !isCharShielded &&
                 character.extensions?.statBlock?.enableDMTracker
                   ? 'text-emerald-500'
                   : 'text-slate-400'
               }
             >
-              {character.extensions?.statBlock?.enableDMTracker ? 'ON' : 'OFF'}
+              {isCharShielded
+                ? 'Hidden'
+                : character.extensions?.statBlock?.enableDMTracker
+                  ? 'ON'
+                  : 'OFF'}
             </span>
           </div>
         </div>

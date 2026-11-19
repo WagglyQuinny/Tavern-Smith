@@ -15,11 +15,18 @@ import {
   BookOpen,
   Sparkles,
 } from 'lucide-react';
-import { useStore } from '../context/StoreContext';
-import { InspectorTab } from '../types';
+import {
+  isCharacterNsfw,
+  isLorebookEntryNsfw,
+  isLorebookNsfw,
+  useStore,
+} from '../context/StoreContext';
+import { InspectorTab, Lorebook } from '../types';
 import { Tooltip } from './Tooltip';
 import {
   serializeCharacterCard,
+  serializeLorebookCard,
+  normalizeLorebookObject,
   exportCharacterAsPng,
   exportCharacterAsJson,
   exportLorebookAsJson,
@@ -32,12 +39,36 @@ interface ValidationIssue {
   detail: string;
 }
 
+const SECRET_PATTERNS: { label: string; regex: RegExp }[] = [
+  { label: 'OpenAI/Anthropic-style key', regex: /\bsk-[A-Za-z0-9_-]{16,}\b/ },
+  { label: 'Google Gemini API key', regex: /\bAIza[0-9A-Za-z_-]{20,}\b/ },
+  { label: 'Groq API key', regex: /\bgsk_[A-Za-z0-9_-]{16,}\b/ },
+  { label: 'xAI API key', regex: /\bxai-[A-Za-z0-9_-]{16,}\b/ },
+  { label: 'Bearer token', regex: /\bBearer\s+[A-Za-z0-9._-]{12,}/i },
+  { label: 'Non-empty apiKey field', regex: /"apiKey"\s*:\s*"[^"\s]{6,}"/i },
+];
+
+function detectEmbeddedSecrets(text: string): string[] {
+  const hits: string[] = [];
+  for (const { label, regex } of SECRET_PATTERNS) {
+    if (regex.test(text)) {
+      hits.push(label);
+    }
+  }
+  return hits;
+}
+
 export const JsonInspector: React.FC = () => {
   const {
     character,
     setCharacter,
     lorebook,
     setLorebook,
+    lorebooks,
+    tags,
+    settings,
+    setActiveTab: setWorkspaceTab,
+    getResolvedLorebookForCharacter,
     statBlock,
     updateSettings,
     importFromFiles,
@@ -81,29 +112,64 @@ export const JsonInspector: React.FC = () => {
     };
   }, []);
 
+  const hideNsfw = Boolean(settings.hideNsfwTags);
+  const isCharShielded =
+    hideNsfw && isCharacterNsfw(character, tags, lorebooks);
+  const isLorebookShielded = hideNsfw && isLorebookNsfw(lorebook, tags);
+  const isActiveViewShielded =
+    activeTab === 'lorebook' ? isLorebookShielded : isCharShielded;
+
+  useEffect(() => {
+    if (isActiveViewShielded && isRawEditMode) {
+      updateInspectorDraft({ isRawEditMode: false, rawEditError: null });
+    }
+  }, [isActiveViewShielded, isRawEditMode, updateInspectorDraft]);
+
+  const resolvedLinkedLorebook = useMemo(
+    () => getResolvedLorebookForCharacter(character),
+    [character, getResolvedLorebookForCharacter]
+  );
+
+  const visibleLorebookEntryCount = useMemo(
+    () =>
+      isLorebookShielded
+        ? 0
+        : hideNsfw
+          ? lorebook.entries.filter((e) => !isLorebookEntryNsfw(e, tags)).length
+          : lorebook.entries.length,
+    [isLorebookShielded, hideNsfw, lorebook.entries, tags]
+  );
+
   const v2JsonString = useMemo(
     () =>
-      JSON.stringify(
-        serializeCharacterCard(character, 'v2', character.character_book),
-        null,
-        2
-      ),
-    [character]
+      isCharShielded
+        ? ''
+        : JSON.stringify(
+            serializeCharacterCard(character, 'v2', resolvedLinkedLorebook),
+            null,
+            2
+          ),
+    [isCharShielded, character, resolvedLinkedLorebook]
   );
 
   const v3JsonString = useMemo(
     () =>
-      JSON.stringify(
-        serializeCharacterCard(character, 'v3', character.character_book),
-        null,
-        2
-      ),
-    [character]
+      isCharShielded
+        ? ''
+        : JSON.stringify(
+            serializeCharacterCard(character, 'v3', resolvedLinkedLorebook),
+            null,
+            2
+          ),
+    [isCharShielded, character, resolvedLinkedLorebook]
   );
 
   const lorebookJsonString = useMemo(
-    () => JSON.stringify(lorebook, null, 2),
-    [lorebook]
+    () =>
+      isLorebookShielded
+        ? ''
+        : JSON.stringify(serializeLorebookCard(lorebook), null, 2),
+    [isLorebookShielded, lorebook]
   );
 
   const displayedContent = useMemo(() => {
@@ -112,92 +178,100 @@ export const JsonInspector: React.FC = () => {
     return lorebookJsonString;
   }, [activeTab, v2JsonString, v3JsonString, lorebookJsonString]);
 
+  const displayedSizeKb = useMemo(() => {
+    if (!displayedContent) return '0.00';
+    return (new TextEncoder().encode(displayedContent).length / 1024).toFixed(2);
+  }, [displayedContent]);
+
   const tokenBreakdown = useMemo(
     () =>
       calculateCardTokenBreakdown(
         character,
-        character.character_book,
+        resolvedLinkedLorebook,
         statBlock
       ),
-    [character, statBlock]
+    [character, resolvedLinkedLorebook, statBlock]
   );
 
   const validationIssues = useMemo<ValidationIssue[]>(() => {
+    if (isActiveViewShielded) return [];
     const issues: ValidationIssue[] = [];
 
-    if (character.name.trim().length > 0) {
-      issues.push({
-        level: 'ok',
-        label: 'Character Name',
-        detail: `"${character.name}" is defined.`,
-      });
-    } else {
-      issues.push({
-        level: 'error',
-        label: 'Missing Character Name',
-        detail: 'SillyTavern V2/V3 requires a non-empty `data.name` field.',
-      });
-    }
+    if (activeTab !== 'lorebook') {
+      if (character.name.trim().length > 0) {
+        issues.push({
+          level: 'ok',
+          label: 'Character Name',
+          detail: `"${character.name}" is defined.`,
+        });
+      } else {
+        issues.push({
+          level: 'error',
+          label: 'Missing Character Name',
+          detail: 'SillyTavern V2/V3 requires a non-empty `data.name` field.',
+        });
+      }
 
-    if (character.description.trim().length > 0) {
-      issues.push({
-        level: 'ok',
-        label: 'Description',
-        detail: `${tokenBreakdown.description} tokens in description.`,
-      });
-    } else {
-      issues.push({
-        level: 'warn',
-        label: 'Empty Description',
-        detail: 'Adding appearance and backstory helps keep the character consistent.',
-      });
-    }
+      if (character.description.trim().length > 0) {
+        issues.push({
+          level: 'ok',
+          label: 'Description',
+          detail: `${tokenBreakdown.description} tokens in description.`,
+        });
+      } else {
+        issues.push({
+          level: 'warn',
+          label: 'Empty Description',
+          detail: 'Adding appearance and backstory helps keep the character consistent.',
+        });
+      }
 
-    if (character.first_mes.trim().length > 0) {
-      issues.push({
-        level: 'ok',
-        label: 'First Greeting',
-        detail: `${tokenBreakdown.first_mes} tokens (+${character.alternate_greetings.length} alternates).`,
-      });
-    } else {
-      issues.push({
-        level: 'warn',
-        label: 'Empty First Greeting',
-        detail: 'SillyTavern cards work best with an opening message.',
-      });
-    }
+      if (character.first_mes.trim().length > 0) {
+        issues.push({
+          level: 'ok',
+          label: 'First Greeting',
+          detail: `${tokenBreakdown.first_mes} tokens (+${character.alternate_greetings.length} alternates).`,
+        });
+      } else {
+        issues.push({
+          level: 'warn',
+          label: 'Empty First Greeting',
+          detail: 'SillyTavern cards work best with an opening message.',
+        });
+      }
 
-    // Check macro balanced braces across all text fields
-    const combinedText = [
-      character.description,
-      character.personality,
-      character.scenario,
-      character.first_mes,
-      character.mes_example,
-      character.system_prompt,
-      character.post_history_instructions,
-      ...character.alternate_greetings,
-    ].join('\n');
+      // Check macro balanced braces across all text fields
+      const combinedText = [
+        character.description,
+        character.personality,
+        character.scenario,
+        character.first_mes,
+        character.mes_example,
+        character.system_prompt,
+        character.post_history_instructions,
+        ...character.alternate_greetings,
+      ].join('\n');
 
-    const openMacros = (combinedText.match(/\{\{/g) || []).length;
-    const closeMacros = (combinedText.match(/\}\}/g) || []).length;
-    if (openMacros === closeMacros) {
-      issues.push({
-        level: 'ok',
-        label: 'Macro Braces Match',
-        detail: `${openMacros} {{macro}} tag(s) look good.`,
-      });
-    } else {
-      issues.push({
-        level: 'warn',
-        label: 'Unmatched Macro Braces',
-        detail: `Found ${openMacros} opening "{{" vs ${closeMacros} closing "}}".`,
-      });
+      const openMacros = (combinedText.match(/\{\{/g) || []).length;
+      const closeMacros = (combinedText.match(/\}\}/g) || []).length;
+      if (openMacros === closeMacros) {
+        issues.push({
+          level: 'ok',
+          label: 'Macro Braces Match',
+          detail: `${openMacros} {{macro}} tag(s) look good.`,
+        });
+      } else {
+        issues.push({
+          level: 'warn',
+          label: 'Unmatched Macro Braces',
+          detail: `Found ${openMacros} opening "{{" vs ${closeMacros} closing "}}".`,
+        });
+      }
     }
 
     // Check Linked Lorebook entries (or active Lorebook when inspecting Lorebook JSON)
     const validationBook =
-      activeTab === 'lorebook' ? lorebook : character.character_book;
+      activeTab === 'lorebook' ? lorebook : resolvedLinkedLorebook;
     if (!validationBook) {
       issues.push({
         level: 'ok',
@@ -223,19 +297,32 @@ export const JsonInspector: React.FC = () => {
       }
     }
 
-    // Verify no secret leakage
-    const hasSecretKey =
-      v3JsonString.includes('apiKey') || v3JsonString.includes('Bearer ');
-    if (!hasSecretKey) {
+    // Verify no secret leakage in exported JSON
+    const secretHits = detectEmbeddedSecrets(displayedContent);
+    if (secretHits.length === 0) {
       issues.push({
         level: 'ok',
         label: 'Safe Export',
-        detail: 'No API keys or secrets are stored in your card JSON.',
+        detail: 'No API keys or secrets detected in your export JSON.',
+      });
+    } else {
+      issues.push({
+        level: 'error',
+        label: 'Potential Secret Detected',
+        detail: `Found possible credential pattern (${secretHits.join(', ')}) inside this JSON. Remove sensitive keys before sharing.`,
       });
     }
 
     return issues;
-  }, [activeTab, character, lorebook, tokenBreakdown, v3JsonString]);
+  }, [
+    isActiveViewShielded,
+    activeTab,
+    character,
+    lorebook,
+    resolvedLinkedLorebook,
+    tokenBreakdown,
+    displayedContent,
+  ]);
 
   const handleSwitchTab = (tab: InspectorTab) => {
     setActiveTab(tab);
@@ -247,6 +334,7 @@ export const JsonInspector: React.FC = () => {
   };
 
   const handleToggleRawEdit = () => {
+    if (isActiveViewShielded) return;
     if (!isRawEditMode) {
       setRawJsonDraft(displayedContent);
       setRawEditError(null);
@@ -258,31 +346,42 @@ export const JsonInspector: React.FC = () => {
   };
 
   const handleApplyRawJson = () => {
+    if (isActiveViewShielded) return;
     setRawEditError(null);
     try {
       const parsed = JSON.parse(rawJsonDraft);
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+        setRawEditError('Root JSON value must be an object.');
+        return;
+      }
+
       if (activeTab === 'lorebook') {
-        if (!parsed || !Array.isArray(parsed.entries)) {
-          setRawEditError('Lorebook JSON must contain an `entries` array.');
+        const hasEntries =
+          Array.isArray(parsed.entries) ||
+          (parsed.entries && typeof parsed.entries === 'object');
+        if (!hasEntries) {
+          setRawEditError(
+            'Lorebook JSON must contain an `entries` array or SillyTavern entry map.'
+          );
           return;
         }
+        const normalized = normalizeLorebookObject(
+          parsed as Record<string, unknown>,
+          lorebook.name || 'Lorebook'
+        );
         setLorebook((prev) => ({
-          ...prev,
-          name: typeof parsed.name === 'string' ? parsed.name : prev.name,
-          description:
-            typeof parsed.description === 'string'
-              ? parsed.description
-              : prev.description,
-          scan_depth:
-            typeof parsed.scan_depth === 'number'
-              ? parsed.scan_depth
-              : prev.scan_depth,
-          token_budget:
-            typeof parsed.token_budget === 'number'
-              ? parsed.token_budget
-              : prev.token_budget,
-          recursive_scanning: Boolean(parsed.recursive_scanning),
-          entries: parsed.entries,
+          ...normalized,
+          id: prev.id,
+          isNsfw:
+            typeof parsed.isNsfw === 'boolean' ? parsed.isNsfw : prev.isNsfw,
+          tags: Array.isArray(parsed.tags)
+            ? parsed.tags
+                .filter((t: unknown): t is string => typeof t === 'string')
+                .map((t: string) => t.trim())
+                .filter(Boolean)
+            : normalized.tags && normalized.tags.length > 0
+              ? normalized.tags
+              : prev.tags,
         }));
         setIsRawEditMode(false);
         setStatusNotice('Applied raw JSON edits to active Lorebook.');
@@ -291,20 +390,65 @@ export const JsonInspector: React.FC = () => {
       }
 
       const dataObj =
-        parsed && typeof parsed.data === 'object' && parsed.data !== null
-          ? parsed.data
-          : parsed;
+        parsed.data &&
+        typeof parsed.data === 'object' &&
+        !Array.isArray(parsed.data)
+          ? (parsed.data as Record<string, unknown>)
+          : (parsed as Record<string, unknown>);
 
-      if (!dataObj || typeof dataObj.name !== 'string') {
+      if (typeof dataObj.name !== 'string') {
         setRawEditError(
           'Character JSON must contain a valid `data.name` or top-level `name` string.'
         );
         return;
       }
 
+      const nextAltGreetings = Array.isArray(dataObj.alternate_greetings)
+        ? dataObj.alternate_greetings.filter(
+            (g): g is string => typeof g === 'string'
+          )
+        : undefined;
+      const nextTags = Array.isArray(dataObj.tags)
+        ? dataObj.tags
+            .filter((t): t is string => typeof t === 'string')
+            .map((t) => t.trim())
+            .filter(Boolean)
+        : undefined;
+
+      let nextEmbeddedBook: Lorebook | null | undefined = undefined;
+      if (dataObj.character_book === null) {
+        nextEmbeddedBook = null;
+      } else if (
+        dataObj.character_book &&
+        typeof dataObj.character_book === 'object' &&
+        !Array.isArray(dataObj.character_book)
+      ) {
+        const rawBook = dataObj.character_book as Record<string, unknown>;
+        const hasValidEntries =
+          Array.isArray(rawBook.entries) ||
+          (rawBook.entries && typeof rawBook.entries === 'object');
+        if (!hasValidEntries) {
+          setRawEditError(
+            '`character_book` must contain an `entries` array or entry map.'
+          );
+          return;
+        }
+        const normalizedBook = normalizeLorebookObject(
+          rawBook,
+          `${dataObj.name || character.name || 'Character'} Lorebook`
+        );
+        nextEmbeddedBook = {
+          ...normalizedBook,
+          id:
+            typeof rawBook.id === 'string' && rawBook.id.trim()
+              ? rawBook.id.trim()
+              : character.character_book?.id || normalizedBook.id,
+        };
+      }
+
       setCharacter((prev) => ({
         ...prev,
-        name: dataObj.name,
+        name: dataObj.name as string,
         description:
           typeof dataObj.description === 'string'
             ? dataObj.description
@@ -337,24 +481,21 @@ export const JsonInspector: React.FC = () => {
           typeof dataObj.post_history_instructions === 'string'
             ? dataObj.post_history_instructions
             : prev.post_history_instructions,
-        alternate_greetings: Array.isArray(dataObj.alternate_greetings)
-          ? dataObj.alternate_greetings
-          : prev.alternate_greetings,
-        tags: Array.isArray(dataObj.tags) ? dataObj.tags : prev.tags,
+        alternate_greetings: nextAltGreetings ?? prev.alternate_greetings,
+        tags: nextTags ?? prev.tags,
         creator:
           typeof dataObj.creator === 'string' ? dataObj.creator : prev.creator,
         character_version:
           typeof dataObj.character_version === 'string'
             ? dataObj.character_version
             : prev.character_version,
+        character_book:
+          nextEmbeddedBook === undefined
+            ? prev.character_book
+            : nextEmbeddedBook === null
+              ? undefined
+              : nextEmbeddedBook,
       }));
-
-      if (
-        dataObj.character_book &&
-        Array.isArray(dataObj.character_book.entries)
-      ) {
-        setLorebook(dataObj.character_book);
-      }
 
       setIsRawEditMode(false);
       setStatusNotice('Applied raw JSON edits to active Character Card.');
@@ -367,6 +508,7 @@ export const JsonInspector: React.FC = () => {
   };
 
   const handleCopyCurrent = async () => {
+    if (isActiveViewShielded) return;
     try {
       await navigator.clipboard.writeText(
         isRawEditMode ? rawJsonDraft : displayedContent
@@ -379,8 +521,9 @@ export const JsonInspector: React.FC = () => {
   };
 
   const handleDownloadCurrent = async () => {
+    if (isActiveViewShielded) return;
     if (activeTab === 'v2' || activeTab === 'v3') {
-      exportCharacterAsJson(character, activeTab, character.character_book);
+      exportCharacterAsJson(character, activeTab, resolvedLinkedLorebook);
       setStatusNotice(
         `Downloaded ${character.name} (${activeTab.toUpperCase()}) JSON.`
       );
@@ -393,9 +536,10 @@ export const JsonInspector: React.FC = () => {
   };
 
   const handleExportPng = async () => {
+    if (isActiveViewShielded) return;
     await exportCharacterAsPng(
       character,
-      character.character_book,
+      resolvedLinkedLorebook,
       activeTheme.color
     );
     setStatusNotice(
@@ -483,11 +627,12 @@ export const JsonInspector: React.FC = () => {
 
           <button
             type="button"
+            disabled={isActiveViewShielded}
             onClick={handleToggleRawEdit}
             style={
               isRawEditMode ? { borderColor: 'var(--theme-accent)' } : undefined
             }
-            className={`theme-hover-outline flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-medium cursor-pointer ${
+            className={`theme-hover-outline flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-medium cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed ${
               isRawEditMode
                 ? 'bg-slate-900 text-white dark:bg-white dark:text-slate-900'
                 : 'border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 text-slate-700 dark:text-slate-200'
@@ -512,8 +657,9 @@ export const JsonInspector: React.FC = () => {
           {(activeTab === 'v2' || activeTab === 'v3') && (
             <button
               type="button"
+              disabled={isActiveViewShielded}
               onClick={() => void handleExportPng()}
-              className="theme-hover-outline flex items-center gap-1.5 rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-3 py-1.5 text-xs font-medium text-slate-700 dark:text-slate-200 cursor-pointer"
+              className="theme-hover-outline flex items-center gap-1.5 rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-3 py-1.5 text-xs font-medium text-slate-700 dark:text-slate-200 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
             >
               <ImageIcon
                 className="h-3.5 w-3.5"
@@ -525,8 +671,9 @@ export const JsonInspector: React.FC = () => {
 
           <button
             type="button"
+            disabled={isActiveViewShielded}
             onClick={() => void handleDownloadCurrent()}
-            className="theme-hover-outline flex items-center gap-1.5 rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-3 py-1.5 text-xs font-medium text-slate-700 dark:text-slate-200 cursor-pointer"
+            className="theme-hover-outline flex items-center gap-1.5 rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-3 py-1.5 text-xs font-medium text-slate-700 dark:text-slate-200 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
           >
             <Download
               className="h-3.5 w-3.5"
@@ -537,9 +684,10 @@ export const JsonInspector: React.FC = () => {
 
           <button
             type="button"
+            disabled={isActiveViewShielded}
             onClick={() => void handleCopyCurrent()}
             style={{ borderColor: 'var(--theme-accent)' }}
-            className="theme-hover-outline flex items-center gap-1.5 rounded-lg border bg-slate-900 dark:bg-white px-3.5 py-1.5 text-xs font-semibold text-white dark:text-slate-900 cursor-pointer"
+            className="theme-hover-outline flex items-center gap-1.5 rounded-lg border bg-slate-900 dark:bg-white px-3.5 py-1.5 text-xs font-semibold text-white dark:text-slate-900 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
           >
             {copied ? (
               <>
@@ -630,35 +778,83 @@ export const JsonInspector: React.FC = () => {
             }`}
           >
             <BookOpen className="h-3.5 w-3.5" />
-            <span>Lorebook JSON ({lorebook.entries.length} entries)</span>
+            <span>
+              {isLorebookShielded
+                ? 'Lorebook JSON (Hidden)'
+                : `Lorebook JSON (${visibleLorebookEntryCount} entries)`}
+            </span>
           </button>
         </div>
 
-        <div className="flex items-center gap-3 font-mono text-xs text-slate-500 dark:text-slate-400 tabular-nums">
-          <span>
-            File Size:{' '}
-            <strong className="text-slate-900 dark:text-white">
-              {(new Blob([displayedContent]).size / 1024).toFixed(2)} KB
-            </strong>
-          </span>
-          <span>·</span>
-          <span>
-            Permanent Tokens:{' '}
-            <strong className="text-slate-900 dark:text-white">
-              {tokenBreakdown.permanentTokens}
-            </strong>
-          </span>
-          <span>·</span>
-          <span>
-            Total w/ Lore:{' '}
-            <strong style={{ color: 'var(--theme-accent)' }}>
-              {tokenBreakdown.totalCardTokens} tokens
-            </strong>
-          </span>
-        </div>
+        {!isActiveViewShielded && (
+          <div className="flex items-center gap-3 font-mono text-xs text-slate-500 dark:text-slate-400 tabular-nums">
+            <span>
+              File Size:{' '}
+              <strong className="text-slate-900 dark:text-white">
+                {displayedSizeKb} KB
+              </strong>
+            </span>
+            <span>·</span>
+            <span>
+              Permanent Tokens:{' '}
+              <strong className="text-slate-900 dark:text-white">
+                {tokenBreakdown.permanentTokens}
+              </strong>
+            </span>
+            <span>·</span>
+            <span>
+              Total w/ Lore:{' '}
+              <strong style={{ color: 'var(--theme-accent)' }}>
+                {tokenBreakdown.totalCardTokens} tokens
+              </strong>
+            </span>
+          </div>
+        )}
       </div>
 
-      {/* Main Fluid Responsive Grid: Code/Editor + Schema Validation & Token Breakdown */}
+      {isActiveViewShielded ? (
+        <div
+          style={{
+            borderColor:
+              'color-mix(in srgb, var(--theme-accent) 40%, transparent)',
+          }}
+          className="rounded-2xl border bg-white dark:bg-slate-900 p-8 sm:p-12 text-center space-y-4 shadow-sm"
+        >
+          <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-2xl border border-amber-500/40 bg-amber-500/10 text-amber-600 dark:text-amber-300">
+            <ShieldCheck className="h-6 w-6" />
+          </div>
+          <div className="space-y-1.5 max-w-md mx-auto">
+            <h2 className="text-base font-bold text-slate-900 dark:text-white">
+              NSFW {activeTab === 'lorebook' ? 'Lorebook' : 'Character'} JSON Hidden (SFW Mode Active)
+            </h2>
+            <p className="text-xs text-slate-500 dark:text-slate-400 leading-relaxed">
+              This {activeTab === 'lorebook' ? 'lorebook' : 'character card'} is flagged NSFW and is shielded while <strong>Hide NSFW Content</strong> is enabled in Options. Select an SFW item or disable SFW Mode to inspect or export it.
+            </p>
+          </div>
+          <div className="flex flex-wrap items-center justify-center gap-2.5 pt-2">
+            <button
+              type="button"
+              onClick={() =>
+                setWorkspaceTab(
+                  activeTab === 'lorebook' ? 'lorebook' : 'character'
+                )
+              }
+              style={{ borderColor: 'var(--theme-accent)' }}
+              className="theme-hover-outline rounded-lg border bg-slate-900 dark:bg-white px-4 py-2 text-xs font-semibold text-white dark:text-slate-900 cursor-pointer"
+            >
+              Switch to {activeTab === 'lorebook' ? 'Lorebooks' : 'Characters'}
+            </button>
+            <button
+              type="button"
+              onClick={() => setWorkspaceTab('options')}
+              className="theme-hover-outline rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 px-4 py-2 text-xs font-semibold text-slate-700 dark:text-slate-200 cursor-pointer"
+            >
+              Open Options
+            </button>
+          </div>
+        </div>
+      ) : (
+      /* Main Fluid Responsive Grid: Code/Editor + Schema Validation & Token Breakdown */
       <div
         style={{
           gridTemplateColumns:
@@ -753,10 +949,16 @@ export const JsonInspector: React.FC = () => {
               {validationIssues.map((issue, idx) => (
                 <div
                   key={idx}
-                  className="flex items-start gap-2.5 rounded-lg border border-slate-200/80 dark:border-slate-800/80 bg-slate-50/60 dark:bg-slate-950/50 p-2.5 text-xs"
+                  className={`flex items-start gap-2.5 rounded-lg border p-2.5 text-xs ${
+                    issue.level === 'error'
+                      ? 'border-rose-500/40 bg-rose-500/10'
+                      : 'border-slate-200/80 dark:border-slate-800/80 bg-slate-50/60 dark:bg-slate-950/50'
+                  }`}
                 >
                   {issue.level === 'ok' ? (
                     <CheckCircle2 className="h-4 w-4 text-emerald-500 shrink-0 mt-0.5" />
+                  ) : issue.level === 'error' ? (
+                    <AlertTriangle className="h-4 w-4 text-rose-500 shrink-0 mt-0.5" />
                   ) : (
                     <AlertTriangle className="h-4 w-4 text-amber-500 shrink-0 mt-0.5" />
                   )}
@@ -833,6 +1035,7 @@ export const JsonInspector: React.FC = () => {
           </div>
         </div>
       </div>
+      )}
     </div>
   );
 };

@@ -13,7 +13,7 @@ on:
           - minor
           - major
       release_notes:
-        description: 'Optional extra summary note (leave blank for 100% automatic Git analysis)'
+        description: 'Optional release summary/title (leave blank to promote [Unreleased] notes & git commits automatically)'
         required: false
         default: ''
         type: string
@@ -25,7 +25,7 @@ permissions:
 
 jobs:
   bump-version-and-changelog:
-    name: Auto-Analyze Git Diff, Bump Version, Sync In-App Changelog & Push Tag
+    name: Analyze Git History, Promote Unreleased Changelog, Bump Version & Push Tag
     runs-on: ubuntu-latest
 
     steps:
@@ -41,15 +41,15 @@ jobs:
           node-version: '24'
           package-manager-cache: false
 
-      - name: Bump Semantic Version & Run Automated Git Repository Changelog Analyzer
+      - name: Bump Semantic Version & Generate Accurate Changelog
         id: version_step
         env:
           BUMP_TYPE: ${{ inputs.bump_type }}
           CUSTOM_NOTES: ${{ inputs.release_notes }}
         run: |
-          set -e
+          set -euo pipefail
 
-          # Locate the previous version tag if one exists
+          # Locate the previous semantic version tag if one exists
           LAST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
           export LAST_TAG
           echo "Previous git tag: ${LAST_TAG:-none}"
@@ -63,10 +63,9 @@ jobs:
           echo "new_version=${NEW_VERSION}" >> "$GITHUB_OUTPUT"
           echo "tag_name=${TAG_NAME}" >> "$GITHUB_OUTPUT"
 
-          # Run in-depth Node.js git analyzer to update CHANGELOG.md, src/versionInfo.json, and src/utils/changelogData.ts
           node - << 'EOF'
           const fs = require('fs');
-          const { execSync } = require('child_process');
+          const { execFileSync } = require('child_process');
 
           const newVersion = process.env.NEW_VERSION || require('./package.json').version;
           const tagName = process.env.TAG_NAME || `v${newVersion}`;
@@ -74,174 +73,383 @@ jobs:
           const lastTag = (process.env.LAST_TAG || '').trim();
           const customNotes = (process.env.CUSTOM_NOTES || '').trim();
 
-          function runGit(cmd) {
+          function runGit(args) {
             try {
-              return execSync(cmd, { encoding: 'utf8', stdio: ['pipe', 'pipe', 'ignore'] }).trim();
+              return execFileSync('git', args, {
+                encoding: 'utf8',
+                stdio: ['pipe', 'pipe', 'ignore'],
+                maxBuffer: 20 * 1024 * 1024,
+              });
             } catch {
               return '';
             }
           }
 
-          const rawCommits = runGit(
-            lastTag
-              ? `git log "${lastTag}..HEAD" --no-merges --pretty=format:"%h|%s"`
-              : `git log -n 40 --no-merges --pretty=format:"%h|%s"`
-          );
-
-          const rawNameStatus = runGit(
-            lastTag
-              ? `git diff --name-status "${lastTag}" HEAD`
-              : `git show --name-status --pretty="" HEAD`
-          );
-
-          const rawNumStat = runGit(
-            lastTag
-              ? `git diff --numstat "${lastTag}" HEAD`
-              : `git show --numstat --pretty="" HEAD`
-          );
-
-          const rawShortStat = runGit(
-            lastTag
-              ? `git diff --shortstat "${lastTag}" HEAD`
-              : `git show --shortstat --pretty="" HEAD`
-          );
-
-          const highlights = [];
-          const fixes = [];
-
-          if (customNotes) {
-            highlights.push(customNotes);
+          function normalizeForDedup(text) {
+            return String(text || '')
+              .replace(/\([0-9a-f]{7,12}\)\s*$/i, '')
+              .replace(/\*\*([^*]+)\*\*/g, '$1')
+              .replace(/`([^`]+)`/g, '$1')
+              .replace(/[^a-z0-9]+/gi, ' ')
+              .trim()
+              .toLowerCase();
           }
 
-          const commitLines = rawCommits
-            .split('\n')
-            .map((l) => l.trim())
-            .filter(Boolean);
-
-          for (const line of commitLines) {
-            const [hash, ...subjectParts] = line.split('|');
-            const subject = subjectParts.join('|').trim();
-            if (!subject || /^chore\(release\):/i.test(subject)) continue;
-
-            const cleanSubject = subject.replace(/^(feat|fix|chore|refactor|perf|style|docs|ci)(\([^)]+\))?:\s*/i, '');
-            const formattedEntry = `${cleanSubject.charAt(0).toUpperCase() + cleanSubject.slice(1)} (${hash})`;
-
-            if (/^(fix|bug|hotfix|patch|perf|refactor|security|chore)/i.test(subject) || /\b(fix|fixed|bug|error|crash|stability|fallback|retry)\b/i.test(subject)) {
-              fixes.push(formattedEntry);
-            } else {
-              highlights.push(formattedEntry);
-            }
+          function pushUnique(target, seenSet, item) {
+            const clean = String(item || '').trim();
+            if (!clean) return;
+            const norm = normalizeForDedup(clean);
+            if (!norm || seenSet.has(norm)) return;
+            seenSet.add(norm);
+            target.push(clean);
           }
 
-          const numStatMap = new Map();
-          for (const line of rawNumStat.split('\n').filter(Boolean)) {
-            const parts = line.split(/\s+/);
-            if (parts.length >= 3) {
-              const added = parts[0] === '-' ? 0 : Number(parts[0]) || 0;
-              const deleted = parts[1] === '-' ? 0 : Number(parts[1]) || 0;
-              const filePath = parts.slice(2).join(' ');
-              numStatMap.set(filePath, { added, deleted });
+          function classifyText(rawSubject, rawText) {
+            const subject = String(rawSubject || '').trim();
+            const text = `${subject} ${String(rawText || '')}`;
+            if (
+              /^(sec|security)(\([^)]+\))?:/i.test(subject) ||
+              /\b(security|csrf|xss|svg|dns rebinding|symlink|path traversal|encrypt|aes-256|vault|secret|credential|sandbox|127\.0\.0\.1|origin|host header|nsfw shield|nsfw hiding)\b/i.test(
+                text
+              )
+            ) {
+              return 'security';
             }
+            if (
+              /^(fix|bug|hotfix|patch|perf|memory|stability)(\([^)]+\))?:/i.test(subject) ||
+              /\b(fix|fixed|fixes|bug|bugfix|error|crash|leak|memory leak|abort|race condition|stale|corrupt|regression|prevent|stability|fallback|retry|overflow|broken)\b/i.test(
+                text
+              )
+            ) {
+              return 'fixes';
+            }
+            return 'highlights';
+          }
+
+          function stripConventionalPrefix(line) {
+            const stripped = String(line || '')
+              .trim()
+              .replace(
+                /^(feat|feature|fix|bug|hotfix|patch|security|sec|perf|refactor|chore|style|docs|ci|build|test)(\([^)]+\))?!?:\s*/i,
+                ''
+              )
+              .trim();
+            if (!stripped) return '';
+            return stripped.charAt(0).toUpperCase() + stripped.slice(1);
+          }
+
+          function extractUnreleasedFromChangelog(rawMarkdown) {
+            const result = {
+              found: false,
+              cleanedMarkdown: rawMarkdown,
+              title: '',
+              security: [],
+              highlights: [],
+              fixes: [],
+              fileChanges: [],
+            };
+
+            const match = rawMarkdown.match(
+              /(^|\n)(## \[Unreleased\][^\n]*\n[\s\S]*?)(?=\n## \[|\s*$)/i
+            );
+            if (!match) return result;
+
+            result.found = true;
+            const block = match[2];
+            const blockStart = match.index + match[1].length;
+            const blockEnd = blockStart + block.length;
+            const before = rawMarkdown.slice(0, blockStart).replace(/\n+$/, '\n\n');
+            const after = rawMarkdown.slice(blockEnd).replace(/^\n+/, '');
+            result.cleanedMarkdown = after ? before + after : before.trimEnd() + '\n';
+
+            const headingLine = block.split('\n')[0] || '';
+            const titleMatch = headingLine.match(/^## \[Unreleased\]\s*[-–—:]\s*(.+)$/i);
+            if (titleMatch && titleMatch[1].trim()) {
+              result.title = titleMatch[1].trim();
+            }
+
+            let activeBucket = 'highlights';
+            for (const rawLine of block.split('\n').slice(1)) {
+              const line = rawLine.trim();
+              if (!line) continue;
+              if (line.startsWith('### ')) {
+                const h = line.slice(4).toLowerCase();
+                if (/security|privacy|hardening|vault|🔐|🛡/.test(h)) {
+                  activeBucket = 'security';
+                } else if (/fix|bug|stability|memory|performance|🛠|🐛/.test(h)) {
+                  activeBucket = 'fixes';
+                } else if (/file|component|diff|📂/.test(h)) {
+                  activeBucket = 'fileChanges';
+                } else {
+                  activeBucket = 'highlights';
+                }
+                continue;
+              }
+              if (/^[-*]\s+/.test(line)) {
+                const item = line.replace(/^[-*]\s+/, '').trim();
+                if (!item || /^\*\*Repository Diff Summary\*\*:/i.test(item)) continue;
+                if (activeBucket === 'fileChanges') {
+                  result.fileChanges.push(item.replace(/^`(.*)`$/, '$1'));
+                } else {
+                  result[activeBucket].push(item);
+                }
+              }
+            }
+
+            return result;
           }
 
           function describeComponentArea(filePath) {
-            if (filePath.startsWith('src/services/aiService')) return 'AI Backend Service & Model Format Engine';
-            if (filePath.startsWith('src/context/StoreContext')) return 'Workspace State, Auto-Save & Provider Credential Vault';
-            if (filePath.startsWith('src/components/CharacterEditor')) return 'Character Card Workbench & Wizard';
-            if (filePath.startsWith('src/components/LorebookEditor')) return 'Lorebook / World Info Workbench & Wizard';
-            if (filePath.startsWith('src/components/TagSelector')) return 'Tag & Sub-Tag Selector Bar';
-            if (filePath.startsWith('src/components/SmartEditor')) return 'Synchronized Macro & Ghost-Text SmartEditor';
-            if (filePath.startsWith('src/views/OptionsView')) return 'Options, AI Scanner & Save Folder Manager';
-            if (filePath.startsWith('src/views/ThemesAndTagsView')) return 'Context Themes & Global Tag/Sub-Tag Manager';
-            if (filePath.startsWith('src/utils/folderDb')) return 'IndexedDB & Native Directory Handle Persistence';
-            if (filePath.startsWith('src/utils/cardIO')) return 'PNG tEXt Chunk & JSON Import/Export Parser';
-            if (filePath.startsWith('.github/workflows/')) return 'GitHub Actions CI/CD & Standalone Release Workflow';
+            if (filePath === 'server.ts') return 'Local Express Server, Fixed ./Saves/ Disk API & App-Private Vault';
+            if (filePath === 'vite.config.ts') return 'Vite Dev/Preview Middleware, Security Guards & Build Config';
+            if (filePath === 'src/App.tsx') return 'Application Shell, Error Boundary & Global Modals';
+            if (filePath === 'src/types.ts') return 'Core TypeScript Data Models & Card/Vault Interfaces';
+            if (filePath === 'src/context/StoreContext.tsx') return 'Workspace State, Auto-Save, NSFW Helpers & Backup I/O';
+            if (filePath === 'src/services/aiService.ts') return 'AI Provider Client, Live Model Scanner & Streaming Engine';
+            if (filePath === 'src/utils/cryptoVault.ts') return 'App-Private AES-256-GCM API Key Vault & Legacy Migration';
+            if (filePath === 'src/utils/cardIO.ts') return 'SillyTavern PNG tEXt Chunk & JSON Card/Lorebook I/O';
+            if (filePath === 'src/utils/tokenCounter.ts') return 'Token Estimator & Stat Tracker Macro Renderer';
+            if (filePath === 'src/utils/tagOrder.ts') return 'Deterministic Tag Category & Context Ordering';
+            if (filePath === 'src/utils/changelogData.ts') return 'In-App Changelog Data Module';
+            if (filePath === 'src/components/CharacterEditor.tsx') return 'Character Card Workbench, Portrait Cropper & Wizard';
+            if (filePath === 'src/components/LorebookEditor.tsx') return 'Lorebook / World Info Workbench & Wizard';
+            if (filePath === 'src/components/SmartEditor.tsx') return 'Macro & Ghost-Text SmartEditor';
+            if (filePath === 'src/components/TagSelector.tsx') return 'Tag Selector Bar & SFW Filter';
+            if (filePath === 'src/components/JsonInspector.tsx') return 'Raw JSON Inspector, Secret Scanner & Card Exporter';
+            if (filePath === 'src/components/PortraitCropperModal.tsx') return '2:3 Interactive Portrait Cropper Modal';
+            if (filePath === 'src/components/ContextImagesBar.tsx') return 'Context-Only Vision Reference Images Bar';
+            if (filePath === 'src/components/TopBar.tsx') return 'Top Navigation Bar, Theme Switcher & Disk Sync Button';
+            if (filePath === 'src/components/SidebarNav.tsx') return 'Collapsible Sidebar Navigation & Workspace Snapshot';
+            if (filePath === 'src/views/OptionsView.tsx') return 'Options, AI Backend Controls, Vault Status & Backup Manager';
+            if (filePath === 'src/views/ThemesAndTagsView.tsx') return 'Context Themes & Global Tag Manager';
+            if (filePath === '.github/workflows/release.yml') return 'Standalone Portable App Release Workflow';
+            if (filePath === '.github/workflows/version-update.yml') return 'Automated Version Bump & Changelog Workflow';
+            if (filePath.startsWith('.github/workflows/')) return 'GitHub Actions CI/CD Workflow';
             if (filePath.startsWith('src/components/')) return 'UI Workbench Component';
             if (filePath.startsWith('src/views/')) return 'Application Workspace View';
             if (filePath.startsWith('src/utils/')) return 'Core Utility Module';
+            if (filePath === '.gitignore') return 'Git Ignore Rules (Local Saves & Private Vault)';
             return 'Project Configuration & Metadata';
           }
 
+          const changelogPath = 'CHANGELOG.md';
+          const rawExistingChangelog = fs.existsSync(changelogPath)
+            ? fs.readFileSync(changelogPath, 'utf8')
+            : '# Changelog\n\nAll notable changes to **TavernSmith** are documented in this file.\n';
+
+          const promoted = extractUnreleasedFromChangelog(rawExistingChangelog);
+
+          const security = [];
+          const highlights = [];
+          const fixes = [];
+          const seenEntries = new Set();
+
+          if (customNotes) {
+            pushUnique(highlights, seenEntries, customNotes);
+          }
+
+          // 1. Promote curated [Unreleased] bullets first (highest fidelity descriptions)
+          for (const item of promoted.security) pushUnique(security, seenEntries, item);
+          for (const item of promoted.highlights) pushUnique(highlights, seenEntries, item);
+          for (const item of promoted.fixes) pushUnique(fixes, seenEntries, item);
+
+          // 2. Parse full commit subjects AND structured commit body bullets since last tag
+          const logArgs = lastTag
+            ? ['log', `${lastTag}..HEAD`, '--no-merges', '--format=%h%x1f%s%x1f%b%x1e']
+            : ['log', '-n', '50', '--no-merges', '--format=%h%x1f%s%x1f%b%x1e'];
+          const rawCommitStream = runGit(logArgs);
+
+          const commitRecords = rawCommitStream
+            .split('\x1e')
+            .map((chunk) => chunk.trim())
+            .filter(Boolean);
+
+          const commitSubjects = [];
+
+          for (const record of commitRecords) {
+            const [rawHash = '', rawSubject = '', rawBody = ''] = record.split('\x1f');
+            const hash = rawHash.trim();
+            const subject = rawSubject.trim();
+            if (!subject || /^chore\(release\):/i.test(subject)) continue;
+
+            const cleanSubject = stripConventionalPrefix(subject);
+            if (!cleanSubject) continue;
+            commitSubjects.push(cleanSubject);
+
+            const bodyBullets = rawBody
+              .split('\n')
+              .map((l) => l.trim())
+              .filter(
+                (l) =>
+                  /^[-*•]\s+/.test(l) &&
+                  !/^(co-authored-by|signed-off-by|reviewed-by|change-id):/i.test(
+                    l.replace(/^[-*•]\s+/, '')
+                  )
+              )
+              .map((l) => l.replace(/^[-*•]\s+/, '').trim())
+              .filter((l) => l.length >= 6);
+
+            const subjectBucket = classifyText(subject, '');
+            const formattedSubject = hash ? `${cleanSubject} (${hash})` : cleanSubject;
+
+            if (bodyBullets.length > 0 && bodyBullets.length <= 12) {
+              // Add structured body bullets under their specific categories alongside concise commit context
+              for (const bullet of bodyBullets) {
+                const bulletBucket = classifyText(bullet, subject);
+                const formattedBullet = hash ? `${bullet} (${hash})` : bullet;
+                if (bulletBucket === 'security') {
+                  pushUnique(security, seenEntries, formattedBullet);
+                } else if (bulletBucket === 'fixes') {
+                  pushUnique(fixes, seenEntries, formattedBullet);
+                } else {
+                  pushUnique(highlights, seenEntries, formattedBullet);
+                }
+              }
+            } else {
+              if (subjectBucket === 'security') {
+                pushUnique(security, seenEntries, formattedSubject);
+              } else if (subjectBucket === 'fixes') {
+                pushUnique(fixes, seenEntries, formattedSubject);
+              } else {
+                pushUnique(highlights, seenEntries, formattedSubject);
+              }
+            }
+          }
+
+          // 3. Parse actual file diffs (with rename support via -M and tab separation)
+          const diffRangeArgs = lastTag ? [lastTag, 'HEAD'] : ['HEAD'];
+          const rawNameStatus = runGit(
+            lastTag
+              ? ['diff', '--name-status', '-M', ...diffRangeArgs]
+              : ['show', '--name-status', '-M', '--pretty=format:', 'HEAD']
+          ).trim();
+          const rawNumStat = runGit(
+            lastTag
+              ? ['diff', '--numstat', '-M', ...diffRangeArgs]
+              : ['show', '--numstat', '-M', '--pretty=format:', 'HEAD']
+          ).trim();
+          const rawShortStat = runGit(
+            lastTag
+              ? ['diff', '--shortstat', '-M', ...diffRangeArgs]
+              : ['show', '--shortstat', '-M', '--pretty=format:', 'HEAD']
+          ).trim();
+
+          const numStatMap = new Map();
+          for (const line of rawNumStat.split('\n').filter(Boolean)) {
+            const parts = line.split('\t');
+            if (parts.length >= 3) {
+              const added = parts[0] === '-' ? 0 : Number(parts[0]) || 0;
+              const deleted = parts[1] === '-' ? 0 : Number(parts[1]) || 0;
+              const targetPath = parts.length >= 4 ? parts[3] : parts[2];
+              numStatMap.set(targetPath, { added, deleted });
+            }
+          }
+
+          const IGNORED_CHURN_FILES = new Set([
+            'package-lock.json',
+            'src/versionInfo.json',
+            'src/utils/changelogData.ts',
+            'CHANGELOG.md',
+          ]);
+
           const fileChanges = [];
-          const addedFiles = [];
+          const addedAreas = [];
 
           for (const line of rawNameStatus.split('\n').filter(Boolean)) {
-            const parts = line.split(/\s+/);
-            const status = parts[0] || 'M';
-            const filePath = parts.slice(1).join(' ');
-            if (!filePath || filePath === 'package-lock.json') continue;
+            const parts = line.split('\t');
+            const status = (parts[0] || 'M').trim();
+            const isRename = status.startsWith('R') && parts.length >= 3;
+            const filePath = isRename ? parts[2].trim() : (parts[1] || '').trim();
+            const oldPath = isRename ? parts[1].trim() : '';
+            if (!filePath || IGNORED_CHURN_FILES.has(filePath)) continue;
 
             const stat = numStatMap.get(filePath);
             const diffBadge = stat ? ` (+${stat.added} / -${stat.deleted} lines)` : '';
             const areaDesc = describeComponentArea(filePath);
-            const actionVerb =
-              status.startsWith('A')
-                ? 'Added'
-                : status.startsWith('D')
-                  ? 'Removed'
-                  : status.startsWith('R')
-                    ? 'Renamed'
-                    : 'Updated';
+            const actionVerb = status.startsWith('A')
+              ? 'Added'
+              : status.startsWith('D')
+                ? 'Removed'
+                : isRename
+                  ? 'Renamed'
+                  : 'Updated';
 
             if (status.startsWith('A')) {
-              addedFiles.push(`${filePath} (${areaDesc})`);
+              addedAreas.push(`${filePath} (${areaDesc})`);
             }
-            fileChanges.push(`${filePath} — ${actionVerb} ${areaDesc}${diffBadge}`);
+            const displayPath = isRename ? `${oldPath} → ${filePath}` : filePath;
+            fileChanges.push(`${displayPath} — ${actionVerb} ${areaDesc}${diffBadge}`);
           }
 
-          if (addedFiles.length > 0 && highlights.length === 0) {
-            highlights.push(`Added new modules: ${addedFiles.join(', ')}`);
+          // Fallback to curated [Unreleased] file changes only if git diff yielded none
+          if (fileChanges.length === 0 && promoted.fileChanges.length > 0) {
+            fileChanges.push(...promoted.fileChanges);
           }
 
-          if (highlights.length === 0) {
-            highlights.push(
-              `Automated release ${tagName} incorporating ${fileChanges.length || 1} updated module(s)${rawShortStat ? ` (${rawShortStat})` : ''}.`
-            );
+          // If all three content buckets are empty (e.g., manual tag bump with only file edits), summarize actual changed areas honestly — NEVER emit fake boilerplate.
+          if (security.length === 0 && highlights.length === 0 && fixes.length === 0) {
+            if (addedAreas.length > 0) {
+              highlights.push(`Added ${addedAreas.join(', ')}`);
+            } else if (fileChanges.length > 0) {
+              highlights.push(
+                `Release ${tagName} updating ${fileChanges.length} file(s)${rawShortStat ? ` (${rawShortStat})` : ''}.`
+              );
+            } else {
+              highlights.push(`Release ${tagName} version metadata update.`);
+            }
           }
 
-          if (fixes.length === 0) {
-            fixes.push(
-              'Verified TypeScript compilation, zero-crash sandbox storage guards, and cross-platform standalone launcher compatibility.'
-            );
-          }
+          // Build release headline title
+          const releaseTitle =
+            customNotes ||
+            promoted.title ||
+            commitSubjects[0] ||
+            highlights[0] ||
+            security[0] ||
+            fixes[0] ||
+            `TavernSmith ${tagName} Release`;
 
-          if (fileChanges.length === 0) {
-            fileChanges.push('package.json & CHANGELOG.md — Version bump and release metadata sync');
-          }
-
-          const changelogPath = 'CHANGELOG.md';
-          let existingChangelog = fs.existsSync(changelogPath)
-            ? fs.readFileSync(changelogPath, 'utf8')
-            : '# Changelog\n\nAll notable changes to **TavernSmith** are documented in this file.\n';
-
+          // Render Markdown section (only include populated categories — no fabricated claims)
           let mdEntry = `## [${tagName}] - ${releaseDate}\n\n`;
-          mdEntry += `### 🚀 Highlights & Feature Additions\n`;
-          for (const h of highlights) {
-            mdEntry += `- ${h}\n`;
+          if (security.length > 0) {
+            mdEntry += `### 🔐 Security & Privacy Hardening\n`;
+            for (const s of security) mdEntry += `- ${s}\n`;
+            mdEntry += `\n`;
           }
-          mdEntry += `\n### 🛠️ Bug Fixes, AI & Stability Improvements\n`;
-          for (const f of fixes) {
-            mdEntry += `- ${f}\n`;
+          if (highlights.length > 0) {
+            mdEntry += `### 🚀 Highlights & Feature Additions\n`;
+            for (const h of highlights) mdEntry += `- ${h}\n`;
+            mdEntry += `\n`;
           }
-          mdEntry += `\n### 📂 Detailed Component & File Changes\n`;
-          if (rawShortStat) {
-            mdEntry += `- **Repository Diff Summary**: ${rawShortStat}\n`;
+          if (fixes.length > 0) {
+            mdEntry += `### 🛠️ Bug Fixes, Memory & Stability\n`;
+            for (const f of fixes) mdEntry += `- ${f}\n`;
+            mdEntry += `\n`;
           }
-          for (const fc of fileChanges) {
-            mdEntry += `- \`${fc}\`\n`;
+          if (fileChanges.length > 0 || rawShortStat) {
+            mdEntry += `### 📂 Component & File Changes\n`;
+            if (rawShortStat) {
+              mdEntry += `- **Repository Diff Summary**: ${rawShortStat}\n`;
+            }
+            for (const fc of fileChanges) {
+              mdEntry += `- \`${fc}\`\n`;
+            }
+            mdEntry += `\n`;
           }
-          mdEntry += `\n`;
 
-          const firstHeadingIdx = existingChangelog.indexOf('\n## [');
+          const baseChangelog = promoted.cleanedMarkdown;
+          const firstHeadingIdx = baseChangelog.indexOf('\n## [');
           const updatedChangelog =
             firstHeadingIdx !== -1
-              ? existingChangelog.slice(0, firstHeadingIdx + 1) +
+              ? baseChangelog.slice(0, firstHeadingIdx + 1) +
                 mdEntry +
-                existingChangelog.slice(firstHeadingIdx + 1)
-              : existingChangelog.trimEnd() + '\n\n' + mdEntry;
+                baseChangelog.slice(firstHeadingIdx + 1)
+              : baseChangelog.trimEnd() + '\n\n' + mdEntry;
 
           fs.writeFileSync(changelogPath, updatedChangelog, 'utf8');
-          console.log(`Updated CHANGELOG.md with ${tagName}`);
+          console.log(
+            `Updated CHANGELOG.md with ${tagName} (security: ${security.length}, highlights: ${highlights.length}, fixes: ${fixes.length}, files: ${fileChanges.length})`
+          );
 
           fs.writeFileSync(
             'src/versionInfo.json',
@@ -257,15 +465,25 @@ jobs:
             'utf8'
           );
 
+          // Safely parse existing releases from src/utils/changelogData.ts using JSON.parse (zero eval / Function)
           const changelogDataPath = 'src/utils/changelogData.ts';
           let existingReleases = [];
           if (fs.existsSync(changelogDataPath)) {
             const rawTs = fs.readFileSync(changelogDataPath, 'utf8');
-            const match = rawTs.match(/export const CHANGELOG_RELEASES:\s*ChangelogReleaseEntry\[\]\s*=\s*(\[[\s\S]*\]);/);
+            const match = rawTs.match(
+              /export const CHANGELOG_RELEASES:\s*ChangelogReleaseEntry\[\]\s*=\s*(\[[\s\S]*\]);/
+            );
             if (match) {
               try {
-                existingReleases = Function(`"use strict"; return (${match[1]});`)();
-              } catch {
+                const parsed = JSON.parse(match[1]);
+                if (Array.isArray(parsed)) {
+                  existingReleases = parsed;
+                }
+              } catch (parseErr) {
+                console.warn(
+                  'Warning: Could not JSON.parse existing CHANGELOG_RELEASES:',
+                  parseErr && parseErr.message ? parseErr.message : parseErr
+                );
                 existingReleases = [];
               }
             }
@@ -274,22 +492,29 @@ jobs:
           const newReleaseObj = {
             version: tagName,
             date: releaseDate,
-            title: customNotes || highlights[0] || `TavernSmith ${tagName} Release`,
+            title: releaseTitle.length > 140 ? `${releaseTitle.slice(0, 137)}...` : releaseTitle,
+            ...(security.length > 0 ? { security } : {}),
             highlights,
             fixes,
-            fileChanges: fileChanges.slice(0, 25),
+            fileChanges: fileChanges.slice(0, 35),
           };
 
           const mergedReleases = [
             newReleaseObj,
-            ...existingReleases.filter((r) => r && r.version !== tagName),
-          ].slice(0, 15);
+            ...existingReleases.filter(
+              (r) =>
+                r &&
+                r.version !== tagName &&
+                String(r.version || '').toLowerCase() !== 'unreleased'
+            ),
+          ].slice(0, 20);
 
           const tsOutput = [
             'export interface ChangelogReleaseEntry {',
             '  version: string;',
             '  date: string;',
             '  title: string;',
+            '  security?: string[];',
             '  highlights: string[];',
             '  fixes: string[];',
             '  fileChanges: string[];',
@@ -298,11 +523,13 @@ jobs:
             `export const APP_VERSION = ${JSON.stringify(newVersion)};`,
             '',
             `export const CHANGELOG_RELEASES: ChangelogReleaseEntry[] = ${JSON.stringify(mergedReleases, null, 2)};`,
-            ''
+            '',
           ].join('\n');
 
           fs.writeFileSync(changelogDataPath, tsOutput, 'utf8');
-          console.log(`Synced src/utils/changelogData.ts and src/versionInfo.json to v${newVersion}`);
+          console.log(
+            `Synced src/utils/changelogData.ts and src/versionInfo.json to v${newVersion}`
+          );
           EOF
 
       - name: Commit Updated Version, CHANGELOG.md & In-App Changelog Module and Push Tag
@@ -313,6 +540,9 @@ jobs:
           TAG_NAME="${{ steps.version_step.outputs.tag_name }}"
 
           git add package.json CHANGELOG.md src/versionInfo.json src/utils/changelogData.ts
+          if [ -f package-lock.json ] && git ls-files --error-unmatch package-lock.json >/dev/null 2>&1; then
+            git add package-lock.json
+          fi
           git commit -m "chore(release): ${TAG_NAME}"
           git tag -a "${TAG_NAME}" -m "Release ${TAG_NAME}"
 

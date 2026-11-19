@@ -1,25 +1,34 @@
 /**
- * AES-256-GCM Encrypted Credential Vault (`./Saves/_tavernsmith_vault.enc`)
- * Uses pure browser Web Crypto API (`window.crypto.subtle`) with:
+ * AES-256-GCM Encrypted Credential Vault (`./.tavernsmith-app/credentials.vault.enc`)
+ * Uses standard Web Crypto API (`crypto.subtle`) with:
  * - PBKDF2 key derivation (SHA-256, 100,000 iterations)
  * - 16-byte random salt (`Uint8Array(16)`)
  * - 12-byte random IV (`Uint8Array(12)`)
  * - AES-GCM 256-bit authenticated encryption
  *
- * Strictly zero browser localStorage/IndexedDB usage: the encrypted vault envelope
- * is stored exclusively on disk inside `./Saves/_tavernsmith_vault.enc`.
+ * Security model:
+ * - Stored separately outside `./Saves/` inside `./.tavernsmith-app/credentials.vault.enc`.
+ * - Encrypted automatically (no PIN required) using a separate app-private key file
+ *   (`./.tavernsmith-app/vault.key`, mode `0600`) that is NEVER embedded inside the vault
+ *   ciphertext envelope and NEVER included in `./Saves/` or backup exports.
+ * - Transparently migrates legacy `./Saves/_tavernsmith_vault.enc` files into
+ *   `./.tavernsmith-app/` on first load.
  */
 
-export const VAULT_FILENAME = '_tavernsmith_vault.enc';
+export const VAULT_FILENAME = 'credentials.vault.enc';
+export const LEGACY_VAULT_FILENAME = '_tavernsmith_vault.enc';
+export const APP_VAULT_STORAGE_PATH = './.tavernsmith-app/';
 
 const PBKDF2_ITERATIONS = 100_000;
+const MIN_PBKDF2_ITERATIONS = 10_000;
+const MAX_PBKDF2_ITERATIONS = 1_000_000;
 const SALT_BYTE_LENGTH = 16;
 const IV_BYTE_LENGTH = 12;
-const DEFAULT_DISK_VAULT_SECRET =
+const LEGACY_DISK_VAULT_SECRET =
   'tavernsmith-disk-vault-v2-aes-256-gcm-key-derivation';
 
 export interface EncryptedVaultEnvelope {
-  version: 1;
+  version: 1 | 2;
   alg: 'AES-256-GCM';
   kdf: 'PBKDF2-SHA256';
   iterations: number;
@@ -27,6 +36,7 @@ export interface EncryptedVaultEnvelope {
   saltBase64: string;
   ivBase64: string;
   ciphertextBase64: string;
+  /** Legacy v1 field only — never written in v2 app-vault envelopes */
   deviceSecretBase64?: string;
   updatedAt: string;
 }
@@ -35,24 +45,67 @@ export interface VaultStatusInfo {
   isEncrypted: boolean;
   hasCustomPassphrase: boolean;
   isLocked: boolean;
+  needsLegacyUnlock: boolean;
+  storagePath: string;
   keyCount: number;
   updatedAt: string | null;
 }
 
-// Pure in-memory session state (persisted to disk `./Saves/_tavernsmith_vault.enc` via `/api/disk/save`)
+export interface AppVaultLoadResult {
+  ok: boolean;
+  locked: boolean;
+  needsLegacyUnlock: boolean;
+  migratedLegacy: boolean;
+  storagePath: string;
+  keys: Record<string, string>;
+  error?: string;
+}
+
+// Pure in-memory session state (persisted to `./.tavernsmith-app/credentials.vault.enc` via `/api/vault`)
 let inMemoryVaultEnvelope: EncryptedVaultEnvelope | null = null;
+let inMemoryPendingLegacyVault: EncryptedVaultEnvelope | null = null;
+let inMemoryAppVaultKey: string | null = null;
+let inMemoryStoragePath = APP_VAULT_STORAGE_PATH;
 let inMemoryPassphrase: string | null = null;
 let inMemoryDecryptedKeys: Record<string, string> = {};
 let inMemoryProviderModels: Record<string, string> = {};
 let vaultLockedState = false;
+let vaultWriteQueue: Promise<unknown> = Promise.resolve();
 let onVaultDiskFlushCallback:
   | ((envelope: EncryptedVaultEnvelope) => void)
   | null = null;
+
+function getWebCrypto(): Crypto | null {
+  if (typeof globalThis !== 'undefined' && globalThis.crypto?.subtle) {
+    return globalThis.crypto;
+  }
+  if (typeof window !== 'undefined' && window.crypto?.subtle) {
+    return window.crypto;
+  }
+  return null;
+}
 
 export function registerVaultDiskFlushCallback(
   cb: ((envelope: EncryptedVaultEnvelope) => void) | null
 ): void {
   onVaultDiskFlushCallback = cb;
+}
+
+export function setAppVaultKey(
+  appKeyBase64: string | null,
+  storagePath?: string
+): void {
+  inMemoryAppVaultKey =
+    appKeyBase64 && appKeyBase64.trim().length > 0
+      ? appKeyBase64.trim()
+      : null;
+  if (storagePath && storagePath.trim()) {
+    inMemoryStoragePath = storagePath.trim();
+  }
+}
+
+export function getAppVaultKey(): string | null {
+  return inMemoryAppVaultKey;
 }
 
 function bytesToBase64(bytes: Uint8Array): string {
@@ -72,16 +125,31 @@ function base64ToBytes(base64: string): Uint8Array {
   return bytes;
 }
 
+function clampIterations(iterations?: number): number {
+  if (typeof iterations !== 'number' || !Number.isFinite(iterations)) {
+    return PBKDF2_ITERATIONS;
+  }
+  return Math.min(
+    MAX_PBKDF2_ITERATIONS,
+    Math.max(MIN_PBKDF2_ITERATIONS, Math.floor(iterations))
+  );
+}
+
 /**
  * Derives a 256-bit AES-GCM CryptoKey from secret material + 16-byte salt using
- * PBKDF2 with SHA-256 and 100,000 iterations.
+ * PBKDF2 with SHA-256 and the envelope's iteration count.
  */
 async function deriveAesGcmKey(
   secretMaterial: string,
-  salt: Uint8Array
+  salt: Uint8Array,
+  iterations = PBKDF2_ITERATIONS
 ): Promise<CryptoKey> {
+  const cryptoApi = getWebCrypto();
+  if (!cryptoApi?.subtle) {
+    throw new Error('Web Crypto API (crypto.subtle) is not available.');
+  }
   const enc = new TextEncoder();
-  const baseKey = await window.crypto.subtle.importKey(
+  const baseKey = await cryptoApi.subtle.importKey(
     'raw',
     enc.encode(secretMaterial),
     { name: 'PBKDF2' },
@@ -89,11 +157,11 @@ async function deriveAesGcmKey(
     ['deriveKey']
   );
 
-  return window.crypto.subtle.deriveKey(
+  return cryptoApi.subtle.deriveKey(
     {
       name: 'PBKDF2',
       salt: salt as unknown as BufferSource,
-      iterations: PBKDF2_ITERATIONS,
+      iterations: clampIterations(iterations),
       hash: 'SHA-256',
     },
     baseKey,
@@ -103,38 +171,65 @@ async function deriveAesGcmKey(
   );
 }
 
-function generateRandomDeviceSecretBase64(): string {
-  const randomBytes = new Uint8Array(32);
-  if (typeof window !== 'undefined' && window.crypto?.getRandomValues) {
-    window.crypto.getRandomValues(randomBytes);
-  } else {
-    for (let i = 0; i < randomBytes.length; i++) {
-      randomBytes[i] = Math.floor(Math.random() * 256);
-    }
-  }
-  return bytesToBase64(randomBytes);
+function buildAppKeySecret(appKey: string): string {
+  return `tavernsmith-app-vault-v2:${appKey}`;
 }
 
-function getEffectiveSecret(
-  customPassphrase?: string | null,
-  existingDeviceSecret?: string
-): {
-  secret: string;
-  hasCustomPassphrase: boolean;
-  deviceSecretBase64?: string;
-} {
-  const cleanCustom = (customPassphrase ?? inMemoryPassphrase ?? '').trim();
-  if (cleanCustom.length > 0) {
+function resolveDecryptSecret(
+  envelope: EncryptedVaultEnvelope,
+  passphraseAttempt?: string | null
+): { ok: true; secret: string } | { ok: false; locked: boolean; error: string } {
+  const candidatePassphrase = (
+    passphraseAttempt ??
+    inMemoryPassphrase ??
+    ''
+  ).trim();
+
+  if (envelope.hasCustomPassphrase) {
+    if (!candidatePassphrase) {
+      return {
+        ok: false,
+        locked: true,
+        error:
+          'Legacy encrypted vault requires its old Passphrase / PIN once to migrate into the automatic app vault.',
+      };
+    }
     return {
-      secret: `tavernsmith-pin-v1:${cleanCustom}`,
-      hasCustomPassphrase: true,
+      ok: true,
+      secret: `tavernsmith-pin-v1:${candidatePassphrase}`,
     };
   }
-  const devSecret = existingDeviceSecret || generateRandomDeviceSecretBase64();
+
+  if (envelope.version === 2) {
+    if (!inMemoryAppVaultKey) {
+      return {
+        ok: false,
+        locked: false,
+        error: 'App vault key is not loaded yet from the local server.',
+      };
+    }
+    return {
+      ok: true,
+      secret: buildAppKeySecret(inMemoryAppVaultKey),
+    };
+  }
+
+  // Legacy v1 automatic envelope (only used when migrating old `./Saves/_tavernsmith_vault.enc`)
+  if (envelope.deviceSecretBase64) {
+    return {
+      ok: true,
+      secret: `tavernsmith-device-v1:${envelope.deviceSecretBase64}:${LEGACY_DISK_VAULT_SECRET}`,
+    };
+  }
+  if (inMemoryAppVaultKey) {
+    return {
+      ok: true,
+      secret: buildAppKeySecret(inMemoryAppVaultKey),
+    };
+  }
   return {
-    secret: `tavernsmith-device-v1:${devSecret}:${DEFAULT_DISK_VAULT_SECRET}`,
-    hasCustomPassphrase: false,
-    deviceSecretBase64: devSecret,
+    ok: true,
+    secret: `tavernsmith-device-v1:${LEGACY_DISK_VAULT_SECRET}`,
   };
 }
 
@@ -153,17 +248,18 @@ export function normalizeVaultEnvelope(
       typeof parsed.ivBase64 === 'string' &&
       typeof parsed.ciphertextBase64 === 'string'
     ) {
+      const version: 1 | 2 = parsed.version === 2 ? 2 : 1;
       return {
-        version: 1,
+        version,
         alg: 'AES-256-GCM',
         kdf: 'PBKDF2-SHA256',
-        iterations: parsed.iterations || PBKDF2_ITERATIONS,
+        iterations: clampIterations(parsed.iterations),
         hasCustomPassphrase: Boolean(parsed.hasCustomPassphrase),
         saltBase64: parsed.saltBase64,
         ivBase64: parsed.ivBase64,
         ciphertextBase64: parsed.ciphertextBase64,
         deviceSecretBase64:
-          typeof parsed.deviceSecretBase64 === 'string'
+          version === 1 && typeof parsed.deviceSecretBase64 === 'string'
             ? parsed.deviceSecretBase64
             : undefined,
         updatedAt: parsed.updatedAt || new Date().toISOString(),
@@ -175,10 +271,9 @@ export function normalizeVaultEnvelope(
   return null;
 }
 
-/**
- * Sets the in-memory encrypted envelope loaded from `./Saves/_tavernsmith_vault.enc` on disk.
- */
-export function setInMemoryVaultEnvelope(raw: unknown): EncryptedVaultEnvelope | null {
+export function setInMemoryVaultEnvelope(
+  raw: unknown
+): EncryptedVaultEnvelope | null {
   const normalized = normalizeVaultEnvelope(raw);
   if (normalized) {
     inMemoryVaultEnvelope = normalized;
@@ -186,22 +281,51 @@ export function setInMemoryVaultEnvelope(raw: unknown): EncryptedVaultEnvelope |
   return inMemoryVaultEnvelope;
 }
 
-/**
- * Returns the current encrypted envelope for writing to `./Saves/_tavernsmith_vault.enc`.
- */
 export function readEncryptedVaultEnvelope(): EncryptedVaultEnvelope | null {
   return inMemoryVaultEnvelope;
 }
 
-/**
- * Encrypts the `savedProviderKeys` map using AES-256-GCM (PBKDF2 100,000 iterations,
- * random 16-byte salt, random 12-byte IV) and flushes the encrypted envelope to `./Saves/_tavernsmith_vault.enc`.
- */
-export async function encryptAndSaveProviderKeys(
+export async function persistVaultEnvelopeToServer(
+  envelope: EncryptedVaultEnvelope,
+  removeLegacy = false
+): Promise<boolean> {
+  if (typeof fetch !== 'function') return false;
+  try {
+    const res = await fetch('/api/vault', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ vault: envelope, removeLegacy }),
+    });
+    if (!res.ok) return false;
+    const data = (await res.json()) as {
+      ok?: boolean;
+      storagePath?: string;
+    };
+    if (data?.storagePath) {
+      inMemoryStoragePath = data.storagePath;
+    }
+    return Boolean(data?.ok);
+  } catch {
+    return false;
+  }
+}
+
+async function runVaultEncryptionNow(
   keysMap: Record<string, string>,
   customPassphrase?: string | null,
-  skipDiskFlush = false
+  skipDiskFlush = false,
+  removeLegacy = false
 ): Promise<EncryptedVaultEnvelope | null> {
+  const existingEnvelope = inMemoryVaultEnvelope;
+  if (
+    vaultLockedState &&
+    customPassphrase === undefined &&
+    !inMemoryPassphrase
+  ) {
+    // Never overwrite decrypted keys or ciphertext while a legacy vault is still locked
+    return existingEnvelope;
+  }
+
   const sanitized: Record<string, string> = {};
   for (const [k, v] of Object.entries(keysMap || {})) {
     if (typeof v === 'string' && v.trim()) {
@@ -210,53 +334,67 @@ export async function encryptAndSaveProviderKeys(
   }
 
   inMemoryDecryptedKeys = { ...sanitized };
-  if (customPassphrase !== undefined) {
-    inMemoryPassphrase =
-      customPassphrase && customPassphrase.trim()
-        ? customPassphrase.trim()
-        : null;
-  }
 
-  if (
-    typeof window === 'undefined' ||
-    !window.crypto ||
-    !window.crypto.subtle
-  ) {
+  const cryptoApi = getWebCrypto();
+  if (!cryptoApi?.subtle || !cryptoApi.getRandomValues) {
     return null;
   }
 
-  try {
-    const existingEnvelope = inMemoryVaultEnvelope;
-    if (
-      existingEnvelope?.hasCustomPassphrase &&
-      vaultLockedState &&
-      !inMemoryPassphrase &&
-      customPassphrase === undefined
-    ) {
-      return existingEnvelope;
+  // Ensure we have the separate app-private key from `/api/vault` if running against the local server
+  if (!inMemoryAppVaultKey && typeof fetch === 'function') {
+    try {
+      const res = await fetch('/api/vault', { cache: 'no-store' });
+      if (res.ok) {
+        const data = (await res.json()) as {
+          ok?: boolean;
+          appKey?: string;
+          storagePath?: string;
+        };
+        if (data?.ok && typeof data.appKey === 'string' && data.appKey.trim()) {
+          setAppVaultKey(data.appKey, data.storagePath);
+        }
+      }
+    } catch {
+      // Offline / non-server environment
     }
+  }
 
-    const { secret, hasCustomPassphrase, deviceSecretBase64 } =
-      getEffectiveSecret(
-        customPassphrase,
-        existingEnvelope?.deviceSecretBase64
-      );
-    const salt = window.crypto.getRandomValues(
-      new Uint8Array(SALT_BYTE_LENGTH)
-    );
-    const iv = window.crypto.getRandomValues(new Uint8Array(IV_BYTE_LENGTH));
-    const key = await deriveAesGcmKey(secret, salt);
+  const cleanCustom =
+    customPassphrase !== undefined
+      ? (customPassphrase || '').trim()
+      : (inMemoryPassphrase || '').trim();
+
+  let secret = '';
+  let hasCustomPassphrase = false;
+
+  if (cleanCustom.length > 0) {
+    inMemoryPassphrase = cleanCustom;
+    secret = `tavernsmith-pin-v1:${cleanCustom}`;
+    hasCustomPassphrase = true;
+  } else {
+    inMemoryPassphrase = null;
+    if (!inMemoryAppVaultKey) {
+      return null;
+    }
+    secret = buildAppKeySecret(inMemoryAppVaultKey);
+    hasCustomPassphrase = false;
+  }
+
+  try {
+    const salt = cryptoApi.getRandomValues(new Uint8Array(SALT_BYTE_LENGTH));
+    const iv = cryptoApi.getRandomValues(new Uint8Array(IV_BYTE_LENGTH));
+    const key = await deriveAesGcmKey(secret, salt, PBKDF2_ITERATIONS);
 
     const enc = new TextEncoder();
     const plaintextBytes = enc.encode(JSON.stringify(sanitized));
-    const cipherBuffer = await window.crypto.subtle.encrypt(
+    const cipherBuffer = await cryptoApi.subtle.encrypt(
       { name: 'AES-GCM', iv: iv as unknown as BufferSource },
       key,
       plaintextBytes
     );
 
     const envelope: EncryptedVaultEnvelope = {
-      version: 1,
+      version: 2,
       alg: 'AES-256-GCM',
       kdf: 'PBKDF2-SHA256',
       iterations: PBKDF2_ITERATIONS,
@@ -264,15 +402,18 @@ export async function encryptAndSaveProviderKeys(
       saltBase64: bytesToBase64(salt),
       ivBase64: bytesToBase64(iv),
       ciphertextBase64: bytesToBase64(new Uint8Array(cipherBuffer)),
-      deviceSecretBase64: hasCustomPassphrase ? undefined : deviceSecretBase64,
       updatedAt: new Date().toISOString(),
     };
 
     inMemoryVaultEnvelope = envelope;
+    inMemoryPendingLegacyVault = null;
     vaultLockedState = false;
 
-    if (!skipDiskFlush && onVaultDiskFlushCallback) {
-      onVaultDiskFlushCallback(envelope);
+    if (!skipDiskFlush) {
+      await persistVaultEnvelopeToServer(envelope, removeLegacy);
+      if (onVaultDiskFlushCallback) {
+        onVaultDiskFlushCallback(envelope);
+      }
     }
 
     return envelope;
@@ -282,7 +423,28 @@ export async function encryptAndSaveProviderKeys(
 }
 
 /**
- * Decrypts `./Saves/_tavernsmith_vault.enc` in memory using AES-256-GCM + PBKDF2 (100,000 iterations).
+ * Serialized AES-256-GCM encryption & persistence of `savedProviderKeys`
+ * into `./.tavernsmith-app/credentials.vault.enc` (outside `./Saves/`).
+ */
+export function encryptAndSaveProviderKeys(
+  keysMap: Record<string, string>,
+  customPassphrase?: string | null,
+  skipDiskFlush = false
+): Promise<EncryptedVaultEnvelope | null> {
+  const snapshot = { ...(keysMap || {}) };
+  const next = vaultWriteQueue.then(
+    () => runVaultEncryptionNow(snapshot, customPassphrase, skipDiskFlush, false),
+    () => runVaultEncryptionNow(snapshot, customPassphrase, skipDiskFlush, false)
+  );
+  vaultWriteQueue = next.then(
+    () => undefined,
+    () => undefined
+  );
+  return next;
+}
+
+/**
+ * Decrypts an encrypted vault envelope using Web Crypto AES-256-GCM + PBKDF2.
  */
 export async function decryptProviderKeysFromVault(
   passphraseAttempt?: string | null,
@@ -296,7 +458,7 @@ export async function decryptProviderKeysFromVault(
   if (envelopeOverride !== undefined) {
     setInMemoryVaultEnvelope(envelopeOverride);
   }
-  const envelope = inMemoryVaultEnvelope;
+  const envelope = inMemoryVaultEnvelope || inMemoryPendingLegacyVault;
 
   if (!envelope) {
     vaultLockedState = false;
@@ -307,49 +469,40 @@ export async function decryptProviderKeysFromVault(
     };
   }
 
-  if (
-    typeof window === 'undefined' ||
-    !window.crypto ||
-    !window.crypto.subtle
-  ) {
+  const cryptoApi = getWebCrypto();
+  if (!cryptoApi?.subtle) {
     return {
       ok: false,
       locked: false,
       keys: { ...inMemoryDecryptedKeys },
-      error: 'Web Crypto API (window.crypto.subtle) is not available.',
+      error: 'Web Crypto API (crypto.subtle) is not available.',
     };
   }
 
-  const candidatePassphrase = (
-    passphraseAttempt ??
-    inMemoryPassphrase ??
-    ''
-  ).trim();
-
-  if (envelope.hasCustomPassphrase && !candidatePassphrase) {
-    vaultLockedState = true;
+  const resolvedSecret = resolveDecryptSecret(envelope, passphraseAttempt);
+  if (!resolvedSecret.ok) {
+    if (resolvedSecret.locked) {
+      vaultLockedState = true;
+    }
     return {
       ok: false,
-      locked: true,
+      locked: resolvedSecret.locked,
       keys: {},
-      error:
-        'Vault is protected with a custom Passphrase / PIN. Unlock it in Options -> AI Connection.',
+      error: resolvedSecret.error,
     };
   }
 
   try {
-    const secret = envelope.hasCustomPassphrase
-      ? `tavernsmith-pin-v1:${candidatePassphrase}`
-      : envelope.deviceSecretBase64
-        ? `tavernsmith-device-v1:${envelope.deviceSecretBase64}:${DEFAULT_DISK_VAULT_SECRET}`
-        : `tavernsmith-device-v1:${DEFAULT_DISK_VAULT_SECRET}`;
-
     const salt = base64ToBytes(envelope.saltBase64);
     const iv = base64ToBytes(envelope.ivBase64);
     const ciphertext = base64ToBytes(envelope.ciphertextBase64);
 
-    const key = await deriveAesGcmKey(secret, salt);
-    const decryptedBuffer = await window.crypto.subtle.decrypt(
+    const key = await deriveAesGcmKey(
+      resolvedSecret.secret,
+      salt,
+      envelope.iterations
+    );
+    const decryptedBuffer = await cryptoApi.subtle.decrypt(
       { name: 'AES-GCM', iv: iv as unknown as BufferSource },
       key,
       ciphertext as unknown as BufferSource
@@ -360,7 +513,7 @@ export async function decryptProviderKeysFromVault(
     const parsed = JSON.parse(jsonStr);
     const cleanKeys: Record<string, string> = {};
 
-    if (parsed && typeof parsed === 'object') {
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
       for (const [k, v] of Object.entries(parsed)) {
         if (typeof v === 'string' && v.trim()) {
           cleanKeys[k] = v.trim();
@@ -369,6 +522,11 @@ export async function decryptProviderKeysFromVault(
     }
 
     inMemoryDecryptedKeys = cleanKeys;
+    const candidatePassphrase = (
+      passphraseAttempt ??
+      inMemoryPassphrase ??
+      ''
+    ).trim();
     if (envelope.hasCustomPassphrase && candidatePassphrase) {
       inMemoryPassphrase = candidatePassphrase;
     }
@@ -387,16 +545,174 @@ export async function decryptProviderKeysFromVault(
         locked: true,
         keys: {},
         error:
-          'Incorrect Vault Passphrase / PIN. Could not decrypt AES-256-GCM vault.',
+          'Incorrect Vault Passphrase / PIN. Could not decrypt legacy AES-256-GCM vault.',
       };
     }
     return {
       ok: false,
       locked: false,
       keys: {},
-      error: 'Could not decrypt disk key vault.',
+      error: 'Could not decrypt encrypted app key vault.',
     };
   }
+}
+
+/**
+ * Loads the app-private encrypted key vault from `GET /api/vault` (`./.tavernsmith-app/`),
+ * auto-decrypts without requiring a PIN, and seamlessly migrates any legacy
+ * `./Saves/_tavernsmith_vault.enc` out of `./Saves/`.
+ */
+export async function loadAppVaultFromServer(): Promise<AppVaultLoadResult> {
+  if (typeof fetch !== 'function') {
+    return {
+      ok: false,
+      locked: false,
+      needsLegacyUnlock: false,
+      migratedLegacy: false,
+      storagePath: inMemoryStoragePath,
+      keys: { ...inMemoryDecryptedKeys },
+      error: 'Fetch API unavailable.',
+    };
+  }
+
+  let data: {
+    ok?: boolean;
+    storagePath?: string;
+    appKey?: string;
+    vault?: unknown;
+    legacyVault?: unknown;
+  } | null = null;
+
+  const retryDelays = [0, 350, 900];
+  for (let attempt = 0; attempt < retryDelays.length; attempt++) {
+    if (retryDelays[attempt] > 0) {
+      await new Promise((r) => setTimeout(r, retryDelays[attempt]));
+    }
+    try {
+      const res = await fetch('/api/vault', { cache: 'no-store' });
+      if (res.ok) {
+        data = await res.json();
+        break;
+      }
+    } catch {
+      // Retry on transient server startup window
+    }
+  }
+
+  if (!data?.ok || typeof data.appKey !== 'string' || !data.appKey.trim()) {
+    return {
+      ok: false,
+      locked: false,
+      needsLegacyUnlock: false,
+      migratedLegacy: false,
+      storagePath: inMemoryStoragePath,
+      keys: { ...inMemoryDecryptedKeys },
+      error: 'Local app vault endpoint (/api/vault) is unavailable.',
+    };
+  }
+
+  setAppVaultKey(data.appKey, data.storagePath);
+
+  const appEnvelope = normalizeVaultEnvelope(data.vault);
+  if (appEnvelope) {
+    inMemoryVaultEnvelope = appEnvelope;
+    inMemoryPendingLegacyVault = null;
+    const dec = await decryptProviderKeysFromVault(null, appEnvelope);
+    if (dec.ok && (appEnvelope.version === 1 || appEnvelope.deviceSecretBase64)) {
+      // Upgrade v1 envelope inside app dir to v2 (no embedded secret)
+      await runVaultEncryptionNow(dec.keys, null, false, false);
+    }
+    return {
+      ok: dec.ok,
+      locked: dec.locked,
+      needsLegacyUnlock: dec.locked && appEnvelope.hasCustomPassphrase,
+      migratedLegacy: false,
+      storagePath: inMemoryStoragePath,
+      keys: dec.keys,
+      error: dec.error,
+    };
+  }
+
+  const legacyEnvelope = normalizeVaultEnvelope(data.legacyVault);
+  if (legacyEnvelope) {
+    if (legacyEnvelope.hasCustomPassphrase) {
+      inMemoryPendingLegacyVault = legacyEnvelope;
+      inMemoryVaultEnvelope = legacyEnvelope;
+      vaultLockedState = true;
+      return {
+        ok: false,
+        locked: true,
+        needsLegacyUnlock: true,
+        migratedLegacy: false,
+        storagePath: inMemoryStoragePath,
+        keys: {},
+        error:
+          'Found a legacy PIN-protected vault in ./Saves/. Enter your old PIN once in Options to migrate your keys into the automatic app vault.',
+      };
+    }
+
+    // Auto-migrate legacy non-PIN vault out of ./Saves/ into ./.tavernsmith-app/
+    const dec = await decryptProviderKeysFromVault(null, legacyEnvelope);
+    if (dec.ok) {
+      await runVaultEncryptionNow(dec.keys, null, false, true);
+      return {
+        ok: true,
+        locked: false,
+        needsLegacyUnlock: false,
+        migratedLegacy: true,
+        storagePath: inMemoryStoragePath,
+        keys: dec.keys,
+      };
+    }
+  }
+
+  vaultLockedState = false;
+  return {
+    ok: true,
+    locked: false,
+    needsLegacyUnlock: false,
+    migratedLegacy: false,
+    storagePath: inMemoryStoragePath,
+    keys: { ...inMemoryDecryptedKeys },
+  };
+}
+
+/**
+ * One-time unlock & migration helper for users upgrading from an older PIN-locked
+ * `./Saves/_tavernsmith_vault.enc`. Decrypts with the old PIN, re-encrypts automatically
+ * using the separate app-private key in `./.tavernsmith-app/`, and removes the old file.
+ */
+export async function unlockAndMigrateLegacyVault(
+  passphraseAttempt: string
+): Promise<{
+  ok: boolean;
+  keys: Record<string, string>;
+  error?: string;
+}> {
+  const targetEnvelope = inMemoryPendingLegacyVault || inMemoryVaultEnvelope;
+  if (!targetEnvelope) {
+    return { ok: true, keys: { ...inMemoryDecryptedKeys } };
+  }
+
+  const dec = await decryptProviderKeysFromVault(
+    passphraseAttempt,
+    targetEnvelope
+  );
+  if (!dec.ok) {
+    return {
+      ok: false,
+      keys: {},
+      error: dec.error || 'Incorrect legacy PIN.',
+    };
+  }
+
+  // Re-encrypt automatically without PIN into ./.tavernsmith-app/ and delete legacy ./Saves/_tavernsmith_vault.enc
+  inMemoryPassphrase = null;
+  await runVaultEncryptionNow(dec.keys, null, false, true);
+  return {
+    ok: true,
+    keys: dec.keys,
+  };
 }
 
 /**
@@ -407,8 +723,8 @@ export function getInMemoryDecryptedKeys(): Record<string, string> {
 }
 
 /**
- * Decrypts or retrieves a specific provider's API key on demand when making an AI request
- * or when the user clicks the Eye icon in Options.
+ * Retrieves a specific provider's API key on demand when making an AI request
+ * or auto-filling provider credentials in Options.
  */
 export async function getDecryptedKeyForProvider(
   providerId: string,
@@ -435,34 +751,36 @@ export async function getDecryptedKeyForProvider(
 }
 
 /**
- * Sets or removes a custom Vault Passphrase / PIN and re-encrypts `./Saves/_tavernsmith_vault.enc`.
+ * Updates vault encryption settings safely. Refuses to overwrite a locked vault.
  */
 export async function updateVaultPassphrase(
   newPassphrase: string | null
 ): Promise<{ ok: boolean; message: string }> {
+  if (vaultLockedState) {
+    return {
+      ok: false,
+      message: 'Unlock the existing legacy vault first before modifying vault credentials.',
+    };
+  }
   const clean = (newPassphrase || '').trim();
-  inMemoryPassphrase = clean.length > 0 ? clean : null;
   const envelope = await encryptAndSaveProviderKeys(
     inMemoryDecryptedKeys,
-    inMemoryPassphrase
+    clean.length > 0 ? clean : null
   );
   if (!envelope) {
     return {
       ok: false,
-      message: 'Failed to encrypt vault with Web Crypto API.',
+      message: 'Failed to encrypt app vault with Web Crypto API.',
     };
   }
   return {
     ok: true,
     message: clean
-      ? 'AES-256-GCM Vault locked with your custom Passphrase / PIN and saved to ./Saves/_tavernsmith_vault.enc.'
-      : 'Custom Passphrase removed; vault is now encrypted with automatic AES-256-GCM key in ./Saves/_tavernsmith_vault.enc.',
+      ? `AES-256-GCM Vault updated in ${inMemoryStoragePath}${VAULT_FILENAME}.`
+      : `Encrypted app vault active (no PIN required) in ${inMemoryStoragePath}${VAULT_FILENAME}.`,
   };
 }
 
-/**
- * Locks the in-memory vault session if a custom passphrase is enabled.
- */
 export function lockVaultSessionInMemory(): void {
   const env = readEncryptedVaultEnvelope();
   if (env?.hasCustomPassphrase) {
@@ -474,10 +792,15 @@ export function lockVaultSessionInMemory(): void {
 
 export function getVaultStatusInfo(): VaultStatusInfo {
   const env = readEncryptedVaultEnvelope();
+  const needsLegacyUnlock = Boolean(
+    (inMemoryPendingLegacyVault || env?.hasCustomPassphrase) && vaultLockedState
+  );
   return {
-    isEncrypted: Boolean(env),
+    isEncrypted: Boolean(env || inMemoryAppVaultKey),
     hasCustomPassphrase: Boolean(env?.hasCustomPassphrase),
-    isLocked: Boolean(env?.hasCustomPassphrase && vaultLockedState),
+    isLocked: needsLegacyUnlock,
+    needsLegacyUnlock,
+    storagePath: inMemoryStoragePath,
     keyCount: Object.keys(inMemoryDecryptedKeys).filter((k) =>
       Boolean(inMemoryDecryptedKeys[k])
     ).length,

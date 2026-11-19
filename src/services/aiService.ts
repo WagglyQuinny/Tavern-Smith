@@ -90,28 +90,12 @@ export interface AIPresetMeta {
   suggestedModels: string[];
 }
 
-export const GEMINI_PRIORITY_MODELS: readonly string[] = [
-  'gemini-4-hydrogen',
-  'gemini-4-argon',
-  'gemini-4-carbon',
-  'gemini-3.8-flash',
-  'gemini-3.6-flash',
-  'gemini-3.5-flash-lite',
-  'gemini-3.5-flash',
-  'gemini-3.1-pro-preview',
-  'gemma-4-31b-it',
-  'gemma-4-26b-a4b-it',
-];
+export const GEMINI_PRIORITY_MODELS: readonly string[] = [];
 
 export function isDeprecatedGeminiModel(rawModel?: string): boolean {
   const m = (rawModel || '').trim().replace(/^models\//i, '').toLowerCase();
   if (!m) return false;
-  return (
-    m === 'gemini-pro' ||
-    m.startsWith('gemini-1.') ||
-    m.startsWith('gemini-2.0') ||
-    m.startsWith('gemini-2.5')
-  );
+  return m === 'gemini-pro' || m.startsWith('gemini-1.0');
 }
 
 export function isGemini38Or4Model(rawModel?: string): boolean {
@@ -126,19 +110,11 @@ export const AI_BACKEND_PRESETS: AIPresetMeta[] = [
     label: 'LM Studio (Local)',
     group: 'Local Server',
     defaultUrl: 'http://localhost:1234/v1',
-    defaultModel: 'gemma-4-27b-it',
+    defaultModel: '',
     description:
-      'Local OpenAI-compatible server running via LM Studio on port 1234 (Supports Gemma 4, Llama 3/4, Qwen, DeepSeek).',
+      'Local OpenAI-compatible server running via LM Studio on port 1234. Shows currently loaded vs. downloaded models.',
     requiresKey: false,
-    suggestedModels: [
-      'gemma-4-27b-it',
-      'gemma-4-12b-it',
-      'gemma-3-27b-it',
-      'llama-3.3-70b-instruct',
-      'qwen2.5-32b-instruct',
-      'deepseek-r1-distill-llama-8b',
-      'mistral-nemo-instruct-2407',
-    ],
+    suggestedModels: [],
   },
   {
     id: 'ollama',
@@ -146,19 +122,11 @@ export const AI_BACKEND_PRESETS: AIPresetMeta[] = [
     label: 'Ollama (Local)',
     group: 'Local Server',
     defaultUrl: 'http://localhost:11434/v1',
-    defaultModel: 'gemma4:latest',
+    defaultModel: '',
     description:
-      'Local Ollama daemon with /v1 and /api/tags support on port 11434 (No key needed).',
+      'Local Ollama daemon on port 11434 (No key needed). Queries /api/ps and /api/tags to show loaded vs. installed models.',
     requiresKey: false,
-    suggestedModels: [
-      'gemma4:latest',
-      'gemma3:27b',
-      'llama3.3:latest',
-      'llama3.2:latest',
-      'deepseek-r1:14b',
-      'qwen2.5:14b',
-      'mistral-nemo:latest',
-    ],
+    suggestedModels: [],
   },
   {
     id: 'koboldcpp',
@@ -166,11 +134,11 @@ export const AI_BACKEND_PRESETS: AIPresetMeta[] = [
     label: 'KoboldCPP / TextGenWebUI (Local)',
     group: 'Local Server',
     defaultUrl: 'http://localhost:5001/v1',
-    defaultModel: 'koboldcpp-model',
+    defaultModel: '',
     description:
       'Local GGUF server exposing /v1/chat/completions and /api/v1/generate fallback.',
     requiresKey: false,
-    suggestedModels: ['koboldcpp-model', 'gemma-4-gguf', 'text-generation-webui'],
+    suggestedModels: [],
   },
   {
     id: 'gemini',
@@ -178,11 +146,11 @@ export const AI_BACKEND_PRESETS: AIPresetMeta[] = [
     label: 'Google Gemini',
     group: 'Cloud API',
     defaultUrl: 'https://generativelanguage.googleapis.com/v1beta/openai',
-    defaultModel: 'gemini-3.8-flash',
+    defaultModel: '',
     description:
       'Google Gemini API. Calls Google Generative Language REST API directly when a Gemini API key is provided, or /api/gemini when left empty.',
     requiresKey: true,
-    suggestedModels: [...GEMINI_PRIORITY_MODELS],
+    suggestedModels: [],
   },
   {
     id: 'xai_grok',
@@ -190,48 +158,34 @@ export const AI_BACKEND_PRESETS: AIPresetMeta[] = [
     label: 'X / xAI Grok',
     group: 'Cloud API',
     defaultUrl: 'https://api.x.ai/v1',
-    defaultModel: 'grok-3-beta',
+    defaultModel: '',
     description: 'xAI Grok endpoint with reasoning_content parsing.',
     requiresKey: true,
-    suggestedModels: ['grok-3-beta', 'grok-3-mini-beta', 'grok-2-latest'],
+    suggestedModels: [],
   },
   {
     id: 'openrouter_llama',
     providerKey: 'openrouter',
-    label: 'OpenRouter (Llama 4 / Gemma 4 / DeepSeek)',
+    label: 'OpenRouter',
     group: 'Meta Llama & Cloud',
     defaultUrl: 'https://openrouter.ai/api/v1',
-    defaultModel: 'meta-llama/llama-4-maverick',
+    defaultModel: '',
     description:
-      'OpenRouter unified gateway for Meta Llama 4, Google Gemma 4, DeepSeek R1, and Claude.',
+      'OpenRouter unified gateway for Meta Llama, Google Gemma, DeepSeek, Claude, and other cloud models.',
     requiresKey: true,
-    suggestedModels: [
-      'meta-llama/llama-4-maverick',
-      'meta-llama/llama-4-scout',
-      'google/gemma-4-27b-it',
-      'google/gemma-3-27b-it',
-      'meta-llama/llama-3.3-70b-instruct',
-      'deepseek/deepseek-r1',
-      'anthropic/claude-3.7-sonnet',
-    ],
+    suggestedModels: [],
   },
   {
     id: 'groq_llama',
     providerKey: 'groq',
-    label: 'Groq LPU (Llama 4 / Gemma / DeepSeek)',
+    label: 'Groq LPU',
     group: 'Meta Llama & Cloud',
     defaultUrl: 'https://api.groq.com/openai/v1',
-    defaultModel: 'meta-llama/llama-4-scout-17b-16e-instruct',
+    defaultModel: '',
     description:
-      'Ultra-low-latency LPU inference for Meta Llama 4, Gemma, and DeepSeek R1.',
+      'Ultra-low-latency LPU inference for Meta Llama, Gemma, and DeepSeek models.',
     requiresKey: true,
-    suggestedModels: [
-      'meta-llama/llama-4-scout-17b-16e-instruct',
-      'meta-llama/llama-4-maverick-17b-128e-instruct',
-      'gemma2-9b-it',
-      'llama-3.3-70b-versatile',
-      'deepseek-r1-distill-llama-70b',
-    ],
+    suggestedModels: [],
   },
   {
     id: 'meta_direct',
@@ -239,14 +193,10 @@ export const AI_BACKEND_PRESETS: AIPresetMeta[] = [
     label: 'Meta Llama Direct API',
     group: 'Meta Llama & Cloud',
     defaultUrl: 'https://api.llama.com/compat/v1',
-    defaultModel: 'Llama-4-Maverick-17B-128E-Instruct-FP8',
+    defaultModel: '',
     description: 'Direct Meta Llama compatibility endpoint.',
     requiresKey: true,
-    suggestedModels: [
-      'Llama-4-Maverick-17B-128E-Instruct-FP8',
-      'Llama-4-Scout-17B-16E-Instruct-FP8',
-      'Llama-3.3-70B-Instruct',
-    ],
+    suggestedModels: [],
   },
   {
     id: 'openai_compatible',
@@ -254,25 +204,22 @@ export const AI_BACKEND_PRESETS: AIPresetMeta[] = [
     label: 'OpenAI API',
     group: 'Cloud API',
     defaultUrl: 'https://api.openai.com/v1',
-    defaultModel: 'gpt-4o',
+    defaultModel: '',
     description: 'Official OpenAI chat/completions endpoint.',
     requiresKey: true,
-    suggestedModels: ['gpt-4o', 'gpt-4o-mini', 'o3-mini'],
+    suggestedModels: [],
   },
   {
     id: 'anthropic',
     providerKey: 'anthropic',
-    label: 'Anthropic Claude (Compatible)',
+    label: 'Anthropic Claude',
     group: 'Cloud API',
     defaultUrl: 'https://api.anthropic.com/v1',
-    defaultModel: 'claude-3-7-sonnet-latest',
-    description: 'Anthropic Claude OpenAI-compatible endpoint or proxy.',
+    defaultModel: '',
+    description:
+      'Official Anthropic Claude Messages API (direct x-api-key headers) or any custom OpenAI-compatible proxy URL.',
     requiresKey: true,
-    suggestedModels: [
-      'claude-3-7-sonnet-latest',
-      'claude-3-5-sonnet-latest',
-      'claude-3-5-haiku-latest',
-    ],
+    suggestedModels: [],
   },
   {
     id: 'custom',
@@ -280,10 +227,10 @@ export const AI_BACKEND_PRESETS: AIPresetMeta[] = [
     label: 'Custom OpenAI-Compatible Proxy',
     group: 'Cloud API',
     defaultUrl: 'http://localhost:8000/v1',
-    defaultModel: 'custom-model',
+    defaultModel: '',
     description: 'Any custom vLLM, TabbyAPI, Aphrodite, or OpenAI-compatible endpoint.',
     requiresKey: false,
-    suggestedModels: ['custom-model', 'gemma-4-27b-it', 'llama-3.3-70b-instruct'],
+    suggestedModels: [],
   },
 ];
 
@@ -562,32 +509,94 @@ export class AIServiceError extends Error {
   }
 }
 
+export interface ModelScanResult {
+  models: string[];
+  loadedModels: string[];
+  modelStatuses: Record<string, 'loaded' | 'not-loaded'>;
+  isLocalServer: boolean;
+}
+
 export interface ConnectionTestResult {
   ok: boolean;
   latencyMs: number;
   models: string[];
+  loadedModels?: string[];
+  modelStatuses?: Record<string, 'loaded' | 'not-loaded'>;
+  isLocalServer?: boolean;
   detectedFormatLabel: string;
   diagnosticSummary: string;
   message: string;
   corsHint?: string;
 }
 
+const NSFW_KEYWORD_REGEX = /\b(nsfw|smut|erotica|explicit|18\+|hentai|lewd)\b/i;
+
+function isTagDefinitionNsfwForAi(tag: TagDefinition): boolean {
+  const cat = (tag.category || '').toLowerCase();
+  if (
+    cat === 'genitals' ||
+    cat.includes('nsfw') ||
+    cat.includes('extreme') ||
+    cat.includes('hentai')
+  ) {
+    return true;
+  }
+  if (tag.isNsfw !== undefined) return Boolean(tag.isNsfw);
+  return NSFW_KEYWORD_REGEX.test(tag.name || '');
+}
+
+function isThemeNsfwForAi(
+  theme: ContextTheme | undefined,
+  allTags: TagDefinition[]
+): boolean {
+  if (!theme) return false;
+  if (theme.isNsfw) return true;
+  if (NSFW_KEYWORD_REGEX.test(theme.name || '')) return true;
+
+  for (const rawSelected of theme.associatedTags || []) {
+    const trimmed = (rawSelected || '').trim();
+    if (!trimmed) continue;
+    const lower = trimmed.toLowerCase();
+    const cleanLookup = lower.includes(':') ? lower.split(':')[0].trim() : lower;
+    const matched = allTags.find(
+      (t) =>
+        t.name.trim().toLowerCase() === lower ||
+        t.name.trim().toLowerCase() === cleanLookup ||
+        t.id === trimmed
+    );
+    if (matched) {
+      if (isTagDefinitionNsfwForAi(matched)) return true;
+    } else if (NSFW_KEYWORD_REGEX.test(trimmed)) {
+      return true;
+    }
+  }
+  return false;
+}
+
 /**
- * Synthesizes the active Context Theme's instructions and ALL associated Tag definitions
+ * Synthesizes the active Context Theme's instructions and associated Tag definitions
  * into a unified system prompt context block for AI generation and ghost-text.
  *
- * CRITICAL RULE: Always includes all attached tags (including `isNsfw: true` tags)
- * regardless of whether "Hide NSFW Content" is toggled ON in the visual UI!
+ * When `hideNsfw` is true, NSFW themes, NSFW tags, NSFW-category tags, and explicit
+ * keywords are strictly stripped so NSFW directives are never sent to the AI backend.
  */
 export function buildActiveAIContextBlock(
   theme?: ContextTheme,
   allTags: TagDefinition[] = [],
-  activeItemTags: string[] = []
+  activeItemTags: string[] = [],
+  hideNsfw = false
 ): string {
-  if (!theme) return '';
+  const themeBlockedBySfw = Boolean(
+    hideNsfw && theme && isThemeNsfwForAi(theme, allTags)
+  );
+  const usableTheme = theme && !themeBlockedBySfw ? theme : undefined;
+
+  if (!usableTheme && activeItemTags.length === 0 && !hideNsfw) {
+    return '';
+  }
 
   const combinedTagNames = sortTagsByContextOrder(
-    [...(theme.associatedTags || []), ...activeItemTags],
+    [...(usableTheme?.associatedTags || []), ...activeItemTags],
     allTags
   );
 
@@ -607,6 +616,10 @@ export function buildActiveAIContextBlock(
         t.id === trimmed
     );
     if (mainMatch) {
+      const tagIsNsfw = isTagDefinitionNsfwForAi(mainMatch);
+      if (hideNsfw && tagIsNsfw) {
+        continue;
+      }
       const key = `main:${mainMatch.name.toLowerCase()}`;
       if (!emittedKeys.has(key)) {
         emittedKeys.add(key);
@@ -615,12 +628,15 @@ export function buildActiveAIContextBlock(
           mainMatch.aiDescription ||
           mainMatch.description ||
           '';
-        const nsfwMarker = mainMatch.isNsfw ? ' • NSFW 18+' : '';
+        const nsfwMarker = tagIsNsfw ? ' • NSFW 18+' : '';
         tagContextLines.push(
           `- [${mainMatch.name}] (${mainMatch.category}${nsfwMarker}): ${desc}`
         );
       }
     } else if (trimmed) {
+      if (hideNsfw && NSFW_KEYWORD_REGEX.test(trimmed)) {
+        continue;
+      }
       const key = `custom:${lower}`;
       if (!emittedKeys.has(key)) {
         emittedKeys.add(key);
@@ -632,8 +648,11 @@ export function buildActiveAIContextBlock(
   }
 
   return [
-    `### Overarching Context Theme: ${theme.name}`,
-    theme.aiContextPrompt.trim(),
+    hideNsfw
+      ? '### Content Safety Mode:\nSFW Mode is enabled. Keep all generated content strictly Safe For Work (SFW) and exclude any explicit or NSFW material.'
+      : '',
+    usableTheme ? `### Overarching Context Theme: ${usableTheme.name}` : '',
+    usableTheme ? usableTheme.aiContextPrompt.trim() : '',
     tagContextLines.length > 0
       ? `\n### Active Semantic Tag Directives:\n${tagContextLines.join('\n')}`
       : '',
@@ -654,8 +673,10 @@ function normalizeBaseUrl(rawUrl: string): {
     };
   }
   if (trimmed.endsWith('/api/v1')) {
-    const rootUrl = trimmed.slice(0, -7);
-    return { rootUrl, v1Url: `${rootUrl}/v1` };
+    return {
+      rootUrl: trimmed.slice(0, -7),
+      v1Url: trimmed,
+    };
   }
   if (trimmed.endsWith('/v1')) {
     const rootUrl = trimmed.slice(0, -3);
@@ -675,21 +696,67 @@ function buildAuthHeaders(apiKey: string): Record<string, string> {
   return headers;
 }
 
+function buildAnthropicHeaders(apiKey: string): Record<string, string> {
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    Accept: 'application/json',
+    'anthropic-version': '2023-06-01',
+    'anthropic-dangerous-direct-browser-access': 'true',
+  };
+  if (apiKey && apiKey.trim()) {
+    headers['x-api-key'] = apiKey.trim();
+  }
+  return headers;
+}
+
+function isHtmlResponse(res: Response): boolean {
+  const ct = (res.headers.get('content-type') || '').toLowerCase();
+  return ct.includes('text/html');
+}
+
+function isJsonContentType(res: Response): boolean {
+  const ct = (res.headers.get('content-type') || '').toLowerCase();
+  return ct.includes('application/json') || ct.includes('+json');
+}
+
+function isNonChatModelId(rawId: string): boolean {
+  const id = (rawId || '').trim().toLowerCase();
+  if (!id) return true;
+  return /(?:^|\/)(?:text-embedding|embedding-|embed-|whisper-|tts-|dall-e|omni-moderation|text-moderation|babbage-|davinci-|imagen-|veo-|sora-)/.test(
+    id
+  );
+}
+
+export function isLocalBackend(config: AIBackendConfig): boolean {
+  const urlLower = (config.url || '').trim().toLowerCase();
+  return (
+    config.preset === 'lmstudio' ||
+    config.preset === 'ollama' ||
+    config.preset === 'koboldcpp' ||
+    urlLower.includes('localhost') ||
+    urlLower.includes('127.0.0.1') ||
+    urlLower.includes('[::1]')
+  );
+}
+
+export function isAnthropicDirectBackend(config: AIBackendConfig): boolean {
+  const urlLower = (config.url || '').trim().toLowerCase();
+  return urlLower.includes('api.anthropic.com');
+}
+
 export function isGeminiBackend(config: AIBackendConfig): boolean {
   const urlLower = (config.url || '').trim().toLowerCase();
-  const modelLower = (config.modelName || '').trim().toLowerCase();
   return (
     config.preset === 'gemini' ||
     urlLower.startsWith('/api/gemini') ||
     urlLower.includes('/api/gemini') ||
-    urlLower.includes('generativelanguage.googleapis.com') ||
-    modelLower.startsWith('gemini-')
+    urlLower.includes('generativelanguage.googleapis.com')
   );
 }
 
 /**
  * Resolves the active provider's API key, checking the in-memory `config.apiKey` first
- * and decrypting on-demand from the AES-256-GCM vault (`_tavernsmith_vault_enc`) if needed.
+ * and decrypting on-demand from the app-private AES-256-GCM vault if needed.
  */
 export async function resolveEffectiveApiKey(
   config: AIBackendConfig
@@ -709,25 +776,13 @@ export async function resolveEffectiveApiKey(
   return (decrypted || '').trim();
 }
 
-/**
- * Determines whether the active backend is Local (LM Studio, Ollama, KoboldCPP, Custom)
- * or uses a Thinking/Reasoning model family (Gemma 4, DeepSeek, Qwen, Gemini, Grok).
- */
-export function isLocalOrThinkingBackend(
+export function isThinkingModelBackend(
   config: AIBackendConfig,
   effectiveFormat?: Exclude<ModelCompatibilityFormat, 'auto'>
 ): boolean {
   const fmt = effectiveFormat || resolveEffectiveFormat(config);
-  const urlLower = (config.url || '').toLowerCase();
   const modelLower = (config.modelName || config.model || '').toLowerCase();
-  const isLocal =
-    config.preset === 'lmstudio' ||
-    config.preset === 'ollama' ||
-    config.preset === 'koboldcpp' ||
-    config.preset === 'custom' ||
-    urlLower.includes('localhost') ||
-    urlLower.includes('127.0.0.1');
-  const isThinking =
+  return (
     fmt === 'gemma' ||
     fmt === 'deepseek_qwen_think' ||
     fmt === 'gemini_thinking' ||
@@ -739,21 +794,45 @@ export function isLocalOrThinkingBackend(
     modelLower.includes('qwen3') ||
     modelLower.includes('deepseek') ||
     modelLower.includes('gemini') ||
-    modelLower.includes('grok');
-  return isLocal || isThinking;
+    modelLower.includes('grok') ||
+    modelLower.startsWith('o1') ||
+    modelLower.startsWith('o3') ||
+    modelLower.startsWith('o4')
+  );
 }
 
 /**
- * Enforces a minimum of 4096 tokens for Local AIs and Thinking models so internal reasoning
- * never exhausts `max_tokens` / `maxOutputTokens` and returns an empty 200 OK payload.
+ * Determines whether the active backend is Local (LM Studio, Ollama, KoboldCPP, Custom)
+ * or uses a Thinking/Reasoning model family (Gemma 4, DeepSeek, Qwen, Gemini, Grok).
+ */
+export function isLocalOrThinkingBackend(
+  config: AIBackendConfig,
+  effectiveFormat?: Exclude<ModelCompatibilityFormat, 'auto'>
+): boolean {
+  return (
+    isLocalBackend(config) ||
+    config.preset === 'custom' ||
+    isThinkingModelBackend(config, effectiveFormat)
+  );
+}
+
+/**
+ * Resolves `max_tokens` / `maxOutputTokens`.
+ * Gives full generation headroom for long-form cards/thinking models while keeping
+ * inline Ghost-Text fast and concise on non-thinking models.
  */
 export function resolveEffectiveMaxTokens(
   config: AIBackendConfig,
   requestedMaxTokens?: number,
-  effectiveFormat?: Exclude<ModelCompatibilityFormat, 'auto'>
+  effectiveFormat?: Exclude<ModelCompatibilityFormat, 'auto'>,
+  isGhostText = false
 ): number {
   const base = requestedMaxTokens ?? config.maxTokens ?? 4096;
-  if (isLocalOrThinkingBackend(config, effectiveFormat)) {
+  const isThinking = isThinkingModelBackend(config, effectiveFormat);
+  if (isGhostText) {
+    return isThinking ? Math.max(1024, base) : Math.max(96, Math.min(512, base));
+  }
+  if (isThinking || isLocalOrThinkingBackend(config, effectiveFormat)) {
     return Math.max(4096, base);
   }
   return Math.max(256, base);
@@ -765,38 +844,75 @@ export function resolveEffectiveMaxTokens(
 function normalizeGeminiModelId(rawModel?: string): string {
   const m = (rawModel || '').trim().replace(/^models\//i, '');
   if (!m) {
-    return 'gemini-3.8-flash';
+    return 'gemini-2.5-flash';
   }
   return m;
 }
 
 /**
- * Merges live scanned Gemini/Gemma/API models with the prioritized Gemini 4 / 3.8 / Gemma 4 catalog
- * without hiding any model returned by the API pull.
+ * Normalizes and deduplicates real models returned by the Gemini API without injecting fake entries.
  */
 export function buildMergedGeminiModelList(scannedModels: string[] = []): string[] {
   const cleanedScanned = scannedModels
     .map((id) => (id || '').trim().replace(/^models\//i, ''))
     .filter(Boolean);
 
-  return Array.from(new Set([...GEMINI_PRIORITY_MODELS, ...cleanedScanned]));
+  return Array.from(new Set(cleanedScanned));
+}
+
+function extractModelsFromOpenAiPayload(payload: unknown): string[] {
+  const result: string[] = [];
+  const pushItem = (raw: unknown) => {
+    if (typeof raw === 'string') {
+      const clean = raw.trim();
+      if (clean && !isNonChatModelId(clean)) result.push(clean);
+      return;
+    }
+    if (raw && typeof raw === 'object') {
+      const obj = raw as {
+        id?: string;
+        name?: string;
+        model?: string;
+        type?: string;
+      };
+      if (obj.type === 'embeddings') return;
+      const clean = (obj.id || obj.name || obj.model || '')
+        .replace(/^models\//i, '')
+        .trim();
+      if (clean && !isNonChatModelId(clean)) {
+        result.push(clean);
+      }
+    }
+  };
+
+  if (payload && typeof payload === 'object') {
+    const obj = payload as { data?: unknown; models?: unknown };
+    if (Array.isArray(obj.data)) {
+      obj.data.forEach(pushItem);
+    } else if (Array.isArray(obj.models)) {
+      obj.models.forEach(pushItem);
+    } else if (Array.isArray(payload)) {
+      payload.forEach(pushItem);
+    }
+  }
+  return Array.from(new Set(result));
 }
 
 /**
- * Live Model Scanner:
- * - For Google Gemini with a user API key: calls Google's direct REST API
- *   (`https://generativelanguage.googleapis.com/v1beta/models?pageSize=1000&key=...`, following `nextPageToken`)
- *   and merges ALL returned models with the Gemini 4 / 3.8 / Gemma 4 priority catalog.
- * - For Google Gemini without an API key: queries `/api/gemini/models`.
- * - For other providers: queries `/v1/models`, Ollama `/api/tags`, and KoboldCPP `/api/v1/model`.
+ * Live Model Scanner with Local Loaded vs. Not-Loaded detection:
+ * - Cloud APIs: returns ONLY real models available on the endpoint (zero hardcoded placeholders).
+ * - Local Servers:
+ *   - Ollama: queries `/api/ps` (currently loaded) + `/api/tags` (all installed).
+ *   - LM Studio: queries `/api/v0/models` (`state: 'loaded' | 'not-loaded'`) + `/v1/models`.
+ *   - KoboldCPP & other local OpenAI-compatible servers: queries `/v1/models` and `/api/v1/model`.
  */
-export async function fetchModels(
+export async function fetchModelsWithStatus(
   config: AIBackendConfig,
   abortSignal?: AbortSignal
-): Promise<string[]> {
+): Promise<ModelScanResult> {
   const effectiveKey = await resolveEffectiveApiKey(config);
 
-  // 1. Google Gemini backend
+  // 1. Google Gemini backend (Direct REST with x-goog-api-key header, or local /api/gemini fallback)
   if (isGeminiBackend(config)) {
     if (effectiveKey) {
       const scannedIds: string[] = [];
@@ -807,13 +923,16 @@ export async function fetchModels(
         const pageParam = pageToken
           ? `&pageToken=${encodeURIComponent(pageToken)}`
           : '';
-        const url = `https://generativelanguage.googleapis.com/v1beta/models?pageSize=1000${pageParam}&key=${encodeURIComponent(effectiveKey)}`;
+        const url = `https://generativelanguage.googleapis.com/v1beta/models?pageSize=1000${pageParam}`;
 
         let directRes: Response;
         try {
           directRes = await fetch(url, {
             method: 'GET',
-            headers: { Accept: 'application/json' },
+            headers: {
+              Accept: 'application/json',
+              'x-goog-api-key': effectiveKey,
+            },
             signal: abortSignal,
           });
         } catch (err: unknown) {
@@ -837,9 +956,16 @@ export async function fetchModels(
           for (const m of directData.models as Array<{
             name?: string;
             id?: string;
+            supportedGenerationMethods?: string[];
           }>) {
+            if (
+              Array.isArray(m.supportedGenerationMethods) &&
+              !m.supportedGenerationMethods.includes('generateContent')
+            ) {
+              continue;
+            }
             const id = (m.name || m.id || '').replace(/^models\//i, '').trim();
-            if (id) {
+            if (id && !isNonChatModelId(id)) {
               scannedIds.push(id);
             }
           }
@@ -852,7 +978,12 @@ export async function fetchModels(
         pageCount += 1;
       } while (pageToken && pageCount < 50);
 
-      return buildMergedGeminiModelList(scannedIds);
+      return {
+        models: buildMergedGeminiModelList(scannedIds),
+        loadedModels: [],
+        modelStatuses: {},
+        isLocalServer: false,
+      };
     }
 
     // Only call /api/gemini/models when the user did NOT enter a Gemini API key
@@ -861,6 +992,12 @@ export async function fetchModels(
       headers: { Accept: 'application/json' },
       signal: abortSignal,
     });
+    if (!isJsonContentType(geminiRes)) {
+      throw new AIServiceError(
+        'Enter your Google Gemini API key to connect directly (no server-side /api/gemini endpoint is active).',
+        { statusCode: geminiRes.status || 401 }
+      );
+    }
     const geminiData = await geminiRes.json().catch(() => ({}));
     if (!geminiRes.ok) {
       throw new AIServiceError(
@@ -869,123 +1006,299 @@ export async function fetchModels(
         { statusCode: geminiRes.status }
       );
     }
-    if (Array.isArray(geminiData?.models) && geminiData.models.length > 0) {
-      return buildMergedGeminiModelList(geminiData.models);
-    }
-    return [...GEMINI_PRIORITY_MODELS];
+    return {
+      models: Array.isArray(geminiData?.models)
+        ? buildMergedGeminiModelList(geminiData.models)
+        : [],
+      loadedModels: [],
+      modelStatuses: {},
+      isLocalServer: false,
+    };
   }
 
   const { rootUrl, v1Url } = normalizeBaseUrl(config.url);
+
+  // 2. Direct Anthropic Messages API (`https://api.anthropic.com/v1/models`)
+  if (isAnthropicDirectBackend(config)) {
+    if (!effectiveKey) {
+      throw new AIServiceError(
+        'Anthropic API requires an API key.',
+        { statusCode: 401 }
+      );
+    }
+    try {
+      const anthropicRes = await fetch(`${v1Url}/models`, {
+        method: 'GET',
+        headers: buildAnthropicHeaders(effectiveKey),
+        signal: abortSignal,
+      });
+      if (isHtmlResponse(anthropicRes)) {
+        throw new AIServiceError(
+          'Anthropic endpoint returned an unexpected HTML response.',
+          { statusCode: anthropicRes.status }
+        );
+      }
+      const payload = await anthropicRes.json().catch(() => ({}));
+      if (!anthropicRes.ok) {
+        throw new AIServiceError(
+          payload?.error?.message ||
+            `Anthropic API returned HTTP ${anthropicRes.status} (${anthropicRes.statusText || 'Error'})`,
+          { statusCode: anthropicRes.status }
+        );
+      }
+      return {
+        models: extractModelsFromOpenAiPayload(payload),
+        loadedModels: [],
+        modelStatuses: {},
+        isLocalServer: false,
+      };
+    } catch (err: unknown) {
+      if (err instanceof DOMException && err.name === 'AbortError') throw err;
+      if (err instanceof AIServiceError) throw err;
+      throw new AIServiceError(
+        `Could not reach Anthropic API (${config.url}): ${err instanceof Error ? err.message : 'Network error'}`,
+        { isCorsOrNetworkError: true }
+      );
+    }
+  }
+
   const headers = buildAuthHeaders(effectiveKey);
+  const localServer = isLocalBackend(config);
+  const isOllama = config.preset === 'ollama' || rootUrl.includes('11434');
+  const isLmStudio = config.preset === 'lmstudio' || rootUrl.includes('1234');
+  const isKobold = config.preset === 'koboldcpp' || rootUrl.includes('5001');
 
   const collectedModels: string[] = [];
-  const pushModels = (items: string[]) => {
-    for (const raw of items) {
-      const clean = (raw || '').trim();
-      if (clean && !collectedModels.includes(clean)) {
-        collectedModels.push(clean);
+  const modelStatuses: Record<string, 'loaded' | 'not-loaded'> = {};
+  const loadedSet = new Set<string>();
+
+  const registerModel = (
+    rawName: string,
+    status?: 'loaded' | 'not-loaded',
+    preserveExistingStatus = false
+  ) => {
+    const clean = (rawName || '').trim();
+    if (!clean) return;
+    if (!collectedModels.includes(clean)) {
+      collectedModels.push(clean);
+    }
+    if (localServer && status) {
+      if (!preserveExistingStatus || !modelStatuses[clean]) {
+        modelStatuses[clean] = status;
+      }
+      if (modelStatuses[clean] === 'loaded') {
+        loadedSet.add(clean);
       }
     }
   };
 
+  let anyEndpointSucceeded = false;
+  let lastHttpErrorStatus = 0;
+  let lastHttpErrorText = '';
+
   try {
-    // 2. Standard OpenAI-Compatible `GET /v1/models`
-    const response = await fetch(`${v1Url}/models`, {
-      method: 'GET',
-      headers,
-      signal: abortSignal,
-    });
-
-    if (response.ok) {
-      const payload = await response.json();
-      if (Array.isArray(payload?.data)) {
-        pushModels(
-          payload.data.map(
-            (item: { id?: string; name?: string; model?: string } | string) =>
-              typeof item === 'string'
-                ? item
-                : item.id || item.name || item.model || ''
-          )
-        );
-      } else if (Array.isArray(payload?.models)) {
-        pushModels(
-          payload.models.map(
-            (item: { id?: string; name?: string; model?: string } | string) =>
-              typeof item === 'string'
-                ? item
-                : (item.id || item.name || item.model || '').replace(/^models\//, '')
-          )
-        );
-      } else if (Array.isArray(payload)) {
-        pushModels(
-          payload.map(
-            (item: { id?: string; name?: string; model?: string } | string) =>
-              typeof item === 'string'
-                ? item
-                : item.id || item.name || item.model || ''
-          )
-        );
-      }
-    }
-
-    if (response.status === 401 || response.status === 403) {
-      throw new AIServiceError(
-        `Invalid API Key or unauthorized access (HTTP ${response.status})`,
-        { statusCode: response.status }
-      );
-    }
-
-    // 3. Ollama Native Check: `GET /api/tags` (merged with /v1/models so neither endpoint hides models)
-    if (config.preset === 'ollama' || rootUrl.includes('11434')) {
+    // 3A. Ollama native loaded (`/api/ps`) + installed (`/api/tags`) check
+    if (isOllama) {
       try {
-        const ollamaRes = await fetch(`${rootUrl}/api/tags`, {
+        const psRes = await fetch(`${rootUrl}/api/ps`, {
           method: 'GET',
           headers,
           signal: abortSignal,
         });
-        if (ollamaRes.ok) {
-          const ollamaData = await ollamaRes.json();
-          if (Array.isArray(ollamaData?.models)) {
-            pushModels(
-              ollamaData.models.map(
-                (m: { name?: string; model?: string }) => m.name || m.model || ''
-              )
-            );
+        if (psRes.ok && !isHtmlResponse(psRes)) {
+          anyEndpointSucceeded = true;
+          const psData = await psRes.json().catch(() => ({}));
+          if (Array.isArray(psData?.models)) {
+            for (const m of psData.models as Array<{ name?: string; model?: string }>) {
+              const id = (m.name || m.model || '').trim();
+              if (id) {
+                loadedSet.add(id);
+                registerModel(id, 'loaded');
+              }
+            }
           }
         }
-      } catch (ollamaErr: unknown) {
-        if (ollamaErr instanceof DOMException && ollamaErr.name === 'AbortError') {
-          throw ollamaErr;
+      } catch (psErr: unknown) {
+        if (psErr instanceof DOMException && psErr.name === 'AbortError') throw psErr;
+      }
+
+      try {
+        const tagsRes = await fetch(`${rootUrl}/api/tags`, {
+          method: 'GET',
+          headers,
+          signal: abortSignal,
+        });
+        if (tagsRes.ok && !isHtmlResponse(tagsRes)) {
+          anyEndpointSucceeded = true;
+          const tagsData = await tagsRes.json().catch(() => ({}));
+          if (Array.isArray(tagsData?.models)) {
+            for (const m of tagsData.models as Array<{ name?: string; model?: string }>) {
+              const id = (m.name || m.model || '').trim();
+              if (id && !isNonChatModelId(id)) {
+                registerModel(id, loadedSet.has(id) ? 'loaded' : 'not-loaded');
+              }
+            }
+          }
+        } else if (!tagsRes.ok) {
+          lastHttpErrorStatus = tagsRes.status;
+          lastHttpErrorText = tagsRes.statusText;
+        }
+      } catch (tagsErr: unknown) {
+        if (tagsErr instanceof DOMException && tagsErr.name === 'AbortError') throw tagsErr;
+      }
+    }
+
+    // 3B. LM Studio native REST API v0 (`/api/v0/models`) for loaded vs. not-loaded state
+    let lmStudioV0Succeeded = false;
+    if (isLmStudio) {
+      try {
+        const lmsRes = await fetch(`${rootUrl}/api/v0/models`, {
+          method: 'GET',
+          headers,
+          signal: abortSignal,
+        });
+        if (lmsRes.ok && !isHtmlResponse(lmsRes)) {
+          const lmsData = await lmsRes.json().catch(() => ({}));
+          const entries = Array.isArray(lmsData?.data)
+            ? lmsData.data
+            : Array.isArray(lmsData)
+              ? lmsData
+              : null;
+          if (entries) {
+            lmStudioV0Succeeded = true;
+            anyEndpointSucceeded = true;
+            for (const item of entries as Array<{
+              id?: string;
+              type?: string;
+              state?: string;
+            }>) {
+              if (!item || item.type === 'embeddings') continue;
+              const id = (item.id || '').trim();
+              if (!id || isNonChatModelId(id)) continue;
+              const state: 'loaded' | 'not-loaded' =
+                item.state === 'loaded' ? 'loaded' : 'not-loaded';
+              registerModel(id, state);
+            }
+          }
+        }
+      } catch (lmsErr: unknown) {
+        if (lmsErr instanceof DOMException && lmsErr.name === 'AbortError') throw lmsErr;
+      }
+    }
+
+    // 3C. Standard OpenAI-Compatible `GET /v1/models`
+    let v1Response: Response | null = null;
+    try {
+      v1Response = await fetch(`${v1Url}/models`, {
+        method: 'GET',
+        headers,
+        signal: abortSignal,
+      });
+    } catch (v1Err: unknown) {
+      if (v1Err instanceof DOMException && v1Err.name === 'AbortError') throw v1Err;
+      if (!anyEndpointSucceeded && !isKobold) {
+        throw v1Err;
+      }
+    }
+
+    if (v1Response) {
+      if (v1Response.status === 401 || v1Response.status === 403) {
+        throw new AIServiceError(
+          `Invalid API Key or unauthorized access (HTTP ${v1Response.status})`,
+          { statusCode: v1Response.status }
+        );
+      }
+
+      if (v1Response.ok) {
+        if (isHtmlResponse(v1Response)) {
+          if (!anyEndpointSucceeded) {
+            throw new AIServiceError(
+              `Endpoint at ${v1Url}/models returned HTML instead of a model list JSON.`,
+              { statusCode: v1Response.status }
+            );
+          }
+        } else {
+          anyEndpointSucceeded = true;
+          const payload = await v1Response.json().catch(() => ({}));
+          const ids = extractModelsFromOpenAiPayload(payload);
+          for (const id of ids) {
+            if (localServer) {
+              const inferredStatus: 'loaded' | 'not-loaded' = isOllama
+                ? loadedSet.has(id)
+                  ? 'loaded'
+                  : 'not-loaded'
+                : 'loaded';
+              registerModel(
+                id,
+                inferredStatus,
+                lmStudioV0Succeeded || isOllama
+              );
+            } else {
+              registerModel(id);
+            }
+          }
+        }
+      } else {
+        lastHttpErrorStatus = v1Response.status;
+        lastHttpErrorText = v1Response.statusText;
+      }
+    }
+
+    // 3D. KoboldCPP native loaded model endpoint: `GET /api/v1/model`
+    if (isKobold || (localServer && collectedModels.length === 0)) {
+      try {
+        const koboldRes = await fetch(`${rootUrl}/api/v1/model`, {
+          method: 'GET',
+          headers,
+          signal: abortSignal,
+        });
+        if (koboldRes.ok && !isHtmlResponse(koboldRes)) {
+          anyEndpointSucceeded = true;
+          const koboldData = await koboldRes.json().catch(() => ({}));
+          if (typeof koboldData?.result === 'string' && koboldData.result.trim()) {
+            registerModel(koboldData.result.trim(), 'loaded');
+          }
+        }
+      } catch (koboldErr: unknown) {
+        if (koboldErr instanceof DOMException && koboldErr.name === 'AbortError') {
+          throw koboldErr;
         }
       }
     }
 
-    if (collectedModels.length > 0) {
-      return collectedModels;
-    }
-
-    // 4. KoboldCPP Fallback: `GET /api/v1/model`
-    const fallbackRes = await fetch(`${rootUrl}/api/v1/model`, {
-      method: 'GET',
-      headers,
-      signal: abortSignal,
-    });
-
-    if (fallbackRes.ok) {
-      const fallbackData = await fallbackRes.json();
-      if (typeof fallbackData?.result === 'string' && fallbackData.result.trim()) {
-        return [fallbackData.result.trim()];
+    if (!anyEndpointSucceeded) {
+      if (lastHttpErrorStatus > 0) {
+        throw new AIServiceError(
+          `Endpoint returned HTTP ${lastHttpErrorStatus} (${lastHttpErrorText || 'Error'})`,
+          { statusCode: lastHttpErrorStatus }
+        );
       }
-    }
-
-    if (!response.ok) {
       throw new AIServiceError(
-        `Endpoint returned HTTP ${response.status} (${response.statusText || 'Error'})`,
-        { statusCode: response.status }
+        localServer
+          ? 'Server Offline or Localhost CORS blocked'
+          : `Server unreachable at ${config.url}`,
+        { isCorsOrNetworkError: true }
       );
     }
 
-    return [config.modelName || 'default-model'];
+    // Sort local models so currently loaded models always appear first
+    const sortedModels = localServer
+      ? [
+          ...collectedModels.filter((m) => modelStatuses[m] === 'loaded'),
+          ...collectedModels.filter((m) => modelStatuses[m] !== 'loaded'),
+        ]
+      : collectedModels;
+
+    const loadedModels = localServer
+      ? sortedModels.filter((m) => modelStatuses[m] === 'loaded')
+      : [];
+
+    return {
+      models: sortedModels,
+      loadedModels,
+      modelStatuses: localServer ? modelStatuses : {},
+      isLocalServer: localServer,
+    };
   } catch (err: unknown) {
     if (err instanceof DOMException && err.name === 'AbortError') {
       throw err;
@@ -993,15 +1306,21 @@ export async function fetchModels(
     if (err instanceof AIServiceError) {
       throw err;
     }
-    const isLocal =
-      config.url.includes('localhost') || config.url.includes('127.0.0.1');
-    const diagnostic = isLocal
+    const diagnostic = localServer
       ? 'Server Offline or Localhost CORS blocked'
       : `Server unreachable at ${config.url}`;
     throw new AIServiceError(diagnostic, {
       isCorsOrNetworkError: true,
     });
   }
+}
+
+export async function fetchModels(
+  config: AIBackendConfig,
+  abortSignal?: AbortSignal
+): Promise<string[]> {
+  const result = await fetchModelsWithStatus(config, abortSignal);
+  return result.models;
 }
 
 /**
@@ -1025,6 +1344,9 @@ export async function testBackendConnection(
       ok: false,
       latencyMs: 0,
       models: [],
+      loadedModels: [],
+      modelStatuses: {},
+      isLocalServer: isLocalBackend(config),
       detectedFormatLabel: fmt,
       diagnosticSummary: `Invalid or missing API Key for ${presetMeta.label}`,
       message: `🔴 Connection Failed • Invalid or missing API Key for ${presetMeta.label}`,
@@ -1032,12 +1354,16 @@ export async function testBackendConnection(
   }
 
   try {
-    const models = await fetchModels({ ...config, apiKey: effectiveKey }, signal);
+    const scan = await fetchModelsWithStatus(
+      { ...config, apiKey: effectiveKey },
+      signal
+    );
+    const { models, loadedModels, modelStatuses, isLocalServer } = scan;
     const latencyMs = Math.max(1, Math.round(performance.now() - start));
     const chosenModel =
       models.includes(config.modelName) && config.modelName
         ? config.modelName
-        : models[0] || config.modelName;
+        : loadedModels[0] || models[0] || '';
     const detectedFmtKey = detectModelCompatibilityFormat(
       chosenModel,
       config.preset
@@ -1048,14 +1374,20 @@ export async function testBackendConnection(
         ? ' • Direct Gemini REST API'
         : ' • Using /api/gemini Server Fallback'
       : '';
+    const modelSummary = isLocalServer
+      ? `${loadedModels.length} loaded / ${models.length} local models`
+      : `${models.length} available models`;
 
     return {
       ok: true,
       latencyMs,
       models,
+      loadedModels,
+      modelStatuses,
+      isLocalServer,
       detectedFormatLabel,
-      diagnosticSummary: `${latencyMs}ms latency • ${models.length} models detected • Format: ${detectedFormatLabel}${keyModeNote}`,
-      message: `🟢 Connected & Verified • ${latencyMs}ms latency • ${models.length} models detected • Format: ${detectedFormatLabel}${keyModeNote}`,
+      diagnosticSummary: `${latencyMs}ms latency • ${modelSummary} • Format: ${detectedFormatLabel}${keyModeNote}`,
+      message: `🟢 Connected & Verified • ${latencyMs}ms latency • ${modelSummary} • Format: ${detectedFormatLabel}${keyModeNote}`,
     };
   } catch (err: unknown) {
     if (err instanceof DOMException && err.name === 'AbortError') {
@@ -1068,6 +1400,9 @@ export async function testBackendConnection(
         ok: false,
         latencyMs,
         models: [],
+        loadedModels: [],
+        modelStatuses: {},
+        isLocalServer: isLocalBackend(config),
         detectedFormatLabel: fmt,
         diagnosticSummary: err.message,
         message: `🔴 Connection Failed • ${err.message}`,
@@ -1078,6 +1413,9 @@ export async function testBackendConnection(
       ok: false,
       latencyMs,
       models: [],
+      loadedModels: [],
+      modelStatuses: {},
+      isLocalServer: isLocalBackend(config),
       detectedFormatLabel: fmt,
       diagnosticSummary: 'Server Offline or Localhost CORS blocked',
       message:
@@ -1094,9 +1432,12 @@ export interface GenerateCompletionOptions {
   stop?: string[];
   /**
    * True when called from SmartEditor's paused-typing bottom suggestion pill.
-   * Uses `thinkingLevel: "LOW"` and `maxOutputTokens: 8192` on Gemini 3.8 / 4.
    */
   isGhostText?: boolean;
+  /**
+   * When true, strictly excludes all NSFW tags/directives from the AI context prompt.
+   */
+  hideNsfw?: boolean;
   activeTheme?: ContextTheme;
   allTags?: TagDefinition[];
   characterTags?: string[];
@@ -1133,13 +1474,17 @@ export function buildFullSystemPromptForRequest(
   systemContext: string,
   options?: GenerateCompletionOptions
 ): string {
-  const themeAndTagBlock = options?.activeTheme
-    ? buildActiveAIContextBlock(
-        options.activeTheme,
-        options.allTags || [],
-        options.characterTags || []
-      )
-    : '';
+  const themeAndTagBlock =
+    options?.activeTheme ||
+    (options?.characterTags && options.characterTags.length > 0) ||
+    options?.hideNsfw
+      ? buildActiveAIContextBlock(
+          options?.activeTheme,
+          options?.allTags || [],
+          options?.characterTags || [],
+          Boolean(options?.hideNsfw)
+        )
+      : '';
 
   return [
     'You are TavernSmith AI, an expert SillyTavern V2/V3 Character & Lorebook co-author.',
@@ -1257,7 +1602,8 @@ export async function generateCompletionDetailed(
   const maxTokens = resolveEffectiveMaxTokens(
     config,
     options?.maxTokens,
-    effectiveFormat
+    effectiveFormat,
+    Boolean(options?.isGhostText)
   );
   const temperature = options?.temperature ?? config.temperature ?? 0.75;
 
@@ -1320,13 +1666,13 @@ export async function generateCompletionDetailed(
         });
       }
 
-      // Gemini 3.8 / 4 use unified maxOutputTokens (thinking + output combined) and `thinkingLevel`
-      // (`LOW` for Ghost Text, `MEDIUM` for AI Assist/Wizard). Never send `thinkingBudget` or `"MINIMAL"`.
       const geminiMaxOutputTokens = is38Or4
         ? isGhostText
-          ? 8192
+          ? 4096
           : 16384
-        : Math.max(8192, maxTokens);
+        : isGhostText
+          ? Math.max(1024, maxTokens)
+          : Math.max(4096, maxTokens);
 
       const buildGenerationConfig = (includeThinkingConfig: boolean) => {
         const genCfg: Record<string, unknown> = {
@@ -1370,7 +1716,7 @@ export async function generateCompletionDetailed(
               generationConfig: buildGenerationConfig(includeThinkingConfig),
             };
 
-      const endpointUrl = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(geminiModel)}:generateContent?key=${encodeURIComponent(effectiveKey)}`;
+      const endpointUrl = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(geminiModel)}:generateContent`;
 
       const sendDirectRequest = async (includeThinkingConfig: boolean) => {
         let res: Response;
@@ -1380,6 +1726,7 @@ export async function generateCompletionDetailed(
             headers: {
               'Content-Type': 'application/json',
               Accept: 'application/json',
+              'x-goog-api-key': effectiveKey,
             },
             signal: abortSignal,
             body: JSON.stringify(buildDirectBody(includeThinkingConfig)),
@@ -1482,6 +1829,13 @@ export async function generateCompletionDetailed(
       }),
     });
 
+    if (!isJsonContentType(response)) {
+      throw new AIServiceError(
+        'Enter your Google Gemini API key in Options to generate directly (no local /api/gemini endpoint is active).',
+        { statusCode: response.status || 401 }
+      );
+    }
+
     const data = await response.json().catch(() => ({}));
     if (!response.ok) {
       throw new AIServiceError(
@@ -1515,7 +1869,110 @@ export async function generateCompletionDetailed(
   }
 
   const { rootUrl, v1Url } = normalizeBaseUrl(config.url);
+
+  // 2. Direct Anthropic Messages API (`POST /v1/messages`)
+  if (isAnthropicDirectBackend(config)) {
+    if (!effectiveKey) {
+      throw new AIServiceError(
+        'Anthropic API requires an API key. Enter it in Options.',
+        { statusCode: 401 }
+      );
+    }
+    if (!config.modelName || !config.modelName.trim()) {
+      throw new AIServiceError(
+        'No Anthropic model selected. Click Connect in Options to load available models.'
+      );
+    }
+    const anthropicUserContent =
+      compressedImages.length > 0
+        ? [
+            ...compressedImages.map((img) => ({
+              type: 'image',
+              source: {
+                type: 'base64',
+                media_type: 'image/jpeg',
+                data: img.base64,
+              },
+            })),
+            { type: 'text', text: prompt },
+          ]
+        : prompt;
+
+    let anthropicRes: Response;
+    try {
+      anthropicRes = await fetch(`${v1Url}/messages`, {
+        method: 'POST',
+        headers: buildAnthropicHeaders(effectiveKey),
+        signal: abortSignal,
+        body: JSON.stringify({
+          model: config.modelName.trim(),
+          max_tokens: maxTokens,
+          temperature,
+          system: fullSystemPrompt,
+          messages: [{ role: 'user', content: anthropicUserContent }],
+          ...(options?.stop && options.stop.length > 0
+            ? { stop_sequences: options.stop }
+            : {}),
+        }),
+      });
+    } catch (networkErr: unknown) {
+      if (networkErr instanceof DOMException && networkErr.name === 'AbortError') {
+        throw networkErr;
+      }
+      throw new AIServiceError(
+        `Network error reaching Anthropic API: ${networkErr instanceof Error ? networkErr.message : 'Request blocked'}`,
+        { isCorsOrNetworkError: true }
+      );
+    }
+
+    const anthropicData = await anthropicRes.json().catch(() => ({}));
+    if (!anthropicRes.ok) {
+      throw new AIServiceError(
+        anthropicData?.error?.message ||
+          `Anthropic API returned HTTP ${anthropicRes.status}: ${anthropicRes.statusText || 'Generation failed'}`,
+        { statusCode: anthropicRes.status }
+      );
+    }
+
+    const blocks = Array.isArray(anthropicData?.content) ? anthropicData.content : [];
+    const textParts: string[] = [];
+    const thinkParts: string[] = [];
+    for (const block of blocks as Array<{
+      type?: string;
+      text?: string;
+      thinking?: string;
+    }>) {
+      if (block?.type === 'thinking' && typeof block.thinking === 'string') {
+        thinkParts.push(block.thinking);
+      } else if (block?.type === 'text' && typeof block.text === 'string') {
+        textParts.push(block.text);
+      }
+    }
+
+    const parsedAnthropic = extractThinkingAndCleanContent(
+      textParts.join(''),
+      thinkParts.join('\n\n') || undefined
+    );
+    if (!parsedAnthropic.content) {
+      throw new AIServiceError(
+        parsedAnthropic.reasoning
+          ? 'Claude consumed output tokens inside thinking blocks without emitting a final reply.'
+          : 'Anthropic returned an empty response.',
+        { statusCode: 200 }
+      );
+    }
+
+    return {
+      content: parsedAnthropic.content,
+      reasoning: parsedAnthropic.reasoning,
+      detectedFormat: 'claude_chatml',
+      sentSystemPrompt: fullSystemPrompt,
+      usedVisionContext: compressedImages.length > 0,
+    };
+  }
+
   const headers = buildAuthHeaders(effectiveKey);
+  const resolvedModelName = (config.modelName || '').trim() || 'local-model';
 
   const mergedPromptText = `[SYSTEM INSTRUCTIONS]\n${fullSystemPrompt}\n\n[USER REQUEST]\n${prompt}`;
 
@@ -1570,13 +2027,13 @@ export async function generateCompletionDetailed(
   const primaryPayload =
     effectiveFormat === 'gemma'
       ? {
-          model: config.modelName || 'local-model',
+          model: resolvedModelName,
           messages: primaryMessages,
           temperature,
           max_tokens: maxTokens,
         }
       : {
-          model: config.modelName || 'local-model',
+          model: resolvedModelName,
           messages: primaryMessages,
           temperature,
           max_tokens: maxTokens,
@@ -1598,7 +2055,7 @@ export async function generateCompletionDetailed(
           ...(options?.stop ? { stop_sequence: options.stop } : {}),
         }),
       });
-      if (koboldRes.ok) {
+      if (koboldRes.ok && !isHtmlResponse(koboldRes)) {
         const koboldData = await koboldRes.json().catch(() => ({}));
         const rawText =
           koboldData?.results?.[0]?.text ?? koboldData?.text ?? '';
@@ -1644,7 +2101,7 @@ export async function generateCompletionDetailed(
         }),
       });
 
-      if (fallbackResponse.ok) {
+      if (fallbackResponse.ok && !isHtmlResponse(fallbackResponse)) {
         const fallbackData = await fallbackResponse.json().catch(() => ({}));
         const fallbackText =
           fallbackData?.results?.[0]?.text ?? fallbackData?.text ?? '';
@@ -1675,6 +2132,12 @@ export async function generateCompletionDetailed(
   }
 
   if (chatResponse.ok) {
+    if (isHtmlResponse(chatResponse)) {
+      throw new AIServiceError(
+        `AI endpoint (${v1Url}/chat/completions) returned HTML instead of a JSON completion response.`,
+        { statusCode: chatResponse.status }
+      );
+    }
     const data = await chatResponse.json().catch(() => ({}));
     const { result, hadReasoningOnly } = parseChatCompletionData(
       data,
@@ -1703,14 +2166,14 @@ export async function generateCompletionDetailed(
         headers,
         signal: abortSignal,
         body: JSON.stringify({
-          model: config.modelName || 'local-model',
+          model: resolvedModelName,
           messages: systemMergedUserMessages,
           temperature,
           max_tokens: maxTokens,
         }),
       });
 
-      if (retryResponse.ok) {
+      if (retryResponse.ok && !isHtmlResponse(retryResponse)) {
         const retryData = await retryResponse.json().catch(() => ({}));
         const { result: retryResult, hadReasoningOnly } = parseChatCompletionData(
           retryData,
@@ -1745,14 +2208,14 @@ export async function generateCompletionDetailed(
         headers,
         signal: abortSignal,
         body: JSON.stringify({
-          model: config.modelName || 'local-model',
+          model: resolvedModelName,
           messages: textOnlyMessages,
           temperature,
           max_tokens: maxTokens,
         }),
       });
 
-      if (textOnlyRetryRes.ok) {
+      if (textOnlyRetryRes.ok && !isHtmlResponse(textOnlyRetryRes)) {
         const textOnlyData = await textOnlyRetryRes.json().catch(() => ({}));
         const { result: textOnlyParsed, hadReasoningOnly } =
           parseChatCompletionData(
@@ -1785,13 +2248,13 @@ export async function generateCompletionDetailed(
           headers,
           signal: abortSignal,
           body: JSON.stringify({
-            model: config.modelName || 'local-model',
+            model: resolvedModelName,
             messages: textOnlySystemMergedMessages,
             temperature,
             max_tokens: maxTokens,
           }),
         });
-        if (mergedTextOnlyRes.ok) {
+        if (mergedTextOnlyRes.ok && !isHtmlResponse(mergedTextOnlyRes)) {
           const mergedTextData = await mergedTextOnlyRes.json().catch(() => ({}));
           const { result: mergedTextParsed, hadReasoningOnly } =
             parseChatCompletionData(
@@ -1836,7 +2299,7 @@ export async function generateCompletionDetailed(
       }),
     });
 
-    if (fallbackResponse.ok) {
+    if (fallbackResponse.ok && !isHtmlResponse(fallbackResponse)) {
       const fallbackData = await fallbackResponse.json().catch(() => ({}));
       const fallbackText =
         fallbackData?.results?.[0]?.text ?? fallbackData?.text ?? '';
@@ -1881,8 +2344,16 @@ export async function generateCompletionStream(
   abortSignal?: AbortSignal,
   options?: GenerateCompletionOptions
 ): Promise<string> {
+  const effectiveFormat = resolveEffectiveFormat(config);
   const fullSystemPrompt = buildFullSystemPromptForRequest(systemContext, options);
   const effectiveKey = await resolveEffectiveApiKey(config);
+  const maxTokens = resolveEffectiveMaxTokens(
+    config,
+    options?.maxTokens,
+    effectiveFormat,
+    Boolean(options?.isGhostText)
+  );
+  const temperature = options?.temperature ?? config.temperature ?? 0.75;
   const streamHeaders: Record<string, string> = {
     'Content-Type': 'application/json',
     Accept: 'text/event-stream',
@@ -1899,11 +2370,14 @@ export async function generateCompletionStream(
       model: normalizeGeminiModelId(config.modelName),
       prompt,
       systemInstruction: fullSystemPrompt,
+      temperature,
+      maxTokens,
+      stopSequences: options?.stop,
       ...(effectiveKey ? { apiKey: effectiveKey } : {}),
     }),
   });
 
-  if (!response.ok || !response.body) {
+  if (!response.ok || !response.body || isHtmlResponse(response)) {
     const errData = await response.json().catch(() => ({}));
     throw new AIServiceError(
       errData?.error || `Streaming request failed (HTTP ${response.status})`,
@@ -1916,30 +2390,39 @@ export async function generateCompletionStream(
   let accumulated = '';
   let buffer = '';
 
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
-    const lines = buffer.split('\n');
-    buffer = lines.pop() ?? '';
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop() ?? '';
 
-    for (const line of lines) {
-      const trimmed = line.trim();
-      if (!trimmed.startsWith('data:')) continue;
-      const jsonStr = trimmed.slice(5).trim();
-      if (!jsonStr) continue;
-      try {
-        const payload = JSON.parse(jsonStr);
-        if (payload.error) {
-          throw new AIServiceError(payload.error);
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed.startsWith('data:')) continue;
+        const jsonStr = trimmed.slice(5).trim();
+        if (!jsonStr) continue;
+        try {
+          const payload = JSON.parse(jsonStr);
+          if (payload.error) {
+            throw new AIServiceError(payload.error);
+          }
+          if (typeof payload.text === 'string' && payload.text) {
+            accumulated += payload.text;
+            onChunk(payload.text);
+          }
+        } catch (e) {
+          if (e instanceof AIServiceError) throw e;
         }
-        if (typeof payload.text === 'string' && payload.text) {
-          accumulated += payload.text;
-          onChunk(payload.text);
-        }
-      } catch (e) {
-        if (e instanceof AIServiceError) throw e;
       }
+    }
+  } finally {
+    await reader.cancel().catch(() => {});
+    try {
+      reader.releaseLock();
+    } catch {
+      // Ignore already released reader
     }
   }
 

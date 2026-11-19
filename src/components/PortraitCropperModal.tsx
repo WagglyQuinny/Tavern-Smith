@@ -53,11 +53,16 @@ export const PortraitCropperModal: React.FC<PortraitCropperModalProps> = ({
   } | null>(null);
   const imageObjRef = useRef<HTMLImageElement | null>(null);
   const previewCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const zoomRef = useRef<number>(zoom);
+  zoomRef.current = zoom;
   const [imageLoaded, setImageLoaded] = useState<boolean>(false);
+  const [cropError, setCropError] = useState<string | null>(null);
 
-  // Load HTMLImageElement once
+  // Load HTMLImageElement once per imageSrc
   useEffect(() => {
     let active = true;
+    setImageLoaded(false);
+    setCropError(null);
     const img = new Image();
     img.crossOrigin = 'anonymous';
     img.onload = () => {
@@ -68,6 +73,8 @@ export const PortraitCropperModal: React.FC<PortraitCropperModalProps> = ({
     img.onerror = () => {
       if (!active) return;
       imageObjRef.current = null;
+      setImageLoaded(false);
+      setCropError('Could not decode this portrait image for cropping.');
     };
     img.src = imageSrc;
     return () => {
@@ -158,11 +165,30 @@ export const PortraitCropperModal: React.FC<PortraitCropperModalProps> = ({
     ctx.stroke();
   }, [imageLoaded, zoom, pan, clampPan, originalWidth, originalHeight]);
 
-  const handleZoomChange = (nextZoom: number) => {
-    const bounded = Math.max(1, Math.min(4, Number(nextZoom.toFixed(2))));
-    setZoom(bounded);
-    setPan((prev) => clampPan(prev.x, prev.y, bounded));
-  };
+  const handleZoomChange = useCallback(
+    (nextZoom: number) => {
+      const bounded = Math.max(1, Math.min(4, Number(nextZoom.toFixed(2))));
+      zoomRef.current = bounded;
+      setZoom(bounded);
+      setPan((prev) => clampPan(prev.x, prev.y, bounded));
+    },
+    [clampPan]
+  );
+
+  // Attach native non-passive wheel listener so preventDefault() stops modal scrolling
+  useEffect(() => {
+    const canvas = previewCanvasRef.current;
+    if (!canvas) return;
+    const onNativeWheel = (e: WheelEvent) => {
+      e.preventDefault();
+      const delta = e.deltaY < 0 ? 0.12 : -0.12;
+      handleZoomChange(zoomRef.current + delta);
+    };
+    canvas.addEventListener('wheel', onNativeWheel, { passive: false });
+    return () => {
+      canvas.removeEventListener('wheel', onNativeWheel);
+    };
+  }, [handleZoomChange]);
 
   const handlePointerDown = (clientX: number, clientY: number) => {
     setIsDragging(true);
@@ -191,63 +217,71 @@ export const PortraitCropperModal: React.FC<PortraitCropperModalProps> = ({
     dragStartRef.current = null;
   };
 
-  const handleWheel = (e: React.WheelEvent<HTMLCanvasElement>) => {
-    e.preventDefault();
-    const delta = e.deltaY < 0 ? 0.12 : -0.12;
-    handleZoomChange(zoom + delta);
-  };
-
   const handleResetFraming = () => {
+    zoomRef.current = 1;
     setZoom(1);
     setPan({ x: 0, y: 0 });
   };
 
   const handleConfirmCrop = () => {
     const img = imageObjRef.current;
-    if (!img) return;
+    if (!img || !imageLoaded) return;
+    setCropError(null);
 
     const targetW = resolution === '512x768' ? 512 : 400;
     const targetH = resolution === '512x768' ? 768 : 600;
 
     const outCanvas = document.createElement('canvas');
-    outCanvas.width = targetW;
-    outCanvas.height = targetH;
-    const outCtx = outCanvas.getContext('2d');
-    if (!outCtx) return;
+    try {
+      outCanvas.width = targetW;
+      outCanvas.height = targetH;
+      const outCtx = outCanvas.getContext('2d');
+      if (!outCtx) {
+        setCropError('Canvas 2D context unavailable in this browser.');
+        return;
+      }
 
-    const natW = img.naturalWidth || originalWidth || 512;
-    const natH = img.naturalHeight || originalHeight || 768;
+      const natW = img.naturalWidth || originalWidth || 512;
+      const natH = img.naturalHeight || originalHeight || 768;
 
-    const baseScale = Math.max(
-      PREVIEW_WIDTH / natW,
-      PREVIEW_HEIGHT / natH
-    );
-    const effectivePreviewScale = baseScale * zoom;
+      const baseScale = Math.max(
+        PREVIEW_WIDTH / natW,
+        PREVIEW_HEIGHT / natH
+      );
+      const effectivePreviewScale = baseScale * zoom;
 
-    const clamped = clampPan(pan.x, pan.y, zoom);
-    const previewDrawX =
-      (PREVIEW_WIDTH - natW * effectivePreviewScale) / 2 + clamped.x;
-    const previewDrawY =
-      (PREVIEW_HEIGHT - natH * effectivePreviewScale) / 2 + clamped.y;
+      const clamped = clampPan(pan.x, pan.y, zoom);
+      const previewDrawX =
+        (PREVIEW_WIDTH - natW * effectivePreviewScale) / 2 + clamped.x;
+      const previewDrawY =
+        (PREVIEW_HEIGHT - natH * effectivePreviewScale) / 2 + clamped.y;
 
-    // Map preview coordinates to target output resolution
-    const ratio = targetW / PREVIEW_WIDTH;
-    outCtx.fillStyle = '#09090b';
-    outCtx.fillRect(0, 0, targetW, targetH);
-    outCtx.imageSmoothingEnabled = true;
-    outCtx.imageSmoothingQuality = 'high';
-    outCtx.drawImage(
-      img,
-      previewDrawX * ratio,
-      previewDrawY * ratio,
-      natW * effectivePreviewScale * ratio,
-      natH * effectivePreviewScale * ratio
-    );
+      // Map preview coordinates to target output resolution
+      const ratio = targetW / PREVIEW_WIDTH;
+      outCtx.fillStyle = '#09090b';
+      outCtx.fillRect(0, 0, targetW, targetH);
+      outCtx.imageSmoothingEnabled = true;
+      outCtx.imageSmoothingQuality = 'high';
+      outCtx.drawImage(
+        img,
+        previewDrawX * ratio,
+        previewDrawY * ratio,
+        natW * effectivePreviewScale * ratio,
+        natH * effectivePreviewScale * ratio
+      );
 
-    const pngDataUrl = outCanvas.toDataURL('image/png');
-    outCanvas.width = 0;
-    outCanvas.height = 0;
-    onApplyCrop(pngDataUrl, targetW, targetH);
+      const pngDataUrl = outCanvas.toDataURL('image/png');
+      onApplyCrop(pngDataUrl, targetW, targetH);
+    } catch (err: unknown) {
+      setCropError(
+        err instanceof Error
+          ? err.message
+          : 'Failed to export cropped portrait image.'
+      );
+    } finally {
+      outCanvas.width = 0;
+      outCanvas.height = 0;
+    }
   };
 
   const currentRatio =
@@ -297,6 +331,12 @@ export const PortraitCropperModal: React.FC<PortraitCropperModalProps> = ({
           </button>
         </div>
 
+        {cropError && (
+          <div className="rounded-lg border border-rose-500/40 bg-rose-500/10 px-3 py-2 text-xs text-rose-700 dark:text-rose-300">
+            {cropError}
+          </div>
+        )}
+
         {/* Cropper Body Grid */}
         <div
           style={{
@@ -328,8 +368,8 @@ export const PortraitCropperModal: React.FC<PortraitCropperModalProps> = ({
                   if (t) handlePointerMove(t.clientX, t.clientY);
                 }}
                 onTouchEnd={handlePointerUp}
-                onWheel={handleWheel}
-                className={`block select-none ${
+                onTouchCancel={handlePointerUp}
+                className={`block select-none touch-none ${
                   isDragging ? 'cursor-grabbing' : 'cursor-grab'
                 }`}
               />

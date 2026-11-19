@@ -52,8 +52,9 @@ jobs:
 
       - name: Generate Zero-Dependency Local Disk Servers (server.cjs + server.py) & Launchers Inside dist/
         run: |
-          sed 's/^          //' << 'EOF' > dist/server.cjs
+          cat << 'EOF' > dist/server.cjs
           #!/usr/bin/env node
+          const crypto = require('crypto');
           const http = require('http');
           const fs = require('fs');
           const path = require('path');
@@ -62,7 +63,10 @@ jobs:
           const HOST = '127.0.0.1';
           const ROOT_DIR = __dirname;
           const META_FILENAME = '_tavernsmith_meta.json';
-          const VAULT_FILENAME = '_tavernsmith_vault.enc';
+          const LEGACY_VAULT_FILENAME = '_tavernsmith_vault.enc';
+          const APP_VAULT_DIRNAME = '.tavernsmith-app';
+          const APP_VAULT_FILENAME = 'credentials.vault.enc';
+          const APP_VAULT_KEY_FILENAME = 'vault.key';
 
           const MAX_BODY_BYTES = 128 * 1024 * 1024;
           const MIME_TYPES = {
@@ -97,54 +101,100 @@ jobs:
             }
           }
 
-          function isPathInsideWorkspace(rootDir, candidatePath) {
-            const rel = path.relative(rootDir, candidatePath);
-            return rel !== '' && !rel.startsWith('..') && !path.isAbsolute(rel);
-          }
-
-          function hasWorkspaceConfinedAncestor(rootDir, candidatePath) {
-            let probe = candidatePath;
-            while (!fs.existsSync(probe)) {
-              const parent = path.dirname(probe);
-              if (parent === probe) break;
-              probe = parent;
-            }
+          function isFileConfinedInDir(dirPath, candidatePath) {
             try {
-              const realAncestor = fs.existsSync(probe) ? fs.realpathSync(probe) : probe;
-              const rel = path.relative(rootDir, realAncestor);
-              return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel));
+              const realDir = fs.realpathSync(dirPath);
+              const realCandidate = fs.realpathSync(candidatePath);
+              const rel = path.relative(realDir, realCandidate);
+              return rel !== '' && !rel.startsWith('..') && !path.isAbsolute(rel);
             } catch {
               return false;
             }
           }
 
-          function resolveSavesRoot(customSavePath) {
-            const workspaceRoot = getCanonicalWorkspaceRoot();
-            const defaultPath = path.join(workspaceRoot, 'Saves');
-            const trimmed = (customSavePath || '').trim();
-            const useCustom =
-              trimmed &&
-              trimmed !== './Saves' &&
-              trimmed !== './Saves/' &&
-              trimmed !== '/Saves/';
+          function isLocalHostname(hostname) {
+            const clean = String(hostname || '')
+              .trim()
+              .toLowerCase()
+              .replace(/^\[|\]$/g, '');
+            return clean === 'localhost' || clean === '127.0.0.1' || clean === '::1';
+          }
 
-            let resolvedPath = defaultPath;
-            let diskRoot = './Saves/';
+          function isLocalHostHeader(hostHeader) {
+            if (!hostHeader || typeof hostHeader !== 'string') return false;
+            try {
+              const parsed = new URL(`http://${hostHeader.trim()}`);
+              return isLocalHostname(parsed.hostname);
+            } catch {
+              return false;
+            }
+          }
 
-            if (useCustom) {
-              const candidate = path.resolve(workspaceRoot, trimmed);
-              if (
-                isPathInsideWorkspace(workspaceRoot, candidate) &&
-                hasWorkspaceConfinedAncestor(workspaceRoot, candidate)
-              ) {
-                resolvedPath = candidate;
-                const normalizedRel = path
-                  .relative(workspaceRoot, candidate)
-                  .replace(/\\/g, '/')
-                  .replace(/\/+$/, '');
-                diskRoot = `./${normalizedRel}/`;
+          function validateLocalApiRequest(req, requireJsonContentType) {
+            const hostHeader = req.headers.host;
+            if (!isLocalHostHeader(hostHeader)) {
+              return {
+                ok: false,
+                status: 403,
+                error: 'Blocked request with non-local Host header.',
+              };
+            }
+
+            const secFetchSite = String(req.headers['sec-fetch-site'] || '')
+              .trim()
+              .toLowerCase();
+            if (secFetchSite && secFetchSite !== 'same-origin' && secFetchSite !== 'none') {
+              return {
+                ok: false,
+                status: 403,
+                error: 'Blocked cross-site request to local TavernSmith API.',
+              };
+            }
+
+            const originHeader = req.headers.origin;
+            if (typeof originHeader === 'string' && originHeader.trim()) {
+              try {
+                const originUrl = new URL(originHeader.trim());
+                if (
+                  (originUrl.protocol !== 'http:' && originUrl.protocol !== 'https:') ||
+                  !isLocalHostname(originUrl.hostname) ||
+                  originUrl.host.toLowerCase() !== String(hostHeader).trim().toLowerCase()
+                ) {
+                  return {
+                    ok: false,
+                    status: 403,
+                    error: 'Blocked cross-origin request to local TavernSmith API.',
+                  };
+                }
+              } catch {
+                return {
+                  ok: false,
+                  status: 403,
+                  error: 'Blocked request with malformed Origin header.',
+                };
               }
             }
+
+            if (requireJsonContentType) {
+              const contentType = String(req.headers['content-type'] || '')
+                .trim()
+                .toLowerCase();
+              if (!contentType.startsWith('application/json')) {
+                return {
+                  ok: false,
+                  status: 415,
+                  error: 'POST requests to local APIs must use Content-Type: application/json.',
+                };
+              }
+            }
+
+            return { ok: true };
+          }
+
+          function resolveSavesRoot() {
+            const workspaceRoot = getCanonicalWorkspaceRoot();
+            const resolvedPath = path.join(workspaceRoot, 'Saves');
+            const diskRoot = './Saves/';
 
             const charsDir = path.join(resolvedPath, 'Characters');
             const loreDir = path.join(resolvedPath, 'Lorebooks');
@@ -158,6 +208,38 @@ jobs:
             fs.mkdirSync(tagsDir, { recursive: true });
 
             return { diskRoot, resolvedPath, charsDir, loreDir, themesDir, tagsDir };
+          }
+
+          function resolveAppVaultPaths() {
+            const workspaceRoot = getCanonicalWorkspaceRoot();
+            const appVaultDir = path.join(workspaceRoot, APP_VAULT_DIRNAME);
+            fs.mkdirSync(appVaultDir, { recursive: true, mode: 0o700 });
+            return {
+              appVaultDir,
+              vaultFilePath: path.join(appVaultDir, APP_VAULT_FILENAME),
+              keyFilePath: path.join(appVaultDir, APP_VAULT_KEY_FILENAME),
+              legacyVaultPath: path.join(workspaceRoot, 'Saves', LEGACY_VAULT_FILENAME),
+            };
+          }
+
+          function readOrCreateAppVaultKey(keyFilePath) {
+            try {
+              if (fs.existsSync(keyFilePath)) {
+                const existing = fs.readFileSync(keyFilePath, 'utf8').trim();
+                if (existing.length >= 32) {
+                  return existing;
+                }
+              }
+            } catch {}
+            const generated = crypto.randomBytes(32).toString('base64');
+            fs.writeFileSync(keyFilePath, `${generated}\n`, {
+              encoding: 'utf8',
+              mode: 0o600,
+            });
+            try {
+              fs.chmodSync(keyFilePath, 0o600);
+            } catch {}
+            return generated;
           }
 
           function inspectDiskJsonFile(fullPath) {
@@ -218,13 +300,69 @@ jobs:
             }
           }
 
+          function readAppVaultStateOnDisk() {
+            const { vaultFilePath, keyFilePath, legacyVaultPath } = resolveAppVaultPaths();
+            const appKey = readOrCreateAppVaultKey(keyFilePath);
+            let vault = null;
+            let legacyVault = null;
+
+            if (fs.existsSync(vaultFilePath)) {
+              const inspected = inspectDiskJsonFile(vaultFilePath);
+              if (inspected.ok) {
+                vault = inspected.parsed;
+              }
+            }
+
+            if (!vault && fs.existsSync(legacyVaultPath)) {
+              const inspectedLegacy = inspectDiskJsonFile(legacyVaultPath);
+              if (inspectedLegacy.ok) {
+                legacyVault = inspectedLegacy.parsed;
+              }
+            }
+
+            return {
+              ok: true,
+              storagePath: `./${APP_VAULT_DIRNAME}/`,
+              appKey,
+              vault,
+              legacyVault,
+            };
+          }
+
+          function saveAppVaultStateOnDisk(body) {
+            const { vaultFilePath, keyFilePath, legacyVaultPath } = resolveAppVaultPaths();
+            readOrCreateAppVaultKey(keyFilePath);
+
+            if (body && body.vault && typeof body.vault === 'object' && !Array.isArray(body.vault)) {
+              fs.writeFileSync(vaultFilePath, JSON.stringify(body.vault, null, 2), {
+                encoding: 'utf8',
+                mode: 0o600,
+              });
+              try {
+                fs.chmodSync(vaultFilePath, 0o600);
+              } catch {}
+            }
+
+            if (body && body.removeLegacy === true && fs.existsSync(legacyVaultPath)) {
+              try {
+                fs.unlinkSync(legacyVaultPath);
+              } catch {}
+            }
+
+            return {
+              ok: true,
+              storagePath: `./${APP_VAULT_DIRNAME}/`,
+              saved: true,
+            };
+          }
+
           function pruneValidOrphanJsonFiles(targetDir, writtenFilesLower) {
             try {
               for (const fileName of fs.readdirSync(targetDir)) {
                 if (!fileName.toLowerCase().endsWith('.json')) continue;
                 if (!writtenFilesLower.has(fileName.toLowerCase())) {
                   const orphanPath = path.join(targetDir, fileName);
-                  if (fs.existsSync(orphanPath)) {
+                  if (fs.existsSync(orphanPath) && isFileConfinedInDir(targetDir, orphanPath)) {
                     const inspected = inspectDiskJsonFile(orphanPath);
                     if (inspected.ok) {
                       fs.unlinkSync(orphanPath);
@@ -285,16 +423,15 @@ jobs:
             return candidate;
           }
 
-          function scanSavesDirectoryOnDisk(customSavePath) {
+          function scanSavesDirectoryOnDisk() {
             const { diskRoot, resolvedPath, charsDir, loreDir, themesDir, tagsDir } =
-              resolveSavesRoot(customSavePath);
+              resolveSavesRoot();
 
             const characters = [];
             const lorebooks = [];
             const themes = [];
             const tags = [];
             let meta = null;
-            let vault = null;
             const files = [];
 
             if (fs.existsSync(charsDir)) {
@@ -305,6 +442,7 @@ jobs:
 
               for (const entry of charEntries) {
                 const fullPath = path.join(charsDir, entry.name);
+                if (!isFileConfinedInDir(charsDir, fullPath)) continue;
                 const inspected = inspectDiskJsonFile(fullPath);
                 if (!inspected.ok) {
                   files.push({
@@ -346,6 +484,7 @@ jobs:
 
               for (const entry of loreEntries) {
                 const fullPath = path.join(loreDir, entry.name);
+                if (!isFileConfinedInDir(loreDir, fullPath)) continue;
                 const inspected = inspectDiskJsonFile(fullPath);
                 if (!inspected.ok) {
                   files.push({
@@ -388,6 +527,7 @@ jobs:
 
               for (const entry of themeEntries) {
                 const fullPath = path.join(themesDir, entry.name);
+                if (!isFileConfinedInDir(themesDir, fullPath)) continue;
                 const inspected = inspectDiskJsonFile(fullPath);
                 if (!inspected.ok) {
                   files.push({
@@ -429,6 +569,7 @@ jobs:
 
               for (const entry of tagEntries) {
                 const fullPath = path.join(tagsDir, entry.name);
+                if (!isFileConfinedInDir(tagsDir, fullPath)) continue;
                 const inspected = inspectDiskJsonFile(fullPath);
                 if (!inspected.ok) {
                   files.push({
@@ -463,7 +604,7 @@ jobs:
             }
 
             const metaPath = path.join(resolvedPath, META_FILENAME);
-            if (fs.existsSync(metaPath)) {
+            if (fs.existsSync(metaPath) && isFileConfinedInDir(resolvedPath, metaPath)) {
               const inspected = inspectDiskJsonFile(metaPath);
               if (!inspected.ok) {
                 files.push({
@@ -491,59 +632,24 @@ jobs:
               }
             }
 
-            const vaultPath = path.join(resolvedPath, VAULT_FILENAME);
-            if (fs.existsSync(vaultPath)) {
-              const inspected = inspectDiskJsonFile(vaultPath);
-              if (!inspected.ok) {
-                files.push({
-                  id: `/${VAULT_FILENAME}`,
-                  folderPath: '/',
-                  fileName: VAULT_FILENAME,
-                  kind: 'vault',
-                  sizeBytes: inspected.sizeBytes,
-                  updatedAt: inspected.updatedAt,
-                  content: inspected.content,
-                  isCorrupted: true,
-                  corruptReason: inspected.reason,
-                });
-              } else {
-                vault = inspected.parsed;
-                files.push({
-                  id: `/${VAULT_FILENAME}`,
-                  folderPath: '/',
-                  fileName: VAULT_FILENAME,
-                  kind: 'vault',
-                  sizeBytes: inspected.sizeBytes,
-                  updatedAt: inspected.updatedAt,
-                  content: inspected.content,
-                });
-              }
-            }
-
             return {
               ok: true,
               diskRoot,
-              resolvedPath,
+              resolvedPath: diskRoot,
               characters,
               lorebooks,
               themes,
               tags,
               meta,
-              vault,
+              vault: null,
               files,
               updatedAt: new Date().toISOString(),
             };
           }
 
           function saveToSavesDirectoryOnDisk(body) {
-            const customSavePath =
-              typeof body.customSavePath === 'string'
-                ? body.customSavePath
-                : typeof body.savesDir === 'string'
-                  ? body.savesDir
-                  : undefined;
             const { resolvedPath, charsDir, loreDir, themesDir, tagsDir } =
-              resolveSavesRoot(customSavePath);
+              resolveSavesRoot();
 
             if (Array.isArray(body.characters)) {
               const usedCharTargets = new Set();
@@ -673,26 +779,12 @@ jobs:
               );
             }
 
-            if (body.vault && typeof body.vault === 'object') {
-              fs.writeFileSync(
-                path.join(resolvedPath, VAULT_FILENAME),
-                JSON.stringify(body.vault, null, 2),
-                'utf8'
-              );
-            }
-
-            return scanSavesDirectoryOnDisk(customSavePath);
+            return scanSavesDirectoryOnDisk();
           }
 
           function deleteFromSavesDirectoryOnDisk(body) {
-            const customSavePath =
-              typeof body.customSavePath === 'string'
-                ? body.customSavePath
-                : typeof body.savesDir === 'string'
-                  ? body.savesDir
-                  : undefined;
             const { resolvedPath, charsDir, loreDir, themesDir, tagsDir } =
-              resolveSavesRoot(customSavePath);
+              resolveSavesRoot();
 
             const rawFolder = String(body.folder || body.kind || '').toLowerCase();
 
@@ -707,18 +799,21 @@ jobs:
             if (rawFileName) candidateNames.add(path.basename(rawFileName));
             if (rawSavedFileName) candidateNames.add(path.basename(rawSavedFileName));
 
-            if (rawFolder === 'root' || rawFolder === 'meta' || rawFolder === 'vault') {
-              const allowedRootFiles = new Set([META_FILENAME, VAULT_FILENAME]);
+            if (rawFolder === 'root' || rawFolder === 'meta') {
               for (const name of candidateNames) {
-                if (!allowedRootFiles.has(name)) continue;
+                if (name !== META_FILENAME) continue;
                 const targetPath = path.join(resolvedPath, name);
-                if (fs.existsSync(targetPath)) {
+                if (fs.existsSync(targetPath) && isFileConfinedInDir(resolvedPath, targetPath)) {
                   try {
                     fs.unlinkSync(targetPath);
                   } catch {}
                 }
               }
-              return scanSavesDirectoryOnDisk(customSavePath);
+              return scanSavesDirectoryOnDisk();
+            }
+
+            if (rawFolder === 'vault') {
+              return scanSavesDirectoryOnDisk();
             }
 
             const targetDir =
@@ -732,11 +827,11 @@ jobs:
 
             let deletedAny = false;
             for (const name of candidateNames) {
-              if (!name || name === '.' || name === '..') continue;
+              if (!name || name === '.' || name === '..' || !name.toLowerCase().endsWith('.json')) continue;
               const targetPath = path.join(targetDir, name);
               const rel = path.relative(targetDir, targetPath);
               if (!rel || rel.startsWith('..') || path.isAbsolute(rel)) continue;
-              if (fs.existsSync(targetPath)) {
+              if (fs.existsSync(targetPath) && isFileConfinedInDir(targetDir, targetPath)) {
                 try {
                   fs.unlinkSync(targetPath);
                   deletedAny = true;
@@ -750,6 +845,7 @@ jobs:
                 .filter((d) => d.isFile() && d.name.toLowerCase().endsWith('.json'));
               for (const entry of entries) {
                 const fullPath = path.join(targetDir, entry.name);
+                if (!isFileConfinedInDir(targetDir, fullPath)) continue;
                 try {
                   const parsed = JSON.parse(fs.readFileSync(fullPath, 'utf8'));
                   if (extractEntityIdFromJson(parsed) === rawId) {
@@ -762,14 +858,14 @@ jobs:
 
             if (!deletedAny && rawName) {
               const sanitizedTarget = path.join(targetDir, sanitizeDiskFileName(rawName));
-              if (fs.existsSync(sanitizedTarget)) {
+              if (fs.existsSync(sanitizedTarget) && isFileConfinedInDir(targetDir, sanitizedTarget)) {
                 try {
                   fs.unlinkSync(sanitizedTarget);
                 } catch {}
               }
             }
 
-            return scanSavesDirectoryOnDisk(customSavePath);
+            return scanSavesDirectoryOnDisk();
           }
 
           function createHttpError(message, statusCode) {
@@ -801,7 +897,12 @@ jobs:
                 settled = true;
                 try {
                   const raw = Buffer.concat(chunks).toString('utf8');
-                  resolve(raw ? JSON.parse(raw) : {});
+                  const parsed = raw ? JSON.parse(raw) : {};
+                  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+                    reject(createHttpError('JSON request body must be an object', 400));
+                    return;
+                  }
+                  resolve(parsed);
                 } catch {
                   reject(createHttpError('Invalid JSON request body', 400));
                 }
@@ -819,45 +920,111 @@ jobs:
             res.statusCode = status;
             res.setHeader('Content-Type', 'application/json; charset=utf-8');
             res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+            res.setHeader('X-Content-Type-Options', 'nosniff');
+            res.setHeader('Referrer-Policy', 'no-referrer');
             res.end(body);
           }
 
-          // Ensure ./Saves/, Characters/, Lorebooks/, Themes/, and Tags/ exist on startup
+          function isBlockedStaticPath(decodedPath) {
+            const normalized = String(decodedPath || '')
+              .replace(/\\/g, '/')
+              .replace(/^\/+/, '');
+            const segments = normalized.split('/').filter(Boolean);
+            for (const seg of segments) {
+              const lower = seg.toLowerCase();
+              if (
+                lower === '..' ||
+                lower === 'saves' ||
+                lower === APP_VAULT_DIRNAME.toLowerCase() ||
+                lower === '.git' ||
+                lower === '.env' ||
+                lower.startsWith('.env.') ||
+                lower === 'server.cjs' ||
+                lower === 'server.py' ||
+                lower.endsWith('.bat') ||
+                lower.endsWith('.command') ||
+                lower.endsWith('.sh') ||
+                lower.endsWith('.ps1')
+              ) {
+                return true;
+              }
+            }
+            return false;
+          }
+
+          // Ensure ./Saves/ and ./.tavernsmith-app/ exist on startup
           resolveSavesRoot();
+          resolveAppVaultPaths();
 
           const server = http.createServer(async (req, res) => {
             try {
+              const rawUrlPath = String(req.url || '/').split('?')[0];
               const parsedUrl = new URL(req.url || '/', `http://${HOST}:${PORT}`);
               const pathname = parsedUrl.pathname;
 
-              if (req.method === 'GET' && pathname === '/api/disk/state') {
-                const customPath =
-                  parsedUrl.searchParams.get('customSavePath') ||
-                  parsedUrl.searchParams.get('savesDir') ||
-                  undefined;
-                sendJson(res, 200, scanSavesDirectoryOnDisk(customPath));
+              if (pathname.startsWith('/api/')) {
+                const requireJson =
+                  req.method === 'POST' || req.method === 'PUT' || req.method === 'PATCH';
+                const check = validateLocalApiRequest(req, requireJson);
+                if (!check.ok) {
+                  sendJson(res, check.status, { ok: false, error: check.error });
+                  return;
+                }
+
+                if (req.method === 'GET' && pathname === '/api/disk/state') {
+                  sendJson(res, 200, scanSavesDirectoryOnDisk());
+                  return;
+                }
+
+                if (req.method === 'POST' && pathname === '/api/disk/save') {
+                  const body = await readJsonRequestBody(req);
+                  sendJson(res, 200, saveToSavesDirectoryOnDisk(body));
+                  return;
+                }
+
+                if (req.method === 'POST' && pathname === '/api/disk/delete') {
+                  const body = await readJsonRequestBody(req);
+                  sendJson(res, 200, deleteFromSavesDirectoryOnDisk(body));
+                  return;
+                }
+
+                if (req.method === 'GET' && pathname === '/api/vault') {
+                  sendJson(res, 200, readAppVaultStateOnDisk());
+                  return;
+                }
+
+                if (req.method === 'POST' && pathname === '/api/vault') {
+                  const body = await readJsonRequestBody(req);
+                  sendJson(res, 200, saveAppVaultStateOnDisk(body));
+                  return;
+                }
+
+                sendJson(res, 404, { ok: false, error: 'Not found' });
                 return;
               }
 
-              if (req.method === 'POST' && pathname === '/api/disk/save') {
-                const body = await readJsonRequestBody(req);
-                sendJson(res, 200, saveToSavesDirectoryOnDisk(body));
-                return;
-              }
-
-              if (req.method === 'POST' && pathname === '/api/disk/delete') {
-                const body = await readJsonRequestBody(req);
-                sendJson(res, 200, deleteFromSavesDirectoryOnDisk(body));
-                return;
-              }
-
-              // Static file serving strictly inside ROOT_DIR (using separator-safe path.relative)
+              // Static file serving strictly inside ROOT_DIR
+              let decodedRawPath = rawUrlPath;
               let decodedPath = '/index.html';
               try {
+                decodedRawPath = decodeURIComponent(rawUrlPath);
                 decodedPath = decodeURIComponent(pathname === '/' ? '/index.html' : pathname);
               } catch {
-                decodedPath = '/index.html';
+                res.statusCode = 403;
+                res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+                res.setHeader('X-Content-Type-Options', 'nosniff');
+                res.end('Forbidden');
+                return;
               }
+
+              if (isBlockedStaticPath(decodedRawPath) || isBlockedStaticPath(decodedPath)) {
+                res.statusCode = 403;
+                res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+                res.setHeader('X-Content-Type-Options', 'nosniff');
+                res.end('Forbidden');
+                return;
+              }
+
               const relPath = decodedPath.replace(/^\/+/, '');
               const rootReal = getCanonicalWorkspaceRoot();
               let fullStaticPath = path.resolve(rootReal, relPath);
@@ -866,8 +1033,13 @@ jobs:
                 relToRoot !== '' &&
                 !relToRoot.startsWith('..') &&
                 !path.isAbsolute(relToRoot) &&
-                !relToRoot.split(path.sep).includes('Saves');
-              if (!isInsideRoot || !fs.existsSync(fullStaticPath) || fs.statSync(fullStaticPath).isDirectory()) {
+                !isBlockedStaticPath(relToRoot);
+              if (
+                !isInsideRoot ||
+                !fs.existsSync(fullStaticPath) ||
+                !isFileConfinedInDir(rootReal, fullStaticPath) ||
+                fs.statSync(fullStaticPath).isDirectory()
+              ) {
                 fullStaticPath = path.join(rootReal, 'index.html');
               }
 
@@ -875,7 +1047,19 @@ jobs:
               res.statusCode = 200;
               res.setHeader('Content-Type', MIME_TYPES[ext] || 'application/octet-stream');
               res.setHeader('Cache-Control', 'no-store');
-              fs.createReadStream(fullStaticPath).pipe(res);
+              res.setHeader('X-Content-Type-Options', 'nosniff');
+              res.setHeader('Referrer-Policy', 'no-referrer');
+              const stream = fs.createReadStream(fullStaticPath);
+              stream.on('error', () => {
+                if (!res.headersSent) {
+                  res.statusCode = 404;
+                  res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+                  res.end('Not found');
+                } else {
+                  res.end();
+                }
+              });
+              stream.pipe(res);
             } catch (err) {
               const statusCode =
                 err && typeof err.statusCode === 'number' ? err.statusCode : 500;
@@ -892,21 +1076,28 @@ jobs:
           });
           EOF
 
-          sed 's/^          //' << 'EOF' > dist/server.py
+          cat << 'EOF' > dist/server.py
           #!/usr/bin/env python3
+          import base64
           from datetime import datetime, timezone
           import http.server
           import json
           import os
           import re
+          import secrets
+          import threading
           import urllib.parse
 
           PORT = int(os.environ.get("PORT", "4173"))
           HOST = "127.0.0.1"
           ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
           META_FILENAME = "_tavernsmith_meta.json"
-          VAULT_FILENAME = "_tavernsmith_vault.enc"
+          LEGACY_VAULT_FILENAME = "_tavernsmith_vault.enc"
+          APP_VAULT_DIRNAME = ".tavernsmith-app"
+          APP_VAULT_FILENAME = "credentials.vault.enc"
+          APP_VAULT_KEY_FILENAME = "vault.key"
           MAX_BODY_BYTES = 128 * 1024 * 1024
+          DISK_LOCK = threading.Lock()
 
           def sanitize_disk_file_name(raw):
               base = os.path.basename(str(raw or "untitled"))
@@ -920,42 +1111,82 @@ jobs:
               except Exception:
                   return os.path.abspath(ROOT_DIR)
 
-          def is_path_inside_workspace(root_dir, candidate_path):
+          def is_file_confined_in_dir(dir_path, candidate_path):
               try:
-                  rel = os.path.relpath(candidate_path, root_dir)
-                  return rel != "." and not rel.startswith("..") and not os.path.isabs(rel)
+                  real_dir = os.path.realpath(dir_path)
+                  real_candidate = os.path.realpath(candidate_path)
+                  rel = os.path.relpath(real_candidate, real_dir)
+                  return rel not in ("", ".") and not rel.startswith("..") and not os.path.isabs(rel)
               except Exception:
                   return False
 
-          def has_workspace_confined_ancestor(root_dir, candidate_path):
-              probe = candidate_path
-              while not os.path.exists(probe):
-                  parent = os.path.dirname(probe)
-                  if parent == probe:
-                      break
-                  probe = parent
+          def is_local_hostname(hostname):
+              clean = str(hostname or "").strip().lower().strip("[]")
+              return clean in ("localhost", "127.0.0.1", "::1")
+
+          def is_local_host_header(host_header):
+              if not host_header or not isinstance(host_header, str):
+                  return False
               try:
-                  real_ancestor = os.path.realpath(probe) if os.path.exists(probe) else probe
-                  rel = os.path.relpath(real_ancestor, root_dir)
-                  return rel == "." or (not rel.startswith("..") and not os.path.isabs(rel))
+                  parsed = urllib.parse.urlparse(f"http://{host_header.strip()}")
+                  return is_local_hostname(parsed.hostname)
               except Exception:
                   return False
 
-          def resolve_saves_root(custom_save_path=None):
+          def validate_local_api_request(headers, require_json_content_type):
+              host_header = headers.get("Host")
+              if not is_local_host_header(host_header):
+                  return (False, 403, "Blocked request with non-local Host header.")
+
+              sec_fetch_site = (headers.get("Sec-Fetch-Site") or "").strip().lower()
+              if sec_fetch_site and sec_fetch_site not in ("same-origin", "none"):
+                  return (False, 403, "Blocked cross-site request to local TavernSmith API.")
+
+              origin_header = (headers.get("Origin") or "").strip()
+              if origin_header:
+                  try:
+                      origin_url = urllib.parse.urlparse(origin_header)
+                      if (
+                          origin_url.scheme not in ("http", "https")
+                          or not is_local_hostname(origin_url.hostname)
+                          or (origin_url.netloc or "").lower() != host_header.strip().lower()
+                      ):
+                          return (False, 403, "Blocked cross-origin request to local TavernSmith API.")
+                  except Exception:
+                      return (False, 403, "Blocked request with malformed Origin header.")
+
+              if require_json_content_type:
+                  content_type = (headers.get("Content-Type") or "").strip().lower()
+                  if not content_type.startswith("application/json"):
+                      return (False, 415, "POST requests to local APIs must use Content-Type: application/json.")
+
+              return (True, 200, "")
+
+          def is_blocked_static_path(raw_path):
+              try:
+                  decoded = urllib.parse.unquote(str(raw_path or ""))
+              except Exception:
+                  return True
+              normalized = decoded.replace("\\", "/").lstrip("/")
+              for seg in [s for s in normalized.split("/") if s]:
+                  lower = seg.lower()
+                  if (
+                      lower == ".."
+                      or lower == "saves"
+                      or lower == APP_VAULT_DIRNAME.lower()
+                      or lower == ".git"
+                      or lower == ".env"
+                      or lower.startswith(".env.")
+                      or lower in ("server.cjs", "server.py")
+                      or lower.endswith((".bat", ".command", ".sh", ".ps1"))
+                  ):
+                      return True
+              return False
+
+          def resolve_saves_root():
               workspace_root = get_canonical_workspace_root()
-              default_path = os.path.join(workspace_root, "Saves")
-              trimmed = (custom_save_path or "").strip()
-              use_custom = bool(trimmed and trimmed not in ("./Saves", "./Saves/", "/Saves/"))
-
-              resolved_path = default_path
+              resolved_path = os.path.join(workspace_root, "Saves")
               disk_root = "./Saves/"
-
-              if use_custom:
-                  candidate = os.path.abspath(os.path.join(workspace_root, trimmed))
-                  if is_path_inside_workspace(workspace_root, candidate) and has_workspace_confined_ancestor(workspace_root, candidate):
-                      resolved_path = candidate
-                      normalized_rel = os.path.relpath(candidate, workspace_root).replace("\\", "/").strip("/")
-                      disk_root = f"./{normalized_rel}/"
 
               chars_dir = os.path.join(resolved_path, "Characters")
               lore_dir = os.path.join(resolved_path, "Lorebooks")
@@ -976,6 +1207,51 @@ jobs:
                   "themesDir": themes_dir,
                   "tagsDir": tags_dir,
               }
+
+          def resolve_app_vault_paths():
+              workspace_root = get_canonical_workspace_root()
+              app_vault_dir = os.path.join(workspace_root, APP_VAULT_DIRNAME)
+              os.makedirs(app_vault_dir, mode=0o700, exist_ok=True)
+              try:
+                  os.chmod(app_vault_dir, 0o700)
+              except Exception:
+                  pass
+              return {
+                  "appVaultDir": app_vault_dir,
+                  "vaultFilePath": os.path.join(app_vault_dir, APP_VAULT_FILENAME),
+                  "keyFilePath": os.path.join(app_vault_dir, APP_VAULT_KEY_FILENAME),
+                  "legacyVaultPath": os.path.join(workspace_root, "Saves", LEGACY_VAULT_FILENAME),
+              }
+
+          def write_private_text_file(file_path, text_content):
+              flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
+              fd = os.open(file_path, flags, 0o600)
+              try:
+                  with os.fdopen(fd, "w", encoding="utf-8") as f:
+                      f.write(text_content)
+              except Exception:
+                  try:
+                      os.close(fd)
+                  except Exception:
+                      pass
+                  raise
+              try:
+                  os.chmod(file_path, 0o600)
+              except Exception:
+                  pass
+
+          def read_or_create_app_vault_key(key_file_path):
+              try:
+                  if os.path.isfile(key_file_path):
+                      with open(key_file_path, "r", encoding="utf-8") as f:
+                          existing = f.read().strip()
+                      if len(existing) >= 32:
+                          return existing
+              except Exception:
+                  pass
+              generated = base64.b64encode(secrets.token_bytes(32)).decode("ascii")
+              write_private_text_file(key_file_path, f"{generated}\n")
+              return generated
 
           def iso_from_mtime(mtime_ts):
               return datetime.fromtimestamp(mtime_ts, tz=timezone.utc).isoformat().replace("+00:00", "Z")
@@ -1034,6 +1310,54 @@ jobs:
                       "updatedAt": updated_at,
                   }
 
+          def read_app_vault_state_on_disk():
+              with DISK_LOCK:
+                  paths = resolve_app_vault_paths()
+                  app_key = read_or_create_app_vault_key(paths["keyFilePath"])
+                  vault = None
+                  legacy_vault = None
+
+                  if os.path.isfile(paths["vaultFilePath"]):
+                      inspected = inspect_disk_json_file(paths["vaultFilePath"])
+                      if inspected["ok"]:
+                          vault = inspected["parsed"]
+
+                  if vault is None and os.path.isfile(paths["legacyVaultPath"]):
+                      inspected_legacy = inspect_disk_json_file(paths["legacyVaultPath"])
+                      if inspected_legacy["ok"]:
+                          legacy_vault = inspected_legacy["parsed"]
+
+                  return {
+                      "ok": True,
+                      "storagePath": f"./{APP_VAULT_DIRNAME}/",
+                      "appKey": app_key,
+                      "vault": vault,
+                      "legacyVault": legacy_vault,
+                  }
+
+          def save_app_vault_state_on_disk(body):
+              with DISK_LOCK:
+                  paths = resolve_app_vault_paths()
+                  read_or_create_app_vault_key(paths["keyFilePath"])
+
+                  if isinstance(body.get("vault"), dict):
+                      write_private_text_file(
+                          paths["vaultFilePath"],
+                          json.dumps(body["vault"], indent=2),
+                      )
+
+                  if body.get("removeLegacy") is True and os.path.isfile(paths["legacyVaultPath"]):
+                      try:
+                          os.unlink(paths["legacyVaultPath"])
+                      except Exception:
+                          pass
+
+                  return {
+                      "ok": True,
+                      "storagePath": f"./{APP_VAULT_DIRNAME}/",
+                      "saved": True,
+                  }
+
           def prune_valid_orphan_json_files(target_dir, written_files_lower):
               try:
                   for file_name in os.listdir(target_dir):
@@ -1041,7 +1365,7 @@ jobs:
                           continue
                       if file_name.lower() not in written_files_lower:
                           orphan_path = os.path.join(target_dir, file_name)
-                          if os.path.isfile(orphan_path):
+                          if os.path.isfile(orphan_path) and is_file_confined_in_dir(target_dir, orphan_path):
                               inspected = inspect_disk_json_file(orphan_path)
                               if inspected["ok"]:
                                   os.unlink(orphan_path)
@@ -1081,14 +1405,13 @@ jobs:
               used_names_lower.add(candidate.lower())
               return candidate
 
-          def scan_saves_directory_on_disk(custom_save_path=None):
-              dirs = resolve_saves_root(custom_save_path)
+          def scan_saves_directory_on_disk():
+              dirs = resolve_saves_root()
               characters = []
               lorebooks = []
               themes = []
               tags = []
               meta = None
-              vault = None
               files = []
 
               if os.path.isdir(dirs["charsDir"]):
@@ -1096,7 +1419,7 @@ jobs:
                       if not name.lower().endswith(".json"):
                           continue
                       full_path = os.path.join(dirs["charsDir"], name)
-                      if not os.path.isfile(full_path):
+                      if not os.path.isfile(full_path) or not is_file_confined_in_dir(dirs["charsDir"], full_path):
                           continue
                       inspected = inspect_disk_json_file(full_path)
                       if not inspected["ok"]:
@@ -1134,7 +1457,7 @@ jobs:
                       if not name.lower().endswith(".json"):
                           continue
                       full_path = os.path.join(dirs["loreDir"], name)
-                      if not os.path.isfile(full_path):
+                      if not os.path.isfile(full_path) or not is_file_confined_in_dir(dirs["loreDir"], full_path):
                           continue
                       inspected = inspect_disk_json_file(full_path)
                       if not inspected["ok"]:
@@ -1173,7 +1496,7 @@ jobs:
                       if not name.lower().endswith(".json"):
                           continue
                       full_path = os.path.join(dirs["themesDir"], name)
-                      if not os.path.isfile(full_path):
+                      if not os.path.isfile(full_path) or not is_file_confined_in_dir(dirs["themesDir"], full_path):
                           continue
                       inspected = inspect_disk_json_file(full_path)
                       if not inspected["ok"]:
@@ -1209,7 +1532,7 @@ jobs:
                       if not name.lower().endswith(".json"):
                           continue
                       full_path = os.path.join(dirs["tagsDir"], name)
-                      if not os.path.isfile(full_path):
+                      if not os.path.isfile(full_path) or not is_file_confined_in_dir(dirs["tagsDir"], full_path):
                           continue
                       inspected = inspect_disk_json_file(full_path)
                       if not inspected["ok"]:
@@ -1241,7 +1564,7 @@ jobs:
                       })
 
               meta_path = os.path.join(dirs["resolvedPath"], META_FILENAME)
-              if os.path.isfile(meta_path):
+              if os.path.isfile(meta_path) and is_file_confined_in_dir(dirs["resolvedPath"], meta_path):
                   inspected = inspect_disk_json_file(meta_path)
                   if not inspected["ok"]:
                       meta = None
@@ -1268,228 +1591,199 @@ jobs:
                           "content": inspected["content"],
                       })
 
-              vault_path = os.path.join(dirs["resolvedPath"], VAULT_FILENAME)
-              if os.path.isfile(vault_path):
-                  inspected = inspect_disk_json_file(vault_path)
-                  if not inspected["ok"]:
-                      vault = None
-                      files.append({
-                          "id": f"/{VAULT_FILENAME}",
-                          "folderPath": "/",
-                          "fileName": VAULT_FILENAME,
-                          "kind": "vault",
-                          "sizeBytes": inspected["sizeBytes"],
-                          "updatedAt": inspected["updatedAt"],
-                          "content": inspected["content"],
-                          "isCorrupted": True,
-                          "corruptReason": inspected["reason"],
-                      })
-                  else:
-                      vault = inspected["parsed"]
-                      files.append({
-                          "id": f"/{VAULT_FILENAME}",
-                          "folderPath": "/",
-                          "fileName": VAULT_FILENAME,
-                          "kind": "vault",
-                          "sizeBytes": inspected["sizeBytes"],
-                          "updatedAt": inspected["updatedAt"],
-                          "content": inspected["content"],
-                      })
-
               return {
                   "ok": True,
                   "diskRoot": dirs["diskRoot"],
-                  "resolvedPath": dirs["resolvedPath"],
+                  "resolvedPath": dirs["diskRoot"],
                   "characters": characters,
                   "lorebooks": lorebooks,
                   "themes": themes,
                   "tags": tags,
                   "meta": meta,
-                  "vault": vault,
+                  "vault": None,
                   "files": files,
                   "updatedAt": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
               }
 
           def save_to_saves_directory_on_disk(body):
-              custom_save_path = body.get("customSavePath") or body.get("savesDir")
-              dirs = resolve_saves_root(custom_save_path)
+              with DISK_LOCK:
+                  dirs = resolve_saves_root()
 
-              if isinstance(body.get("characters"), list):
-                  used_char_targets = set()
-                  written_char_files = set()
-                  for item in body["characters"]:
-                      if not isinstance(item, dict):
-                          continue
-                      payload = item.get("payload") if isinstance(item.get("payload"), dict) else item
-                      if payload.get("_tavernsmithType") == "lorebook":
-                          continue
-                      data_node = payload.get("data") if isinstance(payload.get("data"), dict) else {}
-                      raw_name = item.get("fileName") or data_node.get("name") or payload.get("name") or "untitled"
-                      target_file = reserve_unique_disk_file_name(raw_name, used_char_targets)
-                      if isinstance(item.get("content"), str):
-                          out_content = item["content"]
-                      else:
-                          out_obj = dict(payload)
-                          out_obj["_tavernsmithType"] = "character"
-                          out_content = json.dumps(out_obj, indent=2)
-                      with open(os.path.join(dirs["charsDir"], target_file), "w", encoding="utf-8") as f:
-                          f.write(out_content)
-                      written_char_files.add(target_file.lower())
-                  prune_valid_orphan_json_files(dirs["charsDir"], written_char_files)
+                  if isinstance(body.get("characters"), list):
+                      used_char_targets = set()
+                      written_char_files = set()
+                      for item in body["characters"]:
+                          if not isinstance(item, dict):
+                              continue
+                          payload = item.get("payload") if isinstance(item.get("payload"), dict) else item
+                          if payload.get("_tavernsmithType") == "lorebook":
+                              continue
+                          data_node = payload.get("data") if isinstance(payload.get("data"), dict) else {}
+                          raw_name = item.get("fileName") or data_node.get("name") or payload.get("name") or "untitled"
+                          target_file = reserve_unique_disk_file_name(raw_name, used_char_targets)
+                          if isinstance(item.get("content"), str):
+                              out_content = item["content"]
+                          else:
+                              out_obj = dict(payload)
+                              out_obj["_tavernsmithType"] = "character"
+                              out_content = json.dumps(out_obj, indent=2)
+                          with open(os.path.join(dirs["charsDir"], target_file), "w", encoding="utf-8") as f:
+                              f.write(out_content)
+                          written_char_files.add(target_file.lower())
+                      prune_valid_orphan_json_files(dirs["charsDir"], written_char_files)
 
-              if isinstance(body.get("lorebooks"), list):
-                  used_lore_targets = set()
-                  written_book_files = set()
-                  for item in body["lorebooks"]:
-                      if not isinstance(item, dict):
-                          continue
-                      payload = item.get("payload") if isinstance(item.get("payload"), dict) else item
-                      if payload.get("_tavernsmithType") == "character":
-                          continue
-                      raw_name = item.get("fileName") or payload.get("name") or "untitled_lorebook"
-                      target_file = reserve_unique_disk_file_name(raw_name, used_lore_targets)
-                      if isinstance(item.get("content"), str):
-                          out_content = item["content"]
-                      else:
-                          out_obj = dict(payload)
-                          out_obj["_tavernsmithType"] = "lorebook"
-                          out_content = json.dumps(out_obj, indent=2)
-                      with open(os.path.join(dirs["loreDir"], target_file), "w", encoding="utf-8") as f:
-                          f.write(out_content)
-                      written_book_files.add(target_file.lower())
-                  prune_valid_orphan_json_files(dirs["loreDir"], written_book_files)
+                  if isinstance(body.get("lorebooks"), list):
+                      used_lore_targets = set()
+                      written_book_files = set()
+                      for item in body["lorebooks"]:
+                          if not isinstance(item, dict):
+                              continue
+                          payload = item.get("payload") if isinstance(item.get("payload"), dict) else item
+                          if payload.get("_tavernsmithType") == "character":
+                              continue
+                          raw_name = item.get("fileName") or payload.get("name") or "untitled_lorebook"
+                          target_file = reserve_unique_disk_file_name(raw_name, used_lore_targets)
+                          if isinstance(item.get("content"), str):
+                              out_content = item["content"]
+                          else:
+                              out_obj = dict(payload)
+                              out_obj["_tavernsmithType"] = "lorebook"
+                              out_content = json.dumps(out_obj, indent=2)
+                          with open(os.path.join(dirs["loreDir"], target_file), "w", encoding="utf-8") as f:
+                              f.write(out_content)
+                          written_book_files.add(target_file.lower())
+                      prune_valid_orphan_json_files(dirs["loreDir"], written_book_files)
 
-              if isinstance(body.get("themes"), list):
-                  used_theme_targets = set()
-                  written_theme_files = set()
-                  for item in body["themes"]:
-                      if not isinstance(item, dict):
-                          continue
-                      payload = item.get("payload") if isinstance(item.get("payload"), dict) else item
-                      raw_name = item.get("fileName") or payload.get("name") or "custom_theme"
-                      target_file = reserve_unique_disk_file_name(raw_name, used_theme_targets)
-                      if isinstance(item.get("content"), str):
-                          out_content = item["content"]
-                      else:
-                          out_obj = dict(payload)
-                          out_obj["_tavernsmithType"] = "theme"
-                          out_content = json.dumps(out_obj)
-                      with open(os.path.join(dirs["themesDir"], target_file), "w", encoding="utf-8") as f:
-                          f.write(out_content)
-                      written_theme_files.add(target_file.lower())
-                  prune_valid_orphan_json_files(dirs["themesDir"], written_theme_files)
+                  if isinstance(body.get("themes"), list):
+                      used_theme_targets = set()
+                      written_theme_files = set()
+                      for item in body["themes"]:
+                          if not isinstance(item, dict):
+                              continue
+                          payload = item.get("payload") if isinstance(item.get("payload"), dict) else item
+                          raw_name = item.get("fileName") or payload.get("name") or "custom_theme"
+                          target_file = reserve_unique_disk_file_name(raw_name, used_theme_targets)
+                          if isinstance(item.get("content"), str):
+                              out_content = item["content"]
+                          else:
+                              out_obj = dict(payload)
+                              out_obj["_tavernsmithType"] = "theme"
+                              out_content = json.dumps(out_obj)
+                          with open(os.path.join(dirs["themesDir"], target_file), "w", encoding="utf-8") as f:
+                              f.write(out_content)
+                          written_theme_files.add(target_file.lower())
+                      prune_valid_orphan_json_files(dirs["themesDir"], written_theme_files)
 
-              if isinstance(body.get("tags"), list):
-                  used_tag_targets = set()
-                  written_tag_files = set()
-                  for item in body["tags"]:
-                      if not isinstance(item, dict):
-                          continue
-                      payload = item.get("payload") if isinstance(item.get("payload"), dict) else item
-                      raw_name = item.get("fileName") or payload.get("name") or "custom_tag"
-                      target_file = reserve_unique_disk_file_name(raw_name, used_tag_targets)
-                      if isinstance(item.get("content"), str):
-                          out_content = item["content"]
-                      else:
-                          out_obj = dict(payload)
-                          out_obj["_tavernsmithType"] = "tag"
-                          out_content = json.dumps(out_obj)
-                      with open(os.path.join(dirs["tagsDir"], target_file), "w", encoding="utf-8") as f:
-                          f.write(out_content)
-                      written_tag_files.add(target_file.lower())
-                  prune_valid_orphan_json_files(dirs["tagsDir"], written_tag_files)
+                  if isinstance(body.get("tags"), list):
+                      used_tag_targets = set()
+                      written_tag_files = set()
+                      for item in body["tags"]:
+                          if not isinstance(item, dict):
+                              continue
+                          payload = item.get("payload") if isinstance(item.get("payload"), dict) else item
+                          raw_name = item.get("fileName") or payload.get("name") or "custom_tag"
+                          target_file = reserve_unique_disk_file_name(raw_name, used_tag_targets)
+                          if isinstance(item.get("content"), str):
+                              out_content = item["content"]
+                          else:
+                              out_obj = dict(payload)
+                              out_obj["_tavernsmithType"] = "tag"
+                              out_content = json.dumps(out_obj)
+                          with open(os.path.join(dirs["tagsDir"], target_file), "w", encoding="utf-8") as f:
+                              f.write(out_content)
+                          written_tag_files.add(target_file.lower())
+                      prune_valid_orphan_json_files(dirs["tagsDir"], written_tag_files)
 
-              if isinstance(body.get("meta"), dict):
-                  with open(os.path.join(dirs["resolvedPath"], META_FILENAME), "w", encoding="utf-8") as f:
-                      f.write(json.dumps(body["meta"], indent=2))
+                  if isinstance(body.get("meta"), dict):
+                      with open(os.path.join(dirs["resolvedPath"], META_FILENAME), "w", encoding="utf-8") as f:
+                          f.write(json.dumps(body["meta"], indent=2))
 
-              if isinstance(body.get("vault"), dict):
-                  with open(os.path.join(dirs["resolvedPath"], VAULT_FILENAME), "w", encoding="utf-8") as f:
-                      f.write(json.dumps(body["vault"], indent=2))
-
-              return scan_saves_directory_on_disk(custom_save_path)
+                  return scan_saves_directory_on_disk()
 
           def delete_from_saves_directory_on_disk(body):
-              custom_save_path = body.get("customSavePath") or body.get("savesDir")
-              dirs = resolve_saves_root(custom_save_path)
+              with DISK_LOCK:
+                  dirs = resolve_saves_root()
 
-              raw_folder = str(body.get("folder") or body.get("kind") or "").lower()
+                  raw_folder = str(body.get("folder") or body.get("kind") or "").lower()
 
-              candidate_names = set()
-              raw_file_name = body.get("fileName").strip() if isinstance(body.get("fileName"), str) else ""
-              raw_saved_file_name = body.get("savedFileName").strip() if isinstance(body.get("savedFileName"), str) else ""
-              raw_name = body.get("name").strip() if isinstance(body.get("name"), str) else ""
-              raw_id = body.get("id").strip() if isinstance(body.get("id"), str) else ""
+                  candidate_names = set()
+                  raw_file_name = body.get("fileName").strip() if isinstance(body.get("fileName"), str) else ""
+                  raw_saved_file_name = body.get("savedFileName").strip() if isinstance(body.get("savedFileName"), str) else ""
+                  raw_name = body.get("name").strip() if isinstance(body.get("name"), str) else ""
+                  raw_id = body.get("id").strip() if isinstance(body.get("id"), str) else ""
 
-              if raw_file_name:
-                  candidate_names.add(os.path.basename(raw_file_name))
-              if raw_saved_file_name:
-                  candidate_names.add(os.path.basename(raw_saved_file_name))
+                  if raw_file_name:
+                      candidate_names.add(os.path.basename(raw_file_name))
+                  if raw_saved_file_name:
+                      candidate_names.add(os.path.basename(raw_saved_file_name))
 
-              if raw_folder in ("root", "meta", "vault"):
-                  allowed_root = {META_FILENAME, VAULT_FILENAME}
+                  if raw_folder in ("root", "meta"):
+                      for name in candidate_names:
+                          if name != META_FILENAME:
+                              continue
+                          target_path = os.path.join(dirs["resolvedPath"], name)
+                          if os.path.isfile(target_path) and is_file_confined_in_dir(dirs["resolvedPath"], target_path):
+                              try:
+                                  os.unlink(target_path)
+                              except Exception:
+                                  pass
+                      return scan_saves_directory_on_disk()
+
+                  if raw_folder == "vault":
+                      return scan_saves_directory_on_disk()
+
+                  if raw_folder in ("lorebooks", "lorebook"):
+                      target_dir = dirs["loreDir"]
+                  elif raw_folder in ("themes", "theme"):
+                      target_dir = dirs["themesDir"]
+                  elif raw_folder in ("tags", "tag"):
+                      target_dir = dirs["tagsDir"]
+                  else:
+                      target_dir = dirs["charsDir"]
+
+                  deleted_any = False
                   for name in candidate_names:
-                      if name not in allowed_root:
+                      if not name or name in (".", "..") or not name.lower().endswith(".json"):
                           continue
-                      target_path = os.path.join(dirs["resolvedPath"], name)
-                      if os.path.isfile(target_path):
+                      target_path = os.path.join(target_dir, name)
+                      rel = os.path.relpath(target_path, target_dir)
+                      if not rel or rel == "." or rel.startswith("..") or os.path.isabs(rel):
+                          continue
+                      if os.path.isfile(target_path) and is_file_confined_in_dir(target_dir, target_path):
                           try:
                               os.unlink(target_path)
+                              deleted_any = True
                           except Exception:
                               pass
-                  return scan_saves_directory_on_disk(custom_save_path)
 
-              if raw_folder in ("lorebooks", "lorebook"):
-                  target_dir = dirs["loreDir"]
-              elif raw_folder in ("themes", "theme"):
-                  target_dir = dirs["themesDir"]
-              elif raw_folder in ("tags", "tag"):
-                  target_dir = dirs["tagsDir"]
-              else:
-                  target_dir = dirs["charsDir"]
+                  if raw_id and os.path.isdir(target_dir):
+                      for entry_name in os.listdir(target_dir):
+                          if not entry_name.lower().endswith(".json"):
+                              continue
+                          full_path = os.path.join(target_dir, entry_name)
+                          if not os.path.isfile(full_path) or not is_file_confined_in_dir(target_dir, full_path):
+                              continue
+                          try:
+                              with open(full_path, "r", encoding="utf-8") as f:
+                                  parsed = json.load(f)
+                              if extract_entity_id_from_json(parsed) == raw_id:
+                                  os.unlink(full_path)
+                                  deleted_any = True
+                          except Exception:
+                              pass
 
-              deleted_any = False
-              for name in candidate_names:
-                  if not name or name in (".", ".."):
-                      continue
-                  target_path = os.path.join(target_dir, name)
-                  rel = os.path.relpath(target_path, target_dir)
-                  if not rel or rel == "." or rel.startswith("..") or os.path.isabs(rel):
-                      continue
-                  if os.path.isfile(target_path):
-                      try:
-                          os.unlink(target_path)
-                          deleted_any = True
-                      except Exception:
-                          pass
+                  if not deleted_any and raw_name:
+                      sanitized_target = os.path.join(target_dir, sanitize_disk_file_name(raw_name))
+                      if os.path.isfile(sanitized_target) and is_file_confined_in_dir(target_dir, sanitized_target):
+                          try:
+                              os.unlink(sanitized_target)
+                          except Exception:
+                              pass
 
-              if raw_id and os.path.isdir(target_dir):
-                  for entry_name in os.listdir(target_dir):
-                      if not entry_name.lower().endswith(".json"):
-                          continue
-                      full_path = os.path.join(target_dir, entry_name)
-                      if not os.path.isfile(full_path):
-                          continue
-                      try:
-                          with open(full_path, "r", encoding="utf-8") as f:
-                              parsed = json.load(f)
-                          if extract_entity_id_from_json(parsed) == raw_id:
-                              os.unlink(full_path)
-                              deleted_any = True
-                      except Exception:
-                          pass
-
-              if not deleted_any and raw_name:
-                  sanitized_target = os.path.join(target_dir, sanitize_disk_file_name(raw_name))
-                  if os.path.isfile(sanitized_target):
-                      try:
-                          os.unlink(sanitized_target)
-                      except Exception:
-                          pass
-
-              return scan_saves_directory_on_disk(custom_save_path)
+                  return scan_saves_directory_on_disk()
 
           resolve_saves_root()
+          resolve_app_vault_paths()
 
           class TavernSmithHandler(http.server.SimpleHTTPRequestHandler):
               def __init__(self, *args, **kwargs):
@@ -1497,7 +1791,13 @@ jobs:
 
               def end_headers(self):
                   self.send_header("Cache-Control", "no-store, no-cache, must-revalidate")
+                  self.send_header("X-Content-Type-Options", "nosniff")
+                  self.send_header("Referrer-Policy", "no-referrer")
                   super().end_headers()
+
+              def list_directory(self, path):
+                  self.send_error(404, "Directory listing disabled")
+                  return None
 
               def send_json(self, status, payload):
                   body = json.dumps(payload).encode("utf-8")
@@ -1507,17 +1807,69 @@ jobs:
                   self.end_headers()
                   self.wfile.write(body)
 
+              def _prepare_static_path(self):
+                  parsed_url = urllib.parse.urlparse(self.path)
+                  raw_path = parsed_url.path or "/"
+                  if is_blocked_static_path(raw_path):
+                      self.send_error(403, "Forbidden")
+                      return False
+
+                  root_real = get_canonical_workspace_root()
+                  rel_candidate = urllib.parse.unquote(raw_path).replace("\\", "/").lstrip("/")
+                  if not rel_candidate:
+                      self.path = "/index.html"
+                      return True
+
+                  full_candidate = os.path.abspath(os.path.join(root_real, rel_candidate))
+                  if (
+                      not os.path.isfile(full_candidate)
+                      or not is_file_confined_in_dir(root_real, full_candidate)
+                      or is_blocked_static_path(os.path.relpath(full_candidate, root_real))
+                  ):
+                      self.path = "/index.html"
+                  return True
+
+              def do_HEAD(self):
+                  parsed_url = urllib.parse.urlparse(self.path)
+                  if parsed_url.path.startswith("/api/"):
+                      self.send_error(405, "Method Not Allowed")
+                      return
+                  if not self._prepare_static_path():
+                      return
+                  return super().do_HEAD()
+
               def do_GET(self):
                   parsed_url = urllib.parse.urlparse(self.path)
-                  if parsed_url.path == "/api/disk/state":
-                      qs = urllib.parse.parse_qs(parsed_url.query)
-                      custom_path = (qs.get("customSavePath") or qs.get("savesDir") or [None])[0]
-                      self.send_json(200, scan_saves_directory_on_disk(custom_path))
+                  if parsed_url.path.startswith("/api/"):
+                      ok, status, err_msg = validate_local_api_request(self.headers, False)
+                      if not ok:
+                          self.send_json(status, {"ok": False, "error": err_msg})
+                          return
+                      if parsed_url.path == "/api/disk/state":
+                          with DISK_LOCK:
+                              self.send_json(200, scan_saves_directory_on_disk())
+                          return
+                      if parsed_url.path == "/api/vault":
+                          self.send_json(200, read_app_vault_state_on_disk())
+                          return
+                      self.send_json(404, {"ok": False, "error": "Not found"})
+                      return
+
+                  if not self._prepare_static_path():
                       return
                   return super().do_GET()
 
               def do_POST(self):
                   parsed_url = urllib.parse.urlparse(self.path)
+                  if not parsed_url.path.startswith("/api/"):
+                      self.send_json(404, {"ok": False, "error": "Not found"})
+                      return
+
+                  ok, status, err_msg = validate_local_api_request(self.headers, True)
+                  if not ok:
+                      self.send_json(status, {"ok": False, "error": err_msg})
+                      return
+
                   try:
                       length = int(self.headers.get("Content-Length", "0"))
                   except ValueError:
@@ -1547,6 +1899,10 @@ jobs:
                           self.send_json(200, delete_from_saves_directory_on_disk(body))
                           return
 
+                      if parsed_url.path == "/api/vault":
+                          self.send_json(200, save_app_vault_state_on_disk(body))
+                          return
+
                       self.send_json(404, {"ok": False, "error": "Not found"})
                   except Exception as exc:
                       self.send_json(500, {"ok": False, "error": str(exc) or "Server error"})
@@ -1560,7 +1916,7 @@ jobs:
 
           chmod +x dist/server.cjs dist/server.py
 
-          sed 's/^          //' << 'EOF' > dist/Launch-TavernSmith-Windows.bat
+          cat << 'EOF' > dist/Launch-TavernSmith-Windows.bat
           @echo off
           cd /d "%~dp0"
           setlocal
@@ -1582,7 +1938,7 @@ jobs:
           where node >nul 2>nul
           if %ERRORLEVEL% EQU 0 (
             echo Starting TavernSmith Local Disk Server via Node.js on %URL% ...
-            start "" msedge --app="%URL%" 2>nul || start "" chrome --app="%URL%" 2>nul || start "" "%URL%"
+            start "" /b cmd /c "timeout /t 2 /nobreak >nul && (start "" msedge --app="%URL%" 2>nul || start "" chrome --app="%URL%" 2>nul || start "" "%URL%")"
             node server.cjs
             goto :eof
           )
@@ -1590,7 +1946,7 @@ jobs:
           where python >nul 2>nul
           if %ERRORLEVEL% EQU 0 (
             echo Starting TavernSmith Local Disk Server via Python on %URL% ...
-            start "" msedge --app="%URL%" 2>nul || start "" chrome --app="%URL%" 2>nul || start "" "%URL%"
+            start "" /b cmd /c "timeout /t 2 /nobreak >nul && (start "" msedge --app="%URL%" 2>nul || start "" chrome --app="%URL%" 2>nul || start "" "%URL%")"
             python server.py
             goto :eof
           )
@@ -1598,7 +1954,7 @@ jobs:
           where py >nul 2>nul
           if %ERRORLEVEL% EQU 0 (
             echo Starting TavernSmith Local Disk Server via Python Launcher on %URL% ...
-            start "" msedge --app="%URL%" 2>nul || start "" chrome --app="%URL%" 2>nul || start "" "%URL%"
+            start "" /b cmd /c "timeout /t 2 /nobreak >nul && (start "" msedge --app="%URL%" 2>nul || start "" chrome --app="%URL%" 2>nul || start "" "%URL%")"
             py -3 server.py
             goto :eof
           )
@@ -1607,7 +1963,7 @@ jobs:
           pause
           EOF
 
-          sed 's/^          //' << 'EOF' > dist/Launch-TavernSmith-Mac-Linux.command
+          cat << 'EOF' > dist/Launch-TavernSmith-Mac-Linux.command
           #!/usr/bin/env bash
           cd "$(dirname "$0")" || exit 1
           PORT=4173
@@ -1647,17 +2003,21 @@ jobs:
 
           chmod +x dist/Launch-TavernSmith-Mac-Linux.command
 
-          sed 's/^          //' << 'EOF' > dist/README-PORTABLE.txt
+          cat << 'EOF' > dist/README-PORTABLE.txt
           TavernSmith — Portable Ready-to-Run Application
           ===============================================
-          100% of your Characters, Lorebooks, Custom Tags, Context Themes, Settings, and
-          AES-256-GCM Encrypted API Keys are stored directly on disk in `./Saves/`:
+          Your Characters, Lorebooks, Custom Tags, Context Themes, and Workspace Metadata
+          are stored directly on disk in `./Saves/`:
             - ./Saves/Characters/
             - ./Saves/Lorebooks/
             - ./Saves/Themes/
             - ./Saves/Tags/
             - ./Saves/_tavernsmith_meta.json
-            - ./Saves/_tavernsmith_vault.enc
+
+          Your AES-256-GCM Encrypted API Keys are stored separately outside `./Saves/` in:
+            - ./.tavernsmith-app/credentials.vault.enc
+            - ./.tavernsmith-app/vault.key
+          (API keys are never included in `./Saves/` or in workspace backup exports.)
 
           1. WINDOWS:
              Double-click "Launch-TavernSmith-Windows.bat" (No Administrator privileges required).
@@ -1675,32 +2035,46 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          node - << 'EOF'
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            TAG="${GITHUB_REF_NAME}"
+          else
+            TAG="v$(node -p "require('./package.json').version")"
+          fi
+
+          TARGET_TAG="$TAG" node - << 'EOF'
           const fs = require('fs');
           const pkg = require('./package.json');
+          const targetTag = (process.env.TARGET_TAG || `v${pkg.version}`).trim();
+          const bareVersion = targetTag.replace(/^v/i, '');
           const changelog = fs.existsSync('CHANGELOG.md')
             ? fs.readFileSync('CHANGELOG.md', 'utf8')
             : '';
 
           const downloadCallout = "> 📦 **Download Ready-to-Run App:** Click **TavernSmith-App-Portable.zip** below under Assets to download the standalone compiled application (do not download the 'Source code' archives).\n\n";
 
-          let notes = '';
-          const sections = changelog.split(/\n(?=## \[)/);
-          const firstReleaseSection = sections.find((s) => s.trim().startsWith('## ['));
-          if (firstReleaseSection) {
-            notes = firstReleaseSection.trim();
-          } else {
-            notes = `## TavernSmith v${pkg.version}\n\nUniversal Portable Release for Windows, macOS (x64 & Apple Silicon ARM), and Linux with direct ./Saves/ local disk persistence.`;
-          }
+          const sections = changelog
+            .split(/\n(?=## \[)/)
+            .map((s) => s.trim())
+            .filter((s) => s.startsWith('## ['));
+
+          const exactMatch = sections.find((s) => {
+            const m = s.match(/^## \[([^\]]+)\]/);
+            if (!m) return false;
+            const heading = m[1].trim();
+            return heading === targetTag || heading === bareVersion || heading === `v${bareVersion}`;
+          });
+
+          const firstVersioned = sections.find((s) => !/^## \[unreleased\]/i.test(s));
+          const unreleased = sections.find((s) => /^## \[unreleased\]/i.test(s));
+
+          const notes =
+            exactMatch ||
+            firstVersioned ||
+            unreleased ||
+            `## TavernSmith v${pkg.version}\n\nUniversal Portable Release for Windows, macOS (x64 & Apple Silicon ARM), and Linux with direct ./Saves/ local disk persistence.`;
 
           fs.writeFileSync('RELEASE_NOTES.md', downloadCallout + notes + '\n', 'utf8');
           EOF
-
-          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
-            TAG="${GITHUB_REF_NAME}"
-          else
-            TAG="v$(node -p "require('./package.json').version")"
-          fi
 
           echo "Publishing GitHub Release for tag: $TAG"
           if gh release view "$TAG" >/dev/null 2>&1; then

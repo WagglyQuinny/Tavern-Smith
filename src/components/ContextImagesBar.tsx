@@ -1,8 +1,14 @@
-import React, { useRef, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Image as ImageIcon, Loader2, Plus, Trash2, Upload, X } from 'lucide-react';
 import { ContextReferenceImage } from '../types';
-import { compressImageForVision, readImageFileAsDataUrl } from '../utils/cardIO';
+import {
+  compressImageForVision,
+  isAllowedRasterImageFile,
+  readImageFileAsDataUrl,
+} from '../utils/cardIO';
 import { Tooltip } from './Tooltip';
+
+const MAX_CONTEXT_IMAGES = 6;
 
 interface ContextImagesBarProps {
   images: ContextReferenceImage[];
@@ -22,45 +28,86 @@ export const ContextImagesBar: React.FC<ContextImagesBarProps> = ({
   visionSupported = true,
 }) => {
   const inputRef = useRef<HTMLInputElement | null>(null);
+  const isMountedRef = useRef(true);
   const [isDragging, setIsDragging] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
+  useEffect(() => {
+    isMountedRef.current = true;
+    return () => {
+      isMountedRef.current = false;
+    };
+  }, []);
+
   const handleFiles = async (fileList: FileList | File[] | null) => {
     if (!fileList || fileList.length === 0) return;
-    const files = Array.from(fileList).filter((f) =>
-      f.type.startsWith('image/')
-    );
+    const rawFiles = Array.from(fileList);
+    const files = rawFiles.filter((f) => isAllowedRasterImageFile(f));
+    const skippedUnsupported = rawFiles.length - files.length;
+
     if (files.length === 0) {
-      setErrorMsg('Please select or drop valid image files (PNG, JPEG, WebP).');
+      setErrorMsg(
+        'Please select or drop valid raster images (PNG, JPEG, WebP, GIF, AVIF). SVG files are blocked for security.'
+      );
       return;
     }
+
+    const remainingSlots = Math.max(0, MAX_CONTEXT_IMAGES - images.length);
+    if (remainingSlots === 0) {
+      setErrorMsg(
+        `Maximum ${MAX_CONTEXT_IMAGES} context reference images attached. Remove one to add another.`
+      );
+      return;
+    }
+
+    const filesToProcess = files.slice(0, remainingSlots);
+    const skippedForCap = files.length - filesToProcess.length;
 
     setIsProcessing(true);
     setErrorMsg(null);
     const created: ContextReferenceImage[] = [];
     try {
-      for (let i = 0; i < files.length; i += 1) {
-        const file = files[i];
+      for (let i = 0; i < filesToProcess.length; i += 1) {
+        const file = filesToProcess[i];
         const rawUrl = await readImageFileAsDataUrl(file);
         const compressed = await compressImageForVision(rawUrl, 512);
+        if (!isMountedRef.current) return;
         created.push({
           id: `ctx-img-${Date.now()}-${i}-${Math.random().toString(36).slice(2, 7)}`,
           name: file.name,
           dataUrl: compressed,
         });
       }
-      if (created.length > 0) {
+      if (isMountedRef.current && created.length > 0) {
         onAddImages(created);
       }
+      if (isMountedRef.current && (skippedUnsupported > 0 || skippedForCap > 0)) {
+        const notes: string[] = [];
+        if (skippedUnsupported > 0) {
+          notes.push(
+            `${skippedUnsupported} unsupported/SVG file${skippedUnsupported === 1 ? '' : 's'} skipped`
+          );
+        }
+        if (skippedForCap > 0) {
+          notes.push(
+            `${skippedForCap} file${skippedForCap === 1 ? '' : 's'} skipped (max ${MAX_CONTEXT_IMAGES} reference images)`
+          );
+        }
+        setErrorMsg(notes.join(' · '));
+      }
     } catch (err: unknown) {
-      setErrorMsg(
-        err instanceof Error
-          ? err.message
-          : 'Failed to process one or more context images.'
-      );
+      if (isMountedRef.current) {
+        setErrorMsg(
+          err instanceof Error
+            ? err.message
+            : 'Failed to process one or more context images.'
+        );
+      }
     } finally {
-      setIsProcessing(false);
+      if (isMountedRef.current) {
+        setIsProcessing(false);
+      }
     }
   };
 
@@ -100,7 +147,7 @@ export const ContextImagesBar: React.FC<ContextImagesBarProps> = ({
       <input
         ref={inputRef}
         type="file"
-        accept="image/png,image/jpeg,image/webp,.png,.jpg,.jpeg,.webp"
+        accept="image/png,image/jpeg,image/webp,image/gif,image/avif,.png,.jpg,.jpeg,.webp,.gif,.avif"
         multiple
         className="hidden"
         onChange={(e) => {
@@ -116,11 +163,11 @@ export const ContextImagesBar: React.FC<ContextImagesBarProps> = ({
             style={{ color: 'var(--theme-accent)' }}
           />
           <span className="text-xs font-semibold text-slate-900 dark:text-white">
-            Context-Only Reference Images ({images.length})
+            Context-Only Reference Images ({images.length}/{MAX_CONTEXT_IMAGES})
           </span>
           <Tooltip
             title="Context-Only AI Images"
-            content={`Attach outfits, expression sheets, maps, items, or moodboards for AI generation (${entityLabel} Wizard & Full Editor). Compressed to ~260 tokens each and never saved into exported .JSON/.PNG cards.`}
+            content={`Attach outfits, expression sheets, maps, items, or moodboards for AI generation (${entityLabel} Wizard & Full Editor). Up to ${MAX_CONTEXT_IMAGES} raster images compressed to ~260 tokens each and never saved into exported .JSON/.PNG cards.`}
           />
           <span className="font-mono text-[10px] text-emerald-700 dark:text-emerald-400">
             AI context only · Never saved to card
@@ -138,7 +185,7 @@ export const ContextImagesBar: React.FC<ContextImagesBarProps> = ({
         <div className="flex items-center gap-1.5 shrink-0">
           <button
             type="button"
-            disabled={isProcessing}
+            disabled={isProcessing || images.length >= MAX_CONTEXT_IMAGES}
             onClick={() => inputRef.current?.click()}
             style={{ borderColor: 'var(--theme-accent)' }}
             className="theme-hover-outline inline-flex items-center gap-1.5 rounded-lg border bg-slate-50 dark:bg-slate-950 px-2.5 py-1 text-xs font-semibold text-slate-900 dark:text-white disabled:opacity-50 cursor-pointer"
