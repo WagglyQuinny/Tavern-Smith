@@ -207,6 +207,7 @@ jobs:
             if (filePath === 'src/context/StoreContext.tsx') return 'Workspace State, Auto-Save, NSFW Helpers & Backup I/O';
             if (filePath === 'src/services/aiService.ts') return 'AI Provider Client, Live Model Scanner & Streaming Engine';
             if (filePath === 'src/utils/cryptoVault.ts') return 'App-Private AES-256-GCM API Key Vault & Legacy Migration';
+            if (filePath === 'src/utils/desktopBridge.ts') return 'Native Tauri Desktop Bridge & Local HTTP Client Adapter';
             if (filePath === 'src/utils/cardIO.ts') return 'SillyTavern PNG tEXt Chunk & JSON Card/Lorebook I/O';
             if (filePath === 'src/utils/tokenCounter.ts') return 'Token Estimator & Stat Tracker Macro Renderer';
             if (filePath === 'src/utils/tagOrder.ts') return 'Deterministic Tag Category & Context Ordering';
@@ -222,7 +223,13 @@ jobs:
             if (filePath === 'src/components/SidebarNav.tsx') return 'Collapsible Sidebar Navigation & Workspace Snapshot';
             if (filePath === 'src/views/OptionsView.tsx') return 'Options, AI Backend Controls, Vault Status & Backup Manager';
             if (filePath === 'src/views/ThemesAndTagsView.tsx') return 'Context Themes & Global Tag Manager';
-            if (filePath === '.github/workflows/release.yml') return 'Standalone Portable App Release Workflow';
+            if (filePath === 'src-tauri/tauri.conf.json') return 'Tauri v2 Native Desktop App Configuration & CSP';
+            if (filePath === 'src-tauri/Cargo.toml') return 'Tauri v2 Rust Crate Manifest & Native Dependencies';
+            if (filePath === 'src-tauri/src/storage.rs') return 'Native Rust Local ./Saves/ & App-Private Vault Storage Engine';
+            if (filePath === 'src-tauri/src/lib.rs') return 'Native Tauri IPC Commands, Dialog Exporter & Rust HTTP Client';
+            if (filePath === 'src-tauri/src/main.rs') return 'Native Desktop Entrypoint (No-CMD Windows Subsystem)';
+            if (filePath.startsWith('src-tauri/')) return 'Native Desktop App (Tauri v2 / Rust) Resource';
+            if (filePath === '.github/workflows/release.yml') return 'Native 3-OS Desktop App Release Workflow (Windows, macOS, Linux)';
             if (filePath === '.github/workflows/version-update.yml') return 'Automated Version Bump & Changelog Workflow';
             if (filePath.startsWith('.github/workflows/')) return 'GitHub Actions CI/CD Workflow';
             if (filePath.startsWith('src/components/')) return 'UI Workbench Component';
@@ -465,6 +472,38 @@ jobs:
             'utf8'
           );
 
+          const tauriConfPath = 'src-tauri/tauri.conf.json';
+          if (fs.existsSync(tauriConfPath)) {
+            const tauriConf = JSON.parse(fs.readFileSync(tauriConfPath, 'utf8'));
+            tauriConf.version = newVersion;
+            fs.writeFileSync(tauriConfPath, JSON.stringify(tauriConf, null, 2) + '\n', 'utf8');
+            console.log(`Synced ${tauriConfPath} to v${newVersion}`);
+          }
+
+          const cargoTomlPath = 'src-tauri/Cargo.toml';
+          if (fs.existsSync(cargoTomlPath)) {
+            const rawCargo = fs.readFileSync(cargoTomlPath, 'utf8');
+            let inPackageSection = false;
+            let replaced = false;
+            const updatedCargo = rawCargo
+              .split('\n')
+              .map((line) => {
+                const trimmed = line.trim();
+                if (/^\[[^\]]+\]$/.test(trimmed)) {
+                  inPackageSection = trimmed === '[package]';
+                  return line;
+                }
+                if (inPackageSection && !replaced && /^version\s*=\s*"[^"]*"/.test(trimmed)) {
+                  replaced = true;
+                  return `version = "${newVersion}"`;
+                }
+                return line;
+              })
+              .join('\n');
+            fs.writeFileSync(cargoTomlPath, updatedCargo, 'utf8');
+            console.log(`Synced ${cargoTomlPath} to v${newVersion}`);
+          }
+
           // Safely parse existing releases from src/utils/changelogData.ts using JSON.parse (zero eval / Function)
           const changelogDataPath = 'src/utils/changelogData.ts';
           let existingReleases = [];
@@ -540,9 +579,11 @@ jobs:
           TAG_NAME="${{ steps.version_step.outputs.tag_name }}"
 
           git add package.json CHANGELOG.md src/versionInfo.json src/utils/changelogData.ts
-          if [ -f package-lock.json ] && git ls-files --error-unmatch package-lock.json >/dev/null 2>&1; then
-            git add package-lock.json
-          fi
+          for optional_file in package-lock.json src-tauri/tauri.conf.json src-tauri/Cargo.toml; do
+            if [ -f "$optional_file" ] && git ls-files --error-unmatch "$optional_file" >/dev/null 2>&1; then
+              git add "$optional_file"
+            fi
+          done
           git commit -m "chore(release): ${TAG_NAME}"
           git tag -a "${TAG_NAME}" -m "Release ${TAG_NAME}"
 

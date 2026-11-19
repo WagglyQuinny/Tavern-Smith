@@ -62,6 +62,7 @@ import { AIPresetId, ModelCompatibilityFormat, SavedFileEntry } from '../types';
 import { Tooltip } from '../components/Tooltip';
 import { AppLogo } from '../components/AppLogo';
 import { triggerBrowserDownload } from '../utils/cardIO';
+import { isTauriDesktop, openDesktopSavesFolder } from '../utils/desktopBridge';
 import { APP_VERSION, CHANGELOG_RELEASES } from '../utils/changelogData';
 
 export const OptionsView: React.FC = () => {
@@ -85,6 +86,7 @@ export const OptionsView: React.FC = () => {
     unlockLegacyVault,
     resetWorkspaceToDefaults,
     lastSavedAt,
+    diskResolvedPath,
     saveAndSyncNow,
     savedFiles,
     loadSavedFileIntoWorkspace,
@@ -92,6 +94,9 @@ export const OptionsView: React.FC = () => {
     exportSaveFolderBundle,
     importSaveFolderBundle,
   } = useStore();
+
+  const activeSaveFolderDisplay = diskResolvedPath || UNIFIED_INTERNAL_ROOT;
+  const isDesktopApp = isTauriDesktop();
 
   const [modelSearchQuery, setModelSearchQuery] = useState('');
   const [showAboutModal, setShowAboutModal] = useState(false);
@@ -456,6 +461,20 @@ export const OptionsView: React.FC = () => {
     }
   };
 
+  const handleOpenSavesFolder = async () => {
+    const res = await openDesktopSavesFolder();
+    if (res.ok) {
+      setFolderStatusMessage(
+        `Opened Saves folder: ${res.path || activeSaveFolderDisplay}`
+      );
+    } else {
+      setFolderStatusMessage(
+        res.error || 'Could not open Saves folder on this system.'
+      );
+    }
+    scheduleTimer(() => setFolderStatusMessage(null), 4000);
+  };
+
   const handleScanModels = async () => {
     await connectAiBackend(aiConfig);
   };
@@ -516,7 +535,7 @@ export const OptionsView: React.FC = () => {
         </div>
       </div>
 
-      {/* SECTION 1: LOCAL DISK STORAGE (./Saves/) */}
+      {/* SECTION 1: LOCAL DISK STORAGE */}
       <div
         style={{ borderColor: 'var(--theme-accent)' }}
         className="rounded-xl border bg-white dark:bg-slate-900 p-5 space-y-5"
@@ -539,43 +558,43 @@ export const OptionsView: React.FC = () => {
             <div className="space-y-1.5 min-w-0">
               <div className="flex flex-wrap items-center gap-2">
                 <h2 className="text-sm font-bold text-slate-900 dark:text-white">
-                  Saved Files Folder (<code className="font-mono">{UNIFIED_INTERNAL_ROOT}</code>)
+                  Saved Files Folder (<code className="font-mono">{activeSaveFolderDisplay}</code>)
                 </h2>
-                <Tooltip content="All characters, lorebooks, themes, and tags live inside a single ./Saves/ directory with subfolders. API keys are encrypted and stored separately outside ./Saves/." />
+                <Tooltip content="All characters, lorebooks, themes, and tags live inside a single unified Saves directory with subfolders. API keys are encrypted and stored separately outside Saves." />
               </div>
 
               {/* Active Disk Path Badge */}
               <div className="flex flex-wrap items-center gap-2">
-                <span className="inline-flex items-center gap-1.5 rounded-md border border-emerald-500/40 bg-emerald-500/15 px-2.5 py-1 font-mono text-xs font-semibold text-emerald-700 dark:text-emerald-300">
+                <span className="inline-flex items-center gap-1.5 rounded-md border border-emerald-500/40 bg-emerald-500/15 px-2.5 py-1 font-mono text-xs font-semibold text-emerald-700 dark:text-emerald-300 break-all">
                   <HardDrive className="h-3.5 w-3.5 shrink-0" />
-                  <span>Save Folder: {UNIFIED_INTERNAL_ROOT}</span>
+                  <span>Save Folder: {activeSaveFolderDisplay}</span>
                 </span>
               </div>
 
               <p className="text-[11px] text-slate-500 dark:text-slate-400">
                 Single unified save directory with subfolders{' '}
                 <code className="font-mono font-semibold text-slate-800 dark:text-slate-200">
-                  ./Saves/Characters/
+                  Characters/
                 </code>
                 ,{' '}
                 <code className="font-mono font-semibold text-slate-800 dark:text-slate-200">
-                  ./Saves/Lorebooks/
+                  Lorebooks/
                 </code>
                 ,{' '}
                 <code className="font-mono font-semibold text-slate-800 dark:text-slate-200">
-                  ./Saves/Themes/
+                  Themes/
                 </code>
                 ,{' '}
                 <code className="font-mono font-semibold text-slate-800 dark:text-slate-200">
-                  ./Saves/Tags/
+                  Tags/
                 </code>
                 , and{' '}
                 <code className="font-mono font-semibold text-slate-800 dark:text-slate-200">
-                  ./Saves/{META_FILENAME}
+                  {META_FILENAME}
                 </code>
                 . Encrypted API keys are stored separately in{' '}
                 <code className="font-mono font-semibold text-slate-800 dark:text-slate-200">
-                  ./.tavernsmith-app/
+                  {vaultStatus.storagePath}
                 </code>{' '}
                 and never included in backups.
               </p>
@@ -588,7 +607,7 @@ export const OptionsView: React.FC = () => {
             </div>
           </div>
 
-          {/* Action Toolbar: Sync, Import & Export Backup */}
+          {/* Action Toolbar: Open Folder (desktop), Sync, Import & Export Backup */}
           <div className="flex flex-wrap items-center gap-2 shrink-0">
             <input
               ref={backupImportInputRef}
@@ -601,11 +620,25 @@ export const OptionsView: React.FC = () => {
                 e.target.value = '';
               }}
             />
+            {isDesktopApp && (
+              <button
+                type="button"
+                onClick={() => void handleOpenSavesFolder()}
+                title={`Open ${activeSaveFolderDisplay} in your OS file manager`}
+                className="theme-hover-outline flex items-center gap-1.5 rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-950 px-3 py-1.5 text-xs font-medium text-slate-700 dark:text-slate-200 cursor-pointer"
+              >
+                <ExternalLink
+                  className="h-3.5 w-3.5"
+                  style={{ color: 'var(--theme-accent)' }}
+                />
+                <span>Open Folder</span>
+              </button>
+            )}
             <button
               type="button"
               disabled={isSyncingDisk}
               onClick={handleSyncDiskNow}
-              title="Sync current characters, lorebooks, themes, and tags to ./Saves/ now"
+              title={`Sync current characters, lorebooks, themes, and tags to ${activeSaveFolderDisplay} now`}
               className="theme-hover-outline flex items-center gap-1.5 rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-950 px-3 py-1.5 text-xs font-medium text-slate-700 dark:text-slate-200 disabled:opacity-50 cursor-pointer"
             >
               <RefreshCw
@@ -658,7 +691,7 @@ export const OptionsView: React.FC = () => {
           </div>
         )}
 
-        {/* Real Disk Files Tree (`./Saves/Characters/`, `./Saves/Lorebooks/`, `./Saves/Themes/`, `./Saves/Tags/`, `_tavernsmith_meta.json`) */}
+        {/* Real Disk Files Tree (`Characters/`, `Lorebooks/`, `Themes/`, `Tags/`, `_tavernsmith_meta.json`) */}
         <div className="rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-950/50 p-3.5 space-y-3 min-w-0">
           <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 dark:border-slate-800 pb-2.5">
             <div className="flex items-center gap-2 text-xs font-semibold text-slate-900 dark:text-white">
@@ -668,7 +701,7 @@ export const OptionsView: React.FC = () => {
               />
               <span>
                 Files in{' '}
-                <code className="font-mono">{UNIFIED_INTERNAL_ROOT}</code>
+                <code className="font-mono">{activeSaveFolderDisplay}</code>
               </span>
             </div>
             <div className="flex flex-wrap items-center gap-2">
@@ -696,7 +729,7 @@ export const OptionsView: React.FC = () => {
               <AlertTriangle className="h-4 w-4 shrink-0 mt-0.5 text-rose-500" />
               <span>
                 Detected {corruptedSavedFiles.length} corrupted or empty JSON file
-                {corruptedSavedFiles.length === 1 ? '' : 's'} in <code className="font-mono">{UNIFIED_INTERNAL_ROOT}</code>. Marked entries cannot be loaded into the editor—download to inspect or delete them below.
+                {corruptedSavedFiles.length === 1 ? '' : 's'} in <code className="font-mono">{activeSaveFolderDisplay}</code>. Marked entries cannot be loaded into the editor—download to inspect or delete them below.
               </span>
             </div>
           )}

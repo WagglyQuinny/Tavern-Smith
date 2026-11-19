@@ -59,6 +59,11 @@ import {
   migrateLegacyTagCategory,
   sortTagsByContextOrder,
 } from '../utils/tagOrder';
+import {
+  deleteDiskFile,
+  fetchDiskState,
+  saveDiskState,
+} from '../utils/desktopBridge';
 
 export { VAULT_FILENAME, LEGACY_VAULT_FILENAME };
 export const META_FILENAME = '_tavernsmith_meta.json';
@@ -4896,7 +4901,7 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
         typeof options?.expectedVersion === 'number' &&
         options.expectedVersion !== contentMutationVersionRef.current;
 
-      setDiskResolvedPath('./Saves/');
+      setDiskResolvedPath(diskState.diskRoot || './Saves/');
 
       if (Array.isArray(diskState.files)) {
         setDiskFiles(
@@ -5368,13 +5373,7 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
           if (cancelled) return;
         }
         try {
-          const res = await fetch('/api/disk/state', {
-            method: 'GET',
-            headers: { Accept: 'application/json' },
-            cache: 'no-store',
-          });
-          if (!res.ok) continue;
-          const data = (await res.json()) as DiskStateResponse;
+          const data = await fetchDiskState();
           if (cancelled) return;
           if (data && data.ok) {
             await applyDiskStateToWorkspace(data, { isInitialMount: true });
@@ -6060,23 +6059,13 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
       await flushPendingVaultKeySave();
 
       try {
-        const res = await fetch('/api/disk/save', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            characters: characterPayloads,
-            lorebooks: lorebookPayloads,
-            themes: themePayloads,
-            tags: tagPayloads,
-            meta: metaPayload,
-          }),
+        const diskState = await saveDiskState({
+          characters: characterPayloads,
+          lorebooks: lorebookPayloads,
+          themes: themePayloads,
+          tags: tagPayloads,
+          meta: metaPayload,
         });
-
-        if (!res.ok) {
-          throw new Error(`HTTP ${res.status}`);
-        }
-
-        const diskState = (await res.json()) as DiskStateResponse;
         if (!diskState || !diskState.ok) {
           throw new Error(diskState?.error || 'Disk save failed');
         }
@@ -6090,7 +6079,8 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
 
         const noConcurrentMutation =
           diskMutationVersionRef.current === versionAtStart;
-        setDiskResolvedPath('./Saves/');
+        const resolvedDiskRoot = diskState.diskRoot || './Saves/';
+        setDiskResolvedPath(resolvedDiskRoot);
         if (Array.isArray(diskState.files) && noConcurrentMutation) {
           setDiskFiles(
             diskState.files.filter(
@@ -6109,12 +6099,15 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
 
         return {
           ok: true,
-          message: `Saved to ./Saves/ (${characterPayloads.length} Characters, ${lorebookPayloads.length} Lorebooks, ${themePayloads.length} Themes, ${tagPayloads.length} Tags).`,
+          message: `Saved to ${resolvedDiskRoot} (${characterPayloads.length} Characters, ${lorebookPayloads.length} Lorebooks, ${themePayloads.length} Themes, ${tagPayloads.length} Tags).`,
         };
-      } catch {
+      } catch (err: unknown) {
         return {
           ok: false,
-          message: 'Could not reach local disk API (/api/disk/save).',
+          message:
+            err instanceof Error && err.message
+              ? `Could not save to local disk storage (${err.message}).`
+              : 'Could not reach local disk storage.',
         };
       }
     },
@@ -6320,16 +6313,12 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
 
       void enqueueDiskOperation(async () => {
         try {
-          await fetch('/api/disk/delete', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              folder: 'Characters',
-              fileName: diskFileName || undefined,
-              savedFileName: target?.savedFileName || undefined,
-              name: target?.name || undefined,
-              id,
-            }),
+          await deleteDiskFile({
+            folder: 'Characters',
+            fileName: diskFileName || undefined,
+            savedFileName: target?.savedFileName || undefined,
+            name: target?.name || undefined,
+            id,
           });
         } catch {
           // Proceed to authoritative mirrored save even if direct delete encountered an error
@@ -6436,16 +6425,12 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
 
       void enqueueDiskOperation(async () => {
         try {
-          await fetch('/api/disk/delete', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              folder: 'Lorebooks',
-              fileName: diskFileName || undefined,
-              savedFileName: target?.savedFileName || undefined,
-              name: target?.name || undefined,
-              id,
-            }),
+          await deleteDiskFile({
+            folder: 'Lorebooks',
+            fileName: diskFileName || undefined,
+            savedFileName: target?.savedFileName || undefined,
+            name: target?.name || undefined,
+            id,
           });
         } catch {
           // Proceed to authoritative mirrored save even if direct delete encountered an error
@@ -6734,16 +6719,12 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
 
       void enqueueDiskOperation(async () => {
         try {
-          await fetch('/api/disk/delete', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              folder: 'Themes',
-              fileName: diskFileName || undefined,
-              savedFileName: target.savedFileName || undefined,
-              name: target.name || undefined,
-              id,
-            }),
+          await deleteDiskFile({
+            folder: 'Themes',
+            fileName: diskFileName || undefined,
+            savedFileName: target.savedFileName || undefined,
+            name: target.name || undefined,
+            id,
           });
         } catch {
           // Proceed with mirrored disk save even if direct delete failed
@@ -7179,16 +7160,12 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
 
       void enqueueDiskOperation(async () => {
         try {
-          await fetch('/api/disk/delete', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              folder: 'Tags',
-              fileName: diskFileName || undefined,
-              savedFileName: target.savedFileName || undefined,
-              name: target.name || undefined,
-              id,
-            }),
+          await deleteDiskFile({
+            folder: 'Tags',
+            fileName: diskFileName || undefined,
+            savedFileName: target.savedFileName || undefined,
+            name: target.name || undefined,
+            id,
           });
         } catch {
           // Proceed with mirrored disk save even if direct delete failed
@@ -7350,12 +7327,7 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
         activeSaveFolder: UNIFIED_INTERNAL_ROOT,
         availableSaveFolders: DEFAULT_SAVE_FOLDERS,
       }));
-      void fetch('/api/disk/state', {
-        method: 'GET',
-        headers: { Accept: 'application/json' },
-        cache: 'no-store',
-      })
-        .then((r) => (r.ok ? r.json() : null))
+      void fetchDiskState()
         .then((diskState: DiskStateResponse | null) => {
           if (diskState && diskState.ok) {
             void applyDiskStateToWorkspace(diskState);
@@ -7741,29 +7713,22 @@ export const StoreProvider: React.FC<{ children: React.ReactNode }> = ({
                 : 'Characters';
       void enqueueDiskOperation(async () => {
         try {
-          const delRes = await fetch('/api/disk/delete', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              folder,
-              kind: target.kind,
-              fileName: target.fileName,
-              savedFileName: target.fileName,
-            }),
+          const delState = await deleteDiskFile({
+            folder,
+            kind: target.kind,
+            fileName: target.fileName,
+            savedFileName: target.fileName,
           });
-          if (delRes.ok) {
-            const delState = (await delRes.json()) as DiskStateResponse;
-            if (
-              delState?.ok &&
-              Array.isArray(delState.files) &&
-              diskMutationVersionRef.current === opVersion
-            ) {
-              setDiskFiles(
-                delState.files.filter(
-                  (f) => f.kind !== 'vault' && f.fileName !== LEGACY_VAULT_FILENAME
-                )
-              );
-            }
+          if (
+            delState?.ok &&
+            Array.isArray(delState.files) &&
+            diskMutationVersionRef.current === opVersion
+          ) {
+            setDiskFiles(
+              delState.files.filter(
+                (f) => f.kind !== 'vault' && f.fileName !== LEGACY_VAULT_FILENAME
+              )
+            );
           }
         } catch {
           // Ignore transient network error

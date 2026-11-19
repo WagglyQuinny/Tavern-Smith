@@ -15,6 +15,8 @@
  *   `./.tavernsmith-app/` on first load.
  */
 
+import { fetchAppVaultState, saveAppVaultState } from './desktopBridge';
+
 export const VAULT_FILENAME = 'credentials.vault.enc';
 export const LEGACY_VAULT_FILENAME = '_tavernsmith_vault.enc';
 export const APP_VAULT_STORAGE_PATH = './.tavernsmith-app/';
@@ -289,18 +291,8 @@ export async function persistVaultEnvelopeToServer(
   envelope: EncryptedVaultEnvelope,
   removeLegacy = false
 ): Promise<boolean> {
-  if (typeof fetch !== 'function') return false;
   try {
-    const res = await fetch('/api/vault', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ vault: envelope, removeLegacy }),
-    });
-    if (!res.ok) return false;
-    const data = (await res.json()) as {
-      ok?: boolean;
-      storagePath?: string;
-    };
+    const data = await saveAppVaultState({ vault: envelope, removeLegacy });
     if (data?.storagePath) {
       inMemoryStoragePath = data.storagePath;
     }
@@ -340,19 +332,12 @@ async function runVaultEncryptionNow(
     return null;
   }
 
-  // Ensure we have the separate app-private key from `/api/vault` if running against the local server
-  if (!inMemoryAppVaultKey && typeof fetch === 'function') {
+  // Ensure we have the separate app-private key from Tauri IPC or `/api/vault`
+  if (!inMemoryAppVaultKey) {
     try {
-      const res = await fetch('/api/vault', { cache: 'no-store' });
-      if (res.ok) {
-        const data = (await res.json()) as {
-          ok?: boolean;
-          appKey?: string;
-          storagePath?: string;
-        };
-        if (data?.ok && typeof data.appKey === 'string' && data.appKey.trim()) {
-          setAppVaultKey(data.appKey, data.storagePath);
-        }
+      const data = await fetchAppVaultState();
+      if (data?.ok && typeof data.appKey === 'string' && data.appKey.trim()) {
+        setAppVaultKey(data.appKey, data.storagePath);
       }
     } catch {
       // Offline / non-server environment
@@ -563,18 +548,6 @@ export async function decryptProviderKeysFromVault(
  * `./Saves/_tavernsmith_vault.enc` out of `./Saves/`.
  */
 export async function loadAppVaultFromServer(): Promise<AppVaultLoadResult> {
-  if (typeof fetch !== 'function') {
-    return {
-      ok: false,
-      locked: false,
-      needsLegacyUnlock: false,
-      migratedLegacy: false,
-      storagePath: inMemoryStoragePath,
-      keys: { ...inMemoryDecryptedKeys },
-      error: 'Fetch API unavailable.',
-    };
-  }
-
   let data: {
     ok?: boolean;
     storagePath?: string;
@@ -589,13 +562,13 @@ export async function loadAppVaultFromServer(): Promise<AppVaultLoadResult> {
       await new Promise((r) => setTimeout(r, retryDelays[attempt]));
     }
     try {
-      const res = await fetch('/api/vault', { cache: 'no-store' });
-      if (res.ok) {
-        data = await res.json();
+      const res = await fetchAppVaultState();
+      if (res?.ok) {
+        data = res;
         break;
       }
     } catch {
-      // Retry on transient server startup window
+      // Retry on transient startup window
     }
   }
 
@@ -607,7 +580,7 @@ export async function loadAppVaultFromServer(): Promise<AppVaultLoadResult> {
       migratedLegacy: false,
       storagePath: inMemoryStoragePath,
       keys: { ...inMemoryDecryptedKeys },
-      error: 'Local app vault endpoint (/api/vault) is unavailable.',
+      error: 'Local app vault storage is unavailable.',
     };
   }
 

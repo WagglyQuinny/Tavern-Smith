@@ -12,6 +12,7 @@ import {
   createBlankLorebook,
   DEFAULT_STAT_BLOCK,
 } from '../context/StoreContext';
+import { isTauriDesktop, saveDesktopExportFile } from './desktopBridge';
 
 const PNG_SIGNATURE = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]);
 
@@ -1359,7 +1360,9 @@ export async function importCardFromFile(
 }
 
 /**
- * Triggers a clean browser file download for a JSON or PNG asset.
+ * Triggers a clean file export: opens a native OS Save dialog when running inside
+ * the TavernSmith desktop app (Windows/macOS/Linux), or triggers a standard browser
+ * download in web/dev mode.
  */
 export function triggerBrowserDownload(
   content: Blob | string,
@@ -1370,14 +1373,28 @@ export function triggerBrowserDownload(
     typeof content === 'string'
       ? new Blob([content], { type: mimeType })
       : content;
-  const url = URL.createObjectURL(blob);
-  const anchor = document.createElement('a');
-  anchor.href = url;
-  anchor.download = filename;
-  document.body.appendChild(anchor);
-  anchor.click();
-  document.body.removeChild(anchor);
-  window.setTimeout(() => URL.revokeObjectURL(url), 3000);
+
+  const fallbackDownload = () => {
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.download = filename;
+    document.body.appendChild(anchor);
+    anchor.click();
+    document.body.removeChild(anchor);
+    window.setTimeout(() => URL.revokeObjectURL(url), 3000);
+  };
+
+  if (isTauriDesktop()) {
+    void saveDesktopExportFile(blob, filename).then((status) => {
+      if (status === 'unavailable') {
+        fallbackDownload();
+      }
+    });
+    return;
+  }
+
+  fallbackDownload();
 }
 
 export function sanitizeFilename(name: string): string {

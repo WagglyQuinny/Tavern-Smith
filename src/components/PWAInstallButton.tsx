@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { Download, Smartphone, X } from 'lucide-react';
+import { isTauriDesktop } from '../utils/desktopBridge';
 
 interface BeforeInstallPromptEvent extends Event {
   prompt: () => Promise<void>;
@@ -9,12 +10,13 @@ interface BeforeInstallPromptEvent extends Event {
 export const PWAInstallButton: React.FC = () => {
   const [deferredPrompt, setDeferredPrompt] =
     useState<BeforeInstallPromptEvent | null>(null);
-  const [isInstalled, setIsInstalled] = useState(false);
+  const [isInstalled, setIsInstalled] = useState(() => isTauriDesktop());
   const [isIOS, setIsIOS] = useState(false);
   const [showGuideModal, setShowGuideModal] = useState(false);
 
   useEffect(() => {
     const isStandalone =
+      isTauriDesktop() ||
       window.matchMedia('(display-mode: standalone)').matches ||
       (window.navigator as unknown as { standalone?: boolean }).standalone ===
         true;

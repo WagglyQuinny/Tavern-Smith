@@ -8,6 +8,7 @@ import {
 } from '../types';
 import { getDecryptedKeyForProvider } from '../utils/cryptoVault';
 import { compressImageForVision } from '../utils/cardIO';
+import { desktopFetch, isTauriDesktop } from '../utils/desktopBridge';
 import { sortTagsByContextOrder } from '../utils/tagOrder';
 
 export { compressImageForVision };
@@ -927,7 +928,7 @@ export async function fetchModelsWithStatus(
 
         let directRes: Response;
         try {
-          directRes = await fetch(url, {
+          directRes = await desktopFetch(url, {
             method: 'GET',
             headers: {
               Accept: 'application/json',
@@ -986,6 +987,13 @@ export async function fetchModelsWithStatus(
       };
     }
 
+    if (isTauriDesktop()) {
+      throw new AIServiceError(
+        'Enter your Google Gemini API key in Options to connect directly.',
+        { statusCode: 401 }
+      );
+    }
+
     // Only call /api/gemini/models when the user did NOT enter a Gemini API key
     const geminiRes = await fetch('/api/gemini/models', {
       method: 'GET',
@@ -1027,7 +1035,7 @@ export async function fetchModelsWithStatus(
       );
     }
     try {
-      const anthropicRes = await fetch(`${v1Url}/models`, {
+      const anthropicRes = await desktopFetch(`${v1Url}/models`, {
         method: 'GET',
         headers: buildAnthropicHeaders(effectiveKey),
         signal: abortSignal,
@@ -1100,7 +1108,7 @@ export async function fetchModelsWithStatus(
     // 3A. Ollama native loaded (`/api/ps`) + installed (`/api/tags`) check
     if (isOllama) {
       try {
-        const psRes = await fetch(`${rootUrl}/api/ps`, {
+        const psRes = await desktopFetch(`${rootUrl}/api/ps`, {
           method: 'GET',
           headers,
           signal: abortSignal,
@@ -1123,7 +1131,7 @@ export async function fetchModelsWithStatus(
       }
 
       try {
-        const tagsRes = await fetch(`${rootUrl}/api/tags`, {
+        const tagsRes = await desktopFetch(`${rootUrl}/api/tags`, {
           method: 'GET',
           headers,
           signal: abortSignal,
@@ -1152,7 +1160,7 @@ export async function fetchModelsWithStatus(
     let lmStudioV0Succeeded = false;
     if (isLmStudio) {
       try {
-        const lmsRes = await fetch(`${rootUrl}/api/v0/models`, {
+        const lmsRes = await desktopFetch(`${rootUrl}/api/v0/models`, {
           method: 'GET',
           headers,
           signal: abortSignal,
@@ -1189,7 +1197,7 @@ export async function fetchModelsWithStatus(
     // 3C. Standard OpenAI-Compatible `GET /v1/models`
     let v1Response: Response | null = null;
     try {
-      v1Response = await fetch(`${v1Url}/models`, {
+      v1Response = await desktopFetch(`${v1Url}/models`, {
         method: 'GET',
         headers,
         signal: abortSignal,
@@ -1247,7 +1255,7 @@ export async function fetchModelsWithStatus(
     // 3D. KoboldCPP native loaded model endpoint: `GET /api/v1/model`
     if (isKobold || (localServer && collectedModels.length === 0)) {
       try {
-        const koboldRes = await fetch(`${rootUrl}/api/v1/model`, {
+        const koboldRes = await desktopFetch(`${rootUrl}/api/v1/model`, {
           method: 'GET',
           headers,
           signal: abortSignal,
@@ -1721,7 +1729,7 @@ export async function generateCompletionDetailed(
       const sendDirectRequest = async (includeThinkingConfig: boolean) => {
         let res: Response;
         try {
-          res = await fetch(endpointUrl, {
+          res = await desktopFetch(endpointUrl, {
             method: 'POST',
             headers: {
               'Content-Type': 'application/json',
@@ -1796,6 +1804,13 @@ export async function generateCompletionDetailed(
             ? `Gemini consumed output tokens inside thinking blocks without emitting a final answer (${finishReason || 'EMPTY'}).`
             : `Gemini returned an empty response (${finishReason || 'NO_TEXT'}).`,
         { statusCode: 200 }
+      );
+    }
+
+    if (isTauriDesktop()) {
+      throw new AIServiceError(
+        'Enter your Google Gemini API key in Options to generate directly.',
+        { statusCode: 401 }
       );
     }
 
@@ -1900,7 +1915,7 @@ export async function generateCompletionDetailed(
 
     let anthropicRes: Response;
     try {
-      anthropicRes = await fetch(`${v1Url}/messages`, {
+      anthropicRes = await desktopFetch(`${v1Url}/messages`, {
         method: 'POST',
         headers: buildAnthropicHeaders(effectiveKey),
         signal: abortSignal,
@@ -2044,7 +2059,7 @@ export async function generateCompletionDetailed(
   // If Kobold Raw format is explicitly chosen, try `/api/v1/generate` first
   if (effectiveFormat === 'kobold_raw') {
     try {
-      const koboldRes = await fetch(`${rootUrl}/api/v1/generate`, {
+      const koboldRes = await desktopFetch(`${rootUrl}/api/v1/generate`, {
         method: 'POST',
         headers,
         signal: abortSignal,
@@ -2077,7 +2092,7 @@ export async function generateCompletionDetailed(
   // Primary attempt: Standard `/v1/chat/completions`
   let chatResponse: Response;
   try {
-    chatResponse = await fetch(`${v1Url}/chat/completions`, {
+    chatResponse = await desktopFetch(`${v1Url}/chat/completions`, {
       method: 'POST',
       headers,
       signal: abortSignal,
@@ -2090,7 +2105,7 @@ export async function generateCompletionDetailed(
 
     // Try Kobold `/api/v1/generate` fallback on connection error
     try {
-      const fallbackResponse = await fetch(`${rootUrl}/api/v1/generate`, {
+      const fallbackResponse = await desktopFetch(`${rootUrl}/api/v1/generate`, {
         method: 'POST',
         headers,
         signal: abortSignal,
@@ -2161,7 +2176,7 @@ export async function generateCompletionDetailed(
   // Automatic Gemma / Local Server HTTP 400 Fallback:
   if (chatResponse.status === 400 || chatResponse.status === 422) {
     if (!isSystemMergedFormat) {
-      const retryResponse = await fetch(`${v1Url}/chat/completions`, {
+      const retryResponse = await desktopFetch(`${v1Url}/chat/completions`, {
         method: 'POST',
         headers,
         signal: abortSignal,
@@ -2203,7 +2218,7 @@ export async function generateCompletionDetailed(
         ? textOnlySystemMergedMessages
         : textOnlyStandardMessages;
 
-      const textOnlyRetryRes = await fetch(`${v1Url}/chat/completions`, {
+      const textOnlyRetryRes = await desktopFetch(`${v1Url}/chat/completions`, {
         method: 'POST',
         headers,
         signal: abortSignal,
@@ -2243,7 +2258,7 @@ export async function generateCompletionDetailed(
         !isSystemMergedFormat &&
         (textOnlyRetryRes.status === 400 || textOnlyRetryRes.status === 422)
       ) {
-        const mergedTextOnlyRes = await fetch(`${v1Url}/chat/completions`, {
+        const mergedTextOnlyRes = await desktopFetch(`${v1Url}/chat/completions`, {
           method: 'POST',
           headers,
           signal: abortSignal,
@@ -2287,7 +2302,7 @@ export async function generateCompletionDetailed(
     chatResponse.status === 405 ||
     config.preset === 'koboldcpp'
   ) {
-    const fallbackResponse = await fetch(`${rootUrl}/api/v1/generate`, {
+    const fallbackResponse = await desktopFetch(`${rootUrl}/api/v1/generate`, {
       method: 'POST',
       headers,
       signal: abortSignal,
