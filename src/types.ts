@@ -293,6 +293,7 @@ export interface InspectorTabDraft {
 
 export interface SavedFileEntry {
   id: string;
+  entityId?: string;
   folderPath: string;
   fileName: string;
   kind: 'character' | 'lorebook' | 'theme' | 'tag' | 'meta' | 'vault';
@@ -328,6 +329,7 @@ export interface TavernSmithMetaPayload {
 
 export interface DiskStateResponse {
   ok: boolean;
+  error?: string;
   diskRoot: string;
   resolvedPath: string;
   characters: Record<string, unknown>[];
