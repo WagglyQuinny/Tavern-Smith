@@ -116,7 +116,6 @@ fn now_iso_utc() -> String {
     Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true)
 }
 
-#[cfg(not(target_os = "macos"))]
 fn ensure_trailing_slash(path: &Path) -> String {
     let mut s = path.to_string_lossy().to_string();
     if !s.ends_with('/') && !s.ends_with('\\') {
