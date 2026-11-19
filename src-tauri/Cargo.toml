@@ -1,6 +1,6 @@
 [package]
 name = "tavernsmith"
-version = "4.7.0"
+version = "1.0.0"
 description = "TavernSmith — Native Desktop Character Card & Lorebook Forge"
 authors = ["WagglyQuinny"]
 edition = "2021"

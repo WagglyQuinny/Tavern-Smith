@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "TavernSmith",
-  "version": "4.7.0",
+  "version": "1.0.0",
   "identifier": "com.wagglyquinny.tavernsmith",
   "build": {
     "beforeDevCommand": "npm run dev",

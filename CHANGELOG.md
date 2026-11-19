@@ -2,7 +2,7 @@
 
 All notable changes to **TavernSmith** are documented in this file. This file is synced with the in-app **About & Changelog** modal (`src/utils/changelogData.ts`) and the automated GitHub Release workflows (`.github/workflows/version-update.yml` & `.github/workflows/release.yml`).
 
-## [Unreleased] - Native 3-OS Desktop App (No CMD Window), Security Hardening, App-Private Vault, Live Models & Strict NSFW Mode
+## [v1.0.0] - 2026-11-19
 
 ### 🔐 Security & Privacy Hardening
 - **Native Rust Desktop Storage & Zero-CORS AI HTTP Client**: Replaced background browser-launched terminal servers in release builds with a native Tauri v2 Rust desktop shell (`src-tauri/`) using `#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]` (zero CMD window), `fs::canonicalize` symlink confinement, `0600`/`0700` Unix vault key permissions, strict `http://`/`https://` scheme validation, and a native `reqwest` HTTP client (`http_fetch` / `desktopFetch`) that strips browser `Origin` headers to eliminate local Ollama/LM Studio/KoboldCPP/LAN CORS blocks.
@@ -13,7 +13,7 @@ All notable changes to **TavernSmith** are documented in this file. This file is
 - **Strict NSFW Hiding Across Entire UI & AI Context**: Enabling **Hide NSFW Content** now completely hides or shields NSFW characters (manual flag, NSFW tags, or linked NSFW lorebook), NSFW lorebooks/entries, NSFW-tagged themes, NSFW saved files, TopBar/Sidebar snapshots, and Raw JSON views — and strips all NSFW context before any AI prompt is constructed or sent.
 
 ### 🚀 Highlights & Feature Additions
-- **Native 3-OS Desktop App & 3 Labeled Release Archives**: Added a full Tauri v2 desktop application and multi-OS GitHub Release workflow producing three clearly labeled `.zip` packages on every release:
+- **Full v1.0.0 Graduation & Native 3-OS Desktop Release Archives**: Graduated TavernSmith out of beta (archiving legacy `v1.0.1`–`v4.7.0` history under `beta-v*` pre-releases) with a full Tauri v2 native desktop app and multi-OS GitHub Release workflow producing three clearly labeled `.zip` packages on every release:
   - `TavernSmith-Windows-x64-Portable.zip` — Portable `TavernSmith.exe` (no installer, zero CMD window, portable `./Saves/` next to the `.exe`).
   - `TavernSmith-macOS-Universal-DMG.zip` — Universal Apple Silicon & Intel `TavernSmith.dmg` (saves in `~/Library/Application Support/TavernSmith/Saves/`).
   - `TavernSmith-Linux-x64-AppImage.zip` — Portable `TavernSmith.AppImage` (portable `./Saves/` next to the `.AppImage`, with automatic XDG fallback if read-only).
@@ -22,7 +22,7 @@ All notable changes to **TavernSmith** are documented in this file. This file is
 - **ID-Synced Character ↔ Lorebook Linking & AI Context**: Characters linked to a lorebook stay synced by lorebook ID, automatically embed the latest linked lorebook on `.png` and `.json` exports, inject linked lorebook entries into AI generation context (respecting NSFW hiding), and import embedded `character_book` lorebooks directly into the Lorebooks area.
 - **Global Tag Deletion ("Yeet") & Targeted Reset Defaults**: Deleting a tag permanently strips it from every character, lorebook, entry, and theme without resurrecting on reload (persisting `deletedDefaultTagIds` / `deletedDefaultThemeIds`). **Reset Defaults** restores only deleted or modified built-in Themes and Tags while leaving custom items, characters, lorebooks, settings, and API keys untouched.
 - **Strict Backup Import/Export Scope**: Workspace backup export and import strictly include Characters, Lorebooks, Themes, and Tags — never settings, active theme selection, AI configuration, or API key vault data.
-- **Smarter Automated Release & Changelog Workflows**: Upgraded `.github/workflows/version-update.yml` to promote curated `## [Unreleased]` notes, sync semantic versions across `package.json`, `src/versionInfo.json`, `src-tauri/tauri.conf.json`, and `src-tauri/Cargo.toml`, parse structured git commit bodies with `execFileSync` (zero shell interpolation or `eval`), map every project file accurately, and remove hardcoded placeholder text.
+- **Node 24 CI/CD & Safe Release Publishing**: Upgraded `.github/workflows/release.yml` to Node 24-native `actions/upload-artifact@v7` and `actions/download-artifact@v8` (zero deprecation warnings) and gated GitHub Release publishing strictly to `v*.*.*` tags or manual dispatch so routine `main` pushes run full 3-OS CI builds without overwriting existing releases; upgraded `.github/workflows/version-update.yml` to track stable `v[0-9]*` tags, promote curated `## [Unreleased]` notes, sync semantic versions across `package.json`, `src/versionInfo.json`, `src-tauri/tauri.conf.json`, and `src-tauri/Cargo.toml`, parse structured git commit bodies safely without shell interpolation or `eval`, and refreshed `README.md`.
 
 ### 🛠️ Bug Fixes, Memory & Stability
 - **Fixed Stale AI Callbacks, Uncancelled Streams & Abort Leaks**: Added dedicated per-operation `AbortController` refs, entity-switch aborts, unmount cleanup, and `finally` stream reader cancellation across `CharacterEditor`, `LorebookEditor`, `SmartEditor`, `ThemesAndTagsView`, and `aiService`.
@@ -38,8 +38,9 @@ All notable changes to **TavernSmith** are documented in this file. This file is
 - `src-tauri/src/storage.rs — Added Native Rust Local ./Saves/ & App-Private Vault Storage Engine with Unit Tests`
 - `src-tauri/icons/ — Added Multi-Platform Application Icons (.ico, .icns, .png)`
 - `src/utils/desktopBridge.ts — Added Native Tauri IPC & HTTP Fetch Bridge with Browser Dev Fallback`
-- `.github/workflows/release.yml — Built Native 3-OS Desktop App Release Matrix (Windows Portable .exe, macOS Universal .dmg, Linux .AppImage)`
-- `.github/workflows/version-update.yml — Upgraded Automated Changelog & Version Updater Workflow with Tauri Manifest Sync`
+- `.github/workflows/release.yml — Built Node 24 Native 3-OS Desktop App Release Matrix with Tag-Only Release Publishing`
+- `.github/workflows/version-update.yml — Upgraded Automated Changelog & Version Updater Workflow with Stable v* Tag Tracking & Tauri Manifest Sync`
+- `README.md — Updated Documentation for v1.0.0 Native 3-OS Downloads, Vault, and Strict NSFW Mode`
 - `.gitignore — Ignored Local Saves/, .tavernsmith-app/, and src-tauri/target/ Directories`
 - `server.ts — Hardened Local Express Server, Fixed ./Saves/ Disk API & App-Private Vault`
 - `vite.config.ts — Hardened Vite Dev/Preview Middleware & Local Security Guards`
@@ -63,7 +64,7 @@ All notable changes to **TavernSmith** are documented in this file. This file is
 - `src/components/SidebarNav.tsx — Fixed Tab Alias Highlighting & SFW Snapshot Shielding`
 - `src/App.tsx — Updated Vault Path Hint & Tag Deletion Confirmation Copy`
 
-## [v4.7.0] - 2026-11-19
+## [beta-v4.7.0] - 2026-11-19
 
 ### 🚀 Highlights & Feature Additions
 - Automated release v4.7.0 incorporating 1 updated module(s).
@@ -74,7 +75,7 @@ All notable changes to **TavernSmith** are documented in this file. This file is
 ### 📂 Detailed Component & File Changes
 - `package.json & CHANGELOG.md — Version bump and release metadata sync`
 
-## [v4.6.0] - 2026-11-18
+## [beta-v4.6.0] - 2026-11-18
 
 ### 🚀 Highlights & Feature Additions
 - Implement deterministic tag sorting (d2cfa4f)
@@ -94,7 +95,7 @@ All notable changes to **TavernSmith** are documented in this file. This file is
 - `src/utils/tagOrder.ts — Added Core Utility Module (+186 / -0 lines)`
 - `src/views/ThemesAndTagsView.tsx — Updated Context Themes & Global Tag/Sub-Tag Manager (+106 / -41 lines)`
 
-## [v4.5.1] - 2026-11-17
+## [beta-v4.5.1] - 2026-11-17
 
 ### 🚀 Highlights & Feature Additions
 - Enhance save path security and state management (2ad644a)
@@ -118,7 +119,7 @@ All notable changes to **TavernSmith** are documented in this file. This file is
 - `src/views/ThemesAndTagsView.tsx — Updated Context Themes & Global Tag/Sub-Tag Manager (+14 / -2 lines)`
 - `vite.config.ts — Updated Project Configuration & Metadata (+400 / -192 lines)`
 
-## [v4.5.0] - 2026-11-17
+## [beta-v4.5.0] - 2026-11-17
 
 ### 🚀 Highlights & Feature Additions
 - Automated release v4.5.0 incorporating 10 updated module(s) (10 files changed, 2220 insertions(+), 600 deletions(-)).
@@ -139,7 +140,7 @@ All notable changes to **TavernSmith** are documented in this file. This file is
 - `src/utils/tokenCounter.ts — Updated Core Utility Module (+6 / -3 lines)`
 - `src/views/ThemesAndTagsView.tsx — Updated Context Themes & Global Tag/Sub-Tag Manager (+3 / -10 lines)`
 
-## [v4.4.1] - 2026-11-17
+## [beta-v4.4.1] - 2026-11-17
 
 ### 🚀 Highlights & Feature Additions
 - Add support for character reaction images (63241c9)
@@ -155,7 +156,7 @@ All notable changes to **TavernSmith** are documented in this file. This file is
 - `src/types.ts — Updated Project Configuration & Metadata (+18 / -0 lines)`
 - `src/utils/cardIO.ts — Updated PNG tEXt Chunk & JSON Import/Export Parser (+141 / -0 lines)`
 
-## [v4.4.0] - 2026-11-17
+## [beta-v4.4.0] - 2026-11-17
 
 ### 🚀 Highlights & Feature Additions
 - Support persistent themes and tags (47ab82c)
@@ -173,7 +174,7 @@ All notable changes to **TavernSmith** are documented in this file. This file is
 - `src/views/ThemesAndTagsView.tsx — Updated Context Themes & Global Tag/Sub-Tag Manager (+30 / -89 lines)`
 - `vite.config.ts — Updated Project Configuration & Metadata (+200 / -10 lines)`
 
-## [v4.3.0] - 2026-11-17
+## [beta-v4.3.0] - 2026-11-17
 
 ### 🚀 Highlights & Feature Additions
 - Add inlineDataList support to generate endpoint (a1c048b)
@@ -198,7 +199,7 @@ All notable changes to **TavernSmith** are documented in this file. This file is
 - `src/utils/tokenCounter.ts — Updated Core Utility Module (+170 / -34 lines)`
 - `src/views/ThemesAndTagsView.tsx — Updated Context Themes & Global Tag/Sub-Tag Manager (+3 / -0 lines)`
 
-## [v4.2.1] - 2026-11-17
+## [beta-v4.2.1] - 2026-11-17
 
 ### 🚀 Highlights & Feature Additions
 - Add support for importing save folder backups (851ffa5)
@@ -219,7 +220,7 @@ All notable changes to **TavernSmith** are documented in this file. This file is
 - `src/views/OptionsView.tsx — Updated Options, AI Scanner & Save Folder Manager (+48 / -2 lines)`
 - `src/views/ThemesAndTagsView.tsx — Updated Context Themes & Global Tag/Sub-Tag Manager (+336 / -317 lines)`
 
-## [v4.2.0] - 2026-11-13
+## [beta-v4.2.0] - 2026-11-13
 
 ### 🚀 Highlights & Feature Additions
 - Automated release v4.2.0 incorporating 3 updated module(s) (3 files changed, 518 insertions(+), 352 deletions(-)).
@@ -233,7 +234,7 @@ All notable changes to **TavernSmith** are documented in this file. This file is
 - `src/context/StoreContext.tsx — Updated Workspace State, Auto-Save & Provider Credential Vault (+375 / -193 lines)`
 - `vite.config.ts — Updated Project Configuration & Metadata (+37 / -84 lines)`
 
-## [v4.1.0] - 2026-11-13
+## [beta-v4.1.0] - 2026-11-13
 
 ### 🚀 Highlights & Feature Additions
 - massive bug fixing, AI related integration
@@ -270,7 +271,7 @@ All notable changes to **TavernSmith** are documented in this file. This file is
 - `src/views/ThemesAndTagsView.tsx — Updated Context Themes & Global Tag/Sub-Tag Manager (+27 / -26 lines)`
 - `vite.config.ts — Updated Project Configuration & Metadata (+596 / -2 lines)`
 
-## [v4.0.2] - 2026-11-13
+## [beta-v4.0.2] - 2026-11-13
 
 ### 🚀 Highlights & Feature Additions
 - Grand AI conections overhaul
@@ -282,7 +283,7 @@ All notable changes to **TavernSmith** are documented in this file. This file is
 - **Repository Diff Summary**: 1 file changed, 420 insertions(+), 538 deletions(-)
 - `src/views/OptionsView.tsx — Updated Options, AI Scanner & Save Folder Manager (+420 / -538 lines)`
 
-## [v4.0.1] - 2026-11-13
+## [beta-v4.0.1] - 2026-11-13
 
 ### 🚀 Highlights & Feature Additions
 - Reorganize And add tags
@@ -309,7 +310,7 @@ All notable changes to **TavernSmith** are documented in this file. This file is
 - `src/views/ThemesAndTagsView.tsx — Updated Context Themes & Global Tag/Sub-Tag Manager (+26 / -3 lines)`
 - `vite.config.ts — Updated Project Configuration & Metadata (+22 / -1 lines)`
 
-## [v4.0.0] - 2026-11-13
+## [beta-v4.0.0] - 2026-11-13
 
 ### 🚀 Highlights & Feature Additions
 - Automated release v4.0.0 incorporating 1 updated module(s).
@@ -320,7 +321,7 @@ All notable changes to **TavernSmith** are documented in this file. This file is
 ### 📂 Detailed Component & File Changes
 - `package.json & CHANGELOG.md — Version bump and release metadata sync`
 
-## [v3.1.0] - 2026-11-13
+## [beta-v3.1.0] - 2026-11-13
 
 ### 🚀 Highlights & Feature Additions
 - Automated release v3.1.0 incorporating 1 updated module(s) (1 file changed, 5 insertions(+), 1 deletion(-)).
@@ -332,7 +333,7 @@ All notable changes to **TavernSmith** are documented in this file. This file is
 - **Repository Diff Summary**: 1 file changed, 5 insertions(+), 1 deletion(-)
 - `server.ts — Updated Project Configuration & Metadata (+5 / -1 lines)`
 
-## [v3.0.2] - 2026-11-12
+## [beta-v3.0.2] - 2026-11-12
 
 ### 🚀 Highlights & Feature Additions
 - Automated release v3.0.2 incorporating 1 updated module(s).
@@ -343,7 +344,7 @@ All notable changes to **TavernSmith** are documented in this file. This file is
 ### 📂 Detailed Component & File Changes
 - `package.json & CHANGELOG.md — Version bump and release metadata sync`
 
-## [v3.0.1] - 2026-11-12
+## [beta-v3.0.1] - 2026-11-12
 
 ### 🚀 Highlights & Feature Additions
 - Migrate to custom Express dev server (5cbe882)
@@ -375,7 +376,7 @@ All notable changes to **TavernSmith** are documented in this file. This file is
 - `src/views/OptionsView.tsx — Updated Options, AI Scanner & Save Folder Manager (+101 / -31 lines)`
 - `src/views/ThemesAndTagsView.tsx — Updated Context Themes & Global Tag/Sub-Tag Manager (+1110 / -1008 lines)`
 
-## [v3.0.0] - 2026-11-12
+## [beta-v3.0.0] - 2026-11-12
 
 ### 🚀 Highlights & Feature Additions
 - Automated release v3.0.0 incorporating 1 updated module(s).
@@ -386,7 +387,7 @@ All notable changes to **TavernSmith** are documented in this file. This file is
 ### 📂 Detailed Component & File Changes
 - `package.json & CHANGELOG.md — Version bump and release metadata sync`
 
-## [v2.2.1] - 2026-11-12
+## [beta-v2.2.1] - 2026-11-12
 
 ### 🚀 Highlights & Feature Additions
 - Automated release v2.2.1 incorporating 1 updated module(s).
@@ -397,7 +398,7 @@ All notable changes to **TavernSmith** are documented in this file. This file is
 ### 📂 Detailed Component & File Changes
 - `package.json & CHANGELOG.md — Version bump and release metadata sync`
 
-## [v2.2.0] - 2026-11-12
+## [beta-v2.2.0] - 2026-11-12
 
 ### 🚀 Highlights & Feature Additions
 - Remove PWA install button from top bar (96c5075)
@@ -411,7 +412,7 @@ All notable changes to **TavernSmith** are documented in this file. This file is
 - `README.md — Updated Project Configuration & Metadata (+55 / -66 lines)`
 - `src/components/TopBar.tsx — Updated UI Workbench Component (+1 / -3 lines)`
 
-## [v2.1.1] - 2026-11-12
+## [beta-v2.1.1] - 2026-11-12
 
 ### 🚀 Highlights & Feature Additions
 - Automated release v2.1.1 incorporating 1 updated module(s) (1 file changed, 16 insertions(+), 20 deletions(-)).
@@ -423,7 +424,7 @@ All notable changes to **TavernSmith** are documented in this file. This file is
 - **Repository Diff Summary**: 1 file changed, 16 insertions(+), 20 deletions(-)
 - `.github/workflows/version-update.yml — Updated GitHub Actions CI/CD & Standalone Release Workflow (+16 / -20 lines)`
 
-## [v2.1.0] - 2026-11-12
+## [beta-v2.1.0] - 2026-11-12
 
 ### 🚀 Highlights & Feature Additions
 - **Persistent AI API Keys & Models Per Provider**: Added a persistent credential vault (`savedProviderKeys` and `savedProviderModels`) keyed by canonical provider ID (`google`, `xai`, `openrouter`, `groq`, `meta`, `openai`, `anthropic`, `lmstudio`, `ollama`, `kobold`, `custom`). Switching between AI backend presets now automatically restores that provider's saved API key and last-used model so you never have to retype keys.
@@ -444,7 +445,7 @@ All notable changes to **TavernSmith** are documented in this file. This file is
 - `src/views/OptionsView.tsx` & `src/utils/changelogData.ts` — Per-provider key badge indicators and synced multi-version About & Changelog modal.
 - `.github/workflows/release.yml` & `.github/workflows/version-update.yml` — Non-admin standalone launcher, `crossorigin` stripping, and automated git repository changelog analyzer.
 
-## [v2.0.0] - 2026-11-11
+## [beta-v2.0.0] - 2026-11-11
 
 ### Highlights
 Lots of changes! improoved character handling, more included tags, NSFW tags, ETC.
@@ -452,7 +453,7 @@ Lots of changes! improoved character handling, more included tags, NSFW tags, ET
 ### Commits & Changes
 - feat(ui): redesign branding and enhance roster UX (f19ed18)
 
-## [v1.0.3] - 2026-11-11
+## [beta-v1.0.3] - 2026-11-11
 
 ### Highlights
 fixed storage
@@ -460,7 +461,7 @@ fixed storage
 ### Commits & Changes
 - feat: unify save directory structure (f1467d9)
 
-## [v1.0.2] - 2026-11-11
+## [beta-v1.0.2] - 2026-11-11
 
 ### Highlights
 fixed release issues AGAIN
@@ -468,7 +469,7 @@ fixed release issues AGAIN
 ### Commits & Changes
 - chore: upgrade CI actions and refine editor features (8211ba3)
 
-## [v1.0.1] - 2026-11-11
+## [beta-v1.0.1] - 2026-11-11
 
 ### Highlights
 fixed release issues
@@ -479,7 +480,7 @@ fixed release issues
 - feat: initialize TavernSmith project structure (4a18f04)
 - Initial commit (c1eb2ae)
 
-## [v1.0.0] — Production Release
+## [beta-v1.0.0] — Production Release
 
 ### Added
 - **Interactive SillyTavern `2:3` Portrait Uploader & Cropper Modal**:

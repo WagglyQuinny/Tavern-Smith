@@ -8,13 +8,13 @@ export interface ChangelogReleaseEntry {
   fileChanges: string[];
 }
 
-export const APP_VERSION = "4.7.0";
+export const APP_VERSION = "1.0.0";
 
 export const CHANGELOG_RELEASES: ChangelogReleaseEntry[] = [
   {
-    "version": "Unreleased",
-    "date": "Pending Release",
-    "title": "Native 3-OS Desktop App (No CMD Window), Security Hardening, App-Private Vault, Live Models & Strict NSFW Mode",
+    "version": "v1.0.0",
+    "date": "2026-11-19",
+    "title": "TavernSmith v1.0.0 — Full Native 3-OS Desktop Release (Zero CMD Window), Security Hardening & App-Private Vault",
     "security": [
       "Native Rust Desktop Storage & Zero-CORS AI HTTP Client: replaced background terminal servers in releases with a native Tauri v2 desktop app (zero CMD window), canonical symlink confinement, 0600/0700 vault key permissions, strict http/https URL validation, and a native Rust reqwest client that strips Origin headers to prevent Ollama/LAN CORS errors.",
       "Local-Only Server Binding & CSRF/DNS-Rebinding Protection: bound Express and Vite dev/preview servers strictly to 127.0.0.1 with Host, Origin, Sec-Fetch-Site, and JSON Content-Type validation plus static blocking for ./Saves/, ./.tavernsmith-app/, .env*, and server scripts.",
@@ -24,13 +24,13 @@ export const CHANGELOG_RELEASES: ChangelogReleaseEntry[] = [
       "Strict NSFW Hiding Across UI & AI Context: Hide NSFW Content now completely shields NSFW characters, lorebooks, entries, themes, saved files, JSON views, and strips all NSFW context from AI generation requests."
     ],
     "highlights": [
-      "Native 3-OS Desktop App & 3 Labeled Release Archives: every GitHub Release now ships TavernSmith-Windows-x64-Portable.zip (portable .exe, zero CMD window), TavernSmith-macOS-Universal-DMG.zip (Apple Silicon & Intel .dmg), and TavernSmith-Linux-x64-AppImage.zip (portable .AppImage).",
+      "Full v1.0.0 Graduation & Native 3-OS Desktop Archives: graduated out of beta (archiving legacy v1.0.1–v4.7.0 under beta-v* pre-releases) with TavernSmith-Windows-x64-Portable.zip (portable .exe, zero CMD window), TavernSmith-macOS-Universal-DMG.zip (Apple Silicon & Intel .dmg), and TavernSmith-Linux-x64-AppImage.zip (portable .AppImage).",
       "Native Save Dialogs & One-Click Open Saves Folder: PNG/JSON/backup exports use native OS Save As dialogs in desktop mode, and Options displays the active save path with a one-click Open Folder button.",
       "Live-Only AI Models & Local Loaded Status: removed all hardcoded/fake model lists; Ollama, LM Studio, and KoboldCPP distinguish Currently Loaded vs. Installed — Not Loaded models; added direct Anthropic support and fixed OpenRouter/Gemini routing.",
       "ID-Synced Character ↔ Lorebook Linking: linked lorebooks stay synced by ID, embed live updates into PNG/JSON character exports, inject into AI character generation context, and auto-import embedded character_book lorebooks.",
       "Global Tag Deletion & Targeted Reset Defaults: deleting a tag strips it from every character, lorebook, entry, and theme permanently; Reset Defaults restores only deleted/modified built-in Themes & Tags without touching custom items or saves.",
       "Strict Backup Import/Export Scope: workspace backup exports and imports strictly handle Characters, Lorebooks, Themes, and Tags — never settings, AI configs, or API keys.",
-      "Smarter GitHub Release & Changelog Actions: upgraded version-update.yml to promote curated [Unreleased] entries, sync package.json + versionInfo.json + Tauri/Cargo manifests, parse commit bodies safely without shell interpolation or eval, and remove fake boilerplate."
+      "Node 24 CI/CD & Safe Release Publishing: upgraded artifact actions to v7/v8 (zero deprecation warnings), gated release publishing to v* tags/dispatch so main pushes never overwrite existing releases, synced all JS/Rust/Tauri manifests in version-update.yml, and refreshed README.md."
     ],
     "fixes": [
       "Added dedicated per-operation AbortControllers, entity-switch aborts, unmount cleanup, and stream reader cancellation across editors and aiService.",
@@ -46,8 +46,9 @@ export const CHANGELOG_RELEASES: ChangelogReleaseEntry[] = [
       "src-tauri/src/storage.rs — Added Native Rust Local ./Saves/ & App-Private Vault Storage Engine with Unit Tests",
       "src-tauri/icons/ — Added Multi-Platform Application Icons (.ico, .icns, .png)",
       "src/utils/desktopBridge.ts — Added Native Tauri IPC & HTTP Fetch Bridge with Browser Dev Fallback",
-      ".github/workflows/release.yml — Built Native 3-OS Desktop App Release Matrix (Windows, macOS, Linux)",
-      ".github/workflows/version-update.yml — Upgraded Automated Changelog & Version Updater Workflow with Tauri Manifest Sync",
+      ".github/workflows/release.yml — Built Node 24 Native 3-OS Desktop App Release Matrix with Tag-Only Release Publishing",
+      ".github/workflows/version-update.yml — Upgraded Automated Changelog & Version Updater Workflow with Stable v* Tag Tracking & Tauri Manifest Sync",
+      "README.md — Updated Documentation for v1.0.0 Native 3-OS Downloads, Vault, and Strict NSFW Mode",
       ".gitignore — Ignored Local Saves/, .tavernsmith-app/, and src-tauri/target/ Directories",
       "server.ts — Hardened Local Express Server, Fixed ./Saves/ Disk API & App-Private Vault",
       "vite.config.ts — Hardened Vite Dev/Preview Middleware & Local Security Guards",
@@ -73,7 +74,7 @@ export const CHANGELOG_RELEASES: ChangelogReleaseEntry[] = [
     ]
   },
   {
-    "version": "v4.7.0",
+    "version": "beta-v4.7.0",
     "date": "2026-11-19",
     "title": "Automated release v4.7.0 incorporating 1 updated module(s).",
     "highlights": [
@@ -87,7 +88,7 @@ export const CHANGELOG_RELEASES: ChangelogReleaseEntry[] = [
     ]
   },
   {
-    "version": "v4.6.0",
+    "version": "beta-v4.6.0",
     "date": "2026-11-18",
     "title": "Implement deterministic tag sorting (d2cfa4f)",
     "highlights": [
@@ -109,7 +110,7 @@ export const CHANGELOG_RELEASES: ChangelogReleaseEntry[] = [
     ]
   },
   {
-    "version": "v4.5.1",
+    "version": "beta-v4.5.1",
     "date": "2026-11-17",
     "title": "Enhance save path security and state management (2ad644a)",
     "highlights": [
@@ -135,7 +136,7 @@ export const CHANGELOG_RELEASES: ChangelogReleaseEntry[] = [
     ]
   },
   {
-    "version": "v4.5.0",
+    "version": "beta-v4.5.0",
     "date": "2026-11-17",
     "title": "Automated release v4.5.0 incorporating 10 updated module(s) (10 files changed, 2220 insertions(+), 600 deletions(-)).",
     "highlights": [
@@ -158,7 +159,7 @@ export const CHANGELOG_RELEASES: ChangelogReleaseEntry[] = [
     ]
   },
   {
-    "version": "v4.4.1",
+    "version": "beta-v4.4.1",
     "date": "2026-11-17",
     "title": "Add support for character reaction images (63241c9)",
     "highlights": [
@@ -176,7 +177,7 @@ export const CHANGELOG_RELEASES: ChangelogReleaseEntry[] = [
     ]
   },
   {
-    "version": "v4.4.0",
+    "version": "beta-v4.4.0",
     "date": "2026-11-17",
     "title": "Support persistent themes and tags (47ab82c)",
     "highlights": [
@@ -196,7 +197,7 @@ export const CHANGELOG_RELEASES: ChangelogReleaseEntry[] = [
     ]
   },
   {
-    "version": "v4.3.0",
+    "version": "beta-v4.3.0",
     "date": "2026-11-17",
     "title": "Add inlineDataList support to generate endpoint (a1c048b)",
     "highlights": [
@@ -223,7 +224,7 @@ export const CHANGELOG_RELEASES: ChangelogReleaseEntry[] = [
     ]
   },
   {
-    "version": "v4.2.1",
+    "version": "beta-v4.2.1",
     "date": "2026-11-17",
     "title": "Add support for importing save folder backups (851ffa5)",
     "highlights": [
@@ -246,7 +247,7 @@ export const CHANGELOG_RELEASES: ChangelogReleaseEntry[] = [
     ]
   },
   {
-    "version": "v4.2.0",
+    "version": "beta-v4.2.0",
     "date": "2026-11-13",
     "title": "Automated release v4.2.0 incorporating 3 updated module(s) (3 files changed, 518 insertions(+), 352 deletions(-)).",
     "highlights": [
@@ -262,7 +263,7 @@ export const CHANGELOG_RELEASES: ChangelogReleaseEntry[] = [
     ]
   },
   {
-    "version": "v4.1.0",
+    "version": "beta-v4.1.0",
     "date": "2026-11-13",
     "title": "massive bug fixing, AI related integration",
     "highlights": [
@@ -301,7 +302,7 @@ export const CHANGELOG_RELEASES: ChangelogReleaseEntry[] = [
     ]
   },
   {
-    "version": "v4.0.2",
+    "version": "beta-v4.0.2",
     "date": "2026-11-13",
     "title": "Grand AI conections overhaul",
     "highlights": [
@@ -315,7 +316,7 @@ export const CHANGELOG_RELEASES: ChangelogReleaseEntry[] = [
     ]
   },
   {
-    "version": "v4.0.1",
+    "version": "beta-v4.0.1",
     "date": "2026-11-13",
     "title": "Reorganize And add tags",
     "highlights": [
@@ -344,7 +345,7 @@ export const CHANGELOG_RELEASES: ChangelogReleaseEntry[] = [
     ]
   },
   {
-    "version": "v4.0.0",
+    "version": "beta-v4.0.0",
     "date": "2026-11-13",
     "title": "Automated release v4.0.0 incorporating 1 updated module(s).",
     "highlights": [
@@ -358,7 +359,7 @@ export const CHANGELOG_RELEASES: ChangelogReleaseEntry[] = [
     ]
   },
   {
-    "version": "v3.1.0",
+    "version": "beta-v3.1.0",
     "date": "2026-11-13",
     "title": "Automated release v3.1.0 incorporating 1 updated module(s) (1 file changed, 5 insertions(+), 1 deletion(-)).",
     "highlights": [
@@ -372,7 +373,7 @@ export const CHANGELOG_RELEASES: ChangelogReleaseEntry[] = [
     ]
   },
   {
-    "version": "v3.0.2",
+    "version": "beta-v3.0.2",
     "date": "2026-11-12",
     "title": "Automated release v3.0.2 incorporating 1 updated module(s).",
     "highlights": [

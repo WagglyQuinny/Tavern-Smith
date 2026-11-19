@@ -49,8 +49,8 @@ jobs:
         run: |
           set -euo pipefail
 
-          # Locate the previous semantic version tag if one exists
-          LAST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
+          # Locate the previous stable semantic version tag if one exists (ignore archived beta-v* tags)
+          LAST_TAG=$(git describe --tags --match 'v[0-9]*' --abbrev=0 2>/dev/null || echo "")
           export LAST_TAG
           echo "Previous git tag: ${LAST_TAG:-none}"
 
@@ -236,6 +236,7 @@ jobs:
             if (filePath.startsWith('src/views/')) return 'Application Workspace View';
             if (filePath.startsWith('src/utils/')) return 'Core Utility Module';
             if (filePath === '.gitignore') return 'Git Ignore Rules (Local Saves & Private Vault)';
+            if (filePath === 'README.md') return 'Project Documentation & Native 3-OS Download Guide';
             return 'Project Configuration & Metadata';
           }
 
