@@ -1492,7 +1492,7 @@ async function startServer() {
       } finally {
         if (clientDisconnected && typeof asyncIter.return === 'function') {
           try {
-            await asyncIter.return();
+            await asyncIter.return(undefined);
           } catch {
             // Ignore stream cancel errors
           }

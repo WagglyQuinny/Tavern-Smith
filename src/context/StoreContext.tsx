@@ -2701,10 +2701,32 @@ const RETIRED_BUILTIN_TAG_KEYS = new Set<string>([
 ]);
 
 /**
- * Returns true if a TagDefinition has its NSFW (18+) flag set.
+ * Returns true if a TagDefinition (or tag name/id string looked up in `allTags`)
+ * is NSFW by explicit flag, NSFW category, or NSFW keyword.
  */
-export function isTagNsfwFlagged(tag: TagDefinition): boolean {
-  const cat = (tag.category || '').toLowerCase();
+export function isTagNsfwFlagged(
+  tagOrName: TagDefinition | string,
+  allTags?: readonly TagDefinition[]
+): boolean {
+  if (typeof tagOrName === 'string') {
+    const clean = tagOrName.trim().toLowerCase();
+    if (!clean) return false;
+    const baseName = clean.includes(':') ? clean.split(':')[0].trim() : clean;
+    if (allTags && allTags.length > 0) {
+      const matched = allTags.find(
+        (t) =>
+          t.name.trim().toLowerCase() === clean ||
+          t.name.trim().toLowerCase() === baseName ||
+          t.id.toLowerCase() === clean
+      );
+      if (matched) {
+        return isTagNsfwFlagged(matched);
+      }
+    }
+    return /\b(nsfw|18\+|smut|erotica|hentai|explicit)\b/i.test(clean);
+  }
+
+  const cat = (tagOrName.category || '').toLowerCase();
   if (
     cat === 'genitals' ||
     cat.includes('nsfw') ||
@@ -2713,8 +2735,8 @@ export function isTagNsfwFlagged(tag: TagDefinition): boolean {
   ) {
     return true;
   }
-  if (tag.isNsfw !== undefined) return Boolean(tag.isNsfw);
-  const n = (tag.name || '').toLowerCase();
+  if (tagOrName.isNsfw !== undefined) return Boolean(tagOrName.isNsfw);
+  const n = (tagOrName.name || '').toLowerCase();
   return /\b(nsfw|18\+|smut|erotica|hentai|explicit)\b/i.test(n);
 }
 

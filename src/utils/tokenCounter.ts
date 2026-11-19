@@ -329,7 +329,7 @@ export function calculateLorebookTokens(lorebook?: Lorebook): {
 export function calculateCardTokenBreakdown(
   character: CharacterCardData,
   lorebook: Lorebook | undefined,
-  statBlock: StatBlockConfig
+  statBlock?: StatBlockConfig
 ): TokenBreakdown {
   const name = estimateTokens(character.name);
   const description = estimateTokens(character.description);
@@ -348,7 +348,7 @@ export function calculateCardTokenBreakdown(
     0
   );
 
-  const compiledStats = compileStatBlockPrompt(statBlock);
+  const compiledStats = statBlock ? compileStatBlockPrompt(statBlock) : '';
   const stat_block = estimateTokens(compiledStats);
 
   // Avoid double-counting stat block tokens once compiled into post_history_instructions or system_prompt
